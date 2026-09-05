@@ -21,6 +21,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.DatagramChannel;
+import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.PromiseCombiner;
 import io.netty.util.internal.logging.InternalLogger;
@@ -29,9 +30,12 @@ import net.jodah.expiringmap.ExpirationPolicy;
 import net.jodah.expiringmap.ExpiringMap;
 import org.cloudburstmc.netty.channel.proxy.ProxyChannel;
 import org.cloudburstmc.netty.channel.raknet.config.DefaultRakServerConfig;
+import org.cloudburstmc.netty.channel.raknet.config.DefaultRakServerThrottle;
 import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
 import org.cloudburstmc.netty.channel.raknet.config.RakServerChannelConfig;
 import org.cloudburstmc.netty.channel.raknet.config.RakServerCookieMode;
+import org.cloudburstmc.netty.channel.raknet.config.RakServerMetrics;
+import org.cloudburstmc.netty.channel.raknet.config.RakServerThrottle;
 import org.cloudburstmc.netty.handler.codec.raknet.common.UnconnectedPongEncoder;
 import org.cloudburstmc.netty.handler.codec.raknet.server.RakProxyServerHandler;
 import org.cloudburstmc.netty.handler.codec.raknet.server.RakServerOfflineHandler;
@@ -50,6 +54,8 @@ import java.util.function.Consumer;
 public class RakServerChannel extends ProxyChannel<DatagramChannel> implements ServerChannel {
 
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RakServerChannel.class);
+    private static final AttributeKey<ThrottleReservation> THROTTLE_RESERVATION =
+            AttributeKey.valueOf(RakServerChannel.class, "throttleReservation");
 
     private final RakServerChannelConfig config;
     private final Map<SocketAddress, RakChildChannel> childChannelMap = new ConcurrentHashMap<>();
@@ -112,34 +118,72 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
      */
     public RakChildChannel createChildChannel(InetSocketAddress address, InetSocketAddress localAddress, long clientGuid, int mtu, int protocolVersion) {
         RakChildChannel existingChannel = this.childChannelMap.get(address);
-        if (this.config().getCookieMode() != RakServerCookieMode.INVALID &&
-                this.config().getCookieMode() != RakServerCookieMode.OFF && existingChannel != null) {
-            // We know this player is coming from this IP address due to the cookie, so we can safely close the existing channel.
-            existingChannel.close();
-        } else if (existingChannel != null) {
+        if (existingChannel != null && (this.config().getCookieMode() == RakServerCookieMode.INVALID
+                || this.config().getCookieMode() == RakServerCookieMode.OFF)) {
             // Could be spoofed, so we don't close the existing channel.
             return null;
         }
 
         InetSocketAddress clientAddress = this.getClientAddress(address);
-        if (this.config().getThrottle() != null && !this.config().getThrottle().accept(clientAddress)) {
-            return null;
+        RakServerThrottle throttle = this.config().getThrottle();
+        ThrottleReservation previous = existingChannel == null ? null : existingChannel.attr(THROTTLE_RESERVATION).get();
+        ThrottleReservation reservation = null;
+        boolean replacingReservation = false;
+        if (previous != null && throttle != null && throttle.getClass() == DefaultRakServerThrottle.class) {
+            ReplacementAdmission admission = previous.beginReplacement(throttle, clientAddress);
+            if (admission == ReplacementAdmission.REJECTED) {
+                return null;
+            }
+            if (admission == ReplacementAdmission.ACCEPTED) {
+                reservation = previous;
+                replacingReservation = true;
+            }
+        }
+        if (!replacingReservation && throttle != null) {
+            if (!throttle.accept(clientAddress)) {
+                return null;
+            }
+            reservation = new ThrottleReservation(throttle, clientAddress);
         }
 
-        RakChildChannel channel = new RakChildChannel(address, localAddress, clientAddress, this, clientGuid, mtu, childConsumer);
-        channel.closeFuture().addListener((GenericFutureListener<ChannelFuture>) this::onChildClosed);
+        RakChildChannel channel;
+        try {
+            channel = new RakChildChannel(address, localAddress, clientAddress, this, clientGuid, mtu, childConsumer);
+        } catch (RuntimeException | Error cause) {
+            if (reservation != null) {
+                if (replacingReservation) {
+                    reservation.cancelReplacement();
+                } else {
+                    reservation.release(null);
+                }
+            }
+            throw cause;
+        }
+        if (reservation != null) {
+            reservation.attach(channel);
+            channel.attr(THROTTLE_RESERVATION).set(reservation);
+        }
+        ThrottleReservation acceptedReservation = reservation;
+        channel.closeFuture().addListener((GenericFutureListener<ChannelFuture>) future -> this.onChildClosed(future, acceptedReservation));
         // Set before fireChannelRead because initChannel runs async on the child worker thread.
         if (protocolVersion != 0) {
             channel.config().setOption(RakChannelOption.RAK_PROTOCOL_VERSION, protocolVersion);
         }
-        // Fire channel thought ServerBootstrap,
-        // register to eventLoop, assign default options and attributes
-        this.pipeline().fireChannelRead(channel).fireChannelReadComplete();
+        // Publish before registration, since a child initializer may close the channel immediately.
         this.childChannelMap.put(address, channel);
 
-        if (this.config().getMetrics() != null) {
-            this.config().getMetrics().channelOpen(clientAddress);
+        RakServerMetrics metrics = this.config().getMetrics();
+        if (metrics != null) {
+            try {
+                metrics.channelOpen(clientAddress);
+            } catch (RuntimeException cause) {
+                log.warn("Failed to report channel open for {}", clientAddress, cause);
+            }
         }
+        if (existingChannel != null) {
+            existingChannel.close();
+        }
+        this.pipeline().fireChannelRead(channel).fireChannelReadComplete();
         return channel;
     }
 
@@ -147,23 +191,93 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         return this.childChannelMap.get(address);
     }
 
-    private void onChildClosed(ChannelFuture channelFuture) {
+    private void onChildClosed(ChannelFuture channelFuture, ThrottleReservation reservation) {
         RakChildChannel channel = (RakChildChannel) channelFuture.channel();
-        this.childChannelMap.remove(channel.remoteOrProxyAddress());
+        this.childChannelMap.remove(channel.remoteOrProxyAddress(), channel);
 
-        if (this.config().getMetrics() != null) {
-            this.config().getMetrics().channelClose(channel.remoteAddress());
+        try {
+            RakServerMetrics metrics = this.config().getMetrics();
+            if (metrics != null) {
+                try {
+                    metrics.channelClose(channel.remoteAddress());
+                } catch (RuntimeException cause) {
+                    log.warn("Failed to report channel close for {}", channel.remoteAddress(), cause);
+                }
+            }
+
+            channel.rakPipeline().fireChannelInactive();
+            channel.rakPipeline().fireChannelUnregistered();
+            // Need to use reflection to destroy pipeline because
+            // DefaultChannelPipeline.destroy() is only called when channel.isOpen() is false,
+            // but the method is called on parent channel, and there is no other way to destroy pipeline.
+            RakUtils.destroyChannelPipeline(channel.rakPipeline());
+        } finally {
+            if (reservation != null) {
+                reservation.release(channel);
+            }
+        }
+    }
+
+    private enum ReplacementAdmission {
+        UNAVAILABLE, ACCEPTED, REJECTED
+    }
+
+    private static final class ThrottleReservation {
+        private final RakServerThrottle throttle;
+        private final InetSocketAddress address;
+        private RakChildChannel owner;
+        private boolean replacing;
+        private boolean ownerClosed;
+        private boolean released;
+
+        private ThrottleReservation(RakServerThrottle throttle, InetSocketAddress address) {
+            this.throttle = throttle;
+            this.address = address;
         }
 
-        channel.rakPipeline().fireChannelInactive();
-        channel.rakPipeline().fireChannelUnregistered();
-        // Need to use reflection to destroy pipeline because
-        // DefaultChannelPipeline.destroy() is only called when channel.isOpen() is false,
-        // but the method is called on parent channel, and there is no other way to destroy pipeline.
-        RakUtils.destroyChannelPipeline(channel.rakPipeline());
+        private synchronized ReplacementAdmission beginReplacement(RakServerThrottle throttle, InetSocketAddress address) {
+            if (this.released || this.throttle != throttle || !this.address.getAddress().equals(address.getAddress())) {
+                return ReplacementAdmission.UNAVAILABLE;
+            }
+            if (this.replacing || !((DefaultRakServerThrottle) throttle).acceptReplacement(address)) {
+                return ReplacementAdmission.REJECTED;
+            }
+            // Keep the slot reserved if the old child closes while its replacement is being constructed.
+            this.replacing = true;
+            return ReplacementAdmission.ACCEPTED;
+        }
 
-        if (this.config().getThrottle() != null) {
-            this.config().getThrottle().closed(channel.remoteAddress());
+        private synchronized void attach(RakChildChannel channel) {
+            this.owner = channel;
+            this.ownerClosed = false;
+            this.replacing = false;
+        }
+
+        private void cancelReplacement() {
+            boolean release;
+            synchronized (this) {
+                this.replacing = false;
+                release = this.ownerClosed && !this.released;
+                this.released |= release;
+            }
+            if (release) {
+                this.throttle.closed(this.address);
+            }
+        }
+
+        private void release(RakChildChannel channel) {
+            boolean release;
+            synchronized (this) {
+                if (this.released || this.owner != channel) {
+                    return;
+                }
+                this.ownerClosed = true;
+                release = !this.replacing;
+                this.released = release;
+            }
+            if (release) {
+                this.throttle.closed(this.address);
+            }
         }
     }
 

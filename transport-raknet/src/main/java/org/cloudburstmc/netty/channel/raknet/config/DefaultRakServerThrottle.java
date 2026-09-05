@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class DefaultRakServerThrottle implements RakServerThrottle {
-    private final Map<InetAddress, AtomicInteger> connections;
+    private final Map<InetAddress, Integer> connections;
     private final int connectionsMax;
 
     private final ExpiringMap<InetAddress, AtomicInteger> connects;
@@ -50,27 +50,40 @@ public class DefaultRakServerThrottle implements RakServerThrottle {
 
     @Override
     public boolean accept(InetSocketAddress address) {
-        AtomicInteger connections = this.connections.computeIfAbsent(address.getAddress(), ignored -> new AtomicInteger());
-        if (connections.get() >= connectionsMax) {
-            return false;
-        }
+        return this.accept(address, false);
+    }
 
-        AtomicInteger connects = this.connects.computeIfAbsent(address.getAddress(), ignored -> new AtomicInteger());
-        if (connects.get() >= connectsMax) {
-            return false;
-        }
-        connects.incrementAndGet();
+    /**
+     * Charges another connect attempt while retaining an existing connection slot. The caller must transfer
+     * that slot to the replacement, or keep it with the original connection if replacement construction fails.
+     */
+    public boolean acceptReplacement(InetSocketAddress address) {
+        return this.accept(address, true);
+    }
 
-        connections.incrementAndGet();
+    private boolean accept(InetSocketAddress address, boolean replacing) {
+        boolean[] accepted = {false};
+        // Child closes and accepts can arrive from different event loops.
+        this.connections.compute(address.getAddress(), (ip, connections) -> {
+            int count = connections == null ? 0 : connections;
+            if (replacing ? count == 0 : count >= this.connectionsMax) {
+                return connections;
+            }
 
-        return true;
+            AtomicInteger connects = this.connects.computeIfAbsent(ip, ignored -> new AtomicInteger());
+            if (connects.get() >= this.connectsMax) {
+                return connections;
+            }
+
+            connects.incrementAndGet();
+            accepted[0] = true;
+            return replacing ? count : count + 1;
+        });
+        return accepted[0];
     }
 
     @Override
     public void closed(InetSocketAddress address) {
-        AtomicInteger connectionsPerIp = this.connections.get(address.getAddress());
-        if (connectionsPerIp != null && connectionsPerIp.decrementAndGet() <= 0) {
-            this.connections.remove(address.getAddress());
-        }
+        this.connections.computeIfPresent(address.getAddress(), (ip, count) -> count > 1 ? count - 1 : null);
     }
 }
