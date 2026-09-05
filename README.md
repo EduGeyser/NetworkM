@@ -12,8 +12,8 @@ separate NetherNet transport.
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
 Gradle provisions the module toolchains. Both modules use Netty 4.1.130.Final.
 
-Artifacts use `dev.kastle.netty:netty-transport-raknet` and
-`dev.kastle.netty:netty-transport-nethernet`. The group can be changed with
+Artifacts use `dev.sendablemetatype.netty:netty-transport-raknet` and
+`dev.sendablemetatype.netty:netty-transport-nethernet`. The group can be changed with
 `-PnetworkGroup=your.group`; Java packages do not change. The local version is
 `1.7.4-networkm-SNAPSHOT`, separate from the source fork's published releases.
 `NETWORK_PUBLISH_VERSION` overrides the version for either publishing backend.

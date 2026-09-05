@@ -25,7 +25,7 @@ repositories {
 
 val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
-val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.kastle.netty")
+val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.sendablemetatype.netty")
 
 subprojects {
     apply(plugin = "java-library")
