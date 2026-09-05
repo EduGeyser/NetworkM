@@ -126,14 +126,18 @@ public class RakChannelOption<T> extends ChannelOption<T> {
             valueOf(RakChannelOption.class, "RAK_SESSION_TIMEOUT");
 
     /**
-     * Whether RakNet will flush outgoing messages autoamatically every RAK_FLUSH_INTERVAL or flushing has to be triggered by the user.
+     * Whether RakNet automatically flushes queued outgoing messages after {@link #RAK_FLUSH_INTERVAL}.
+     * Defaults to false. Explicit flushes are honored regardless of this setting.
      */
     public static final ChannelOption<Boolean> RAK_AUTO_FLUSH =
             valueOf(RakChannelOption.class, "RAK_AUTO_FLUSH");
 
     /**
-     * Interval in milliseconds of how often auto flushing should happen.
-     * Default is 10ms.
+     * How long queued data may wait for an automatic flush, in milliseconds. 0, the default, queues
+     * the flush on the event loop, so unflushed writes leave when it runs: after the task that wrote
+     * them and any task queued ahead of the flush, coalesced with everything those tasks wrote. A
+     * positive value keeps them for a coalescing window of that length instead. Only used with
+     * {@link #RAK_AUTO_FLUSH} enabled.
      */
     public static final ChannelOption<Integer> RAK_FLUSH_INTERVAL =
             valueOf(RakChannelOption.class, "RAK_FLUSH_INTERVAL");

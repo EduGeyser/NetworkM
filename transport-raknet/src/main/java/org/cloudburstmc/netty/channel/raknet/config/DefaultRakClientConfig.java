@@ -37,7 +37,6 @@ public class DefaultRakClientConfig extends DefaultRakSessionConfig {
 
     private volatile ByteBuf unconnectedMagic = Unpooled.wrappedBuffer(DEFAULT_UNCONNECTED_MAGIC);
     private volatile long connectTimeout = SESSION_TIMEOUT_MS;
-    private volatile long sessionTimeout = SESSION_TIMEOUT_MS;
     private volatile long serverGuid;
     private volatile boolean compatibilityMode = false;
     private volatile Integer[] mtuSizes = MTU_SIZES;
@@ -152,17 +151,6 @@ public class DefaultRakClientConfig extends DefaultRakSessionConfig {
     public DefaultRakClientConfig setServerGuid(long serverGuid) {
         this.serverGuid = serverGuid;
         return this;
-    }
-
-    @Override
-    public RakChannelConfig setSessionTimeout(long timeout) {
-        this.sessionTimeout = timeout;
-        return this;
-    }
-
-    @Override
-    public long getSessionTimeout() {
-        return this.sessionTimeout;
     }
 
     public boolean isCompatibilityMode() {

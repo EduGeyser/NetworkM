@@ -87,5 +87,7 @@ public class RakAcknowledgeHandler extends SimpleChannelInboundHandler<ByteBuf> 
                 metrics.ackIn(entriesCount);
             }
         }
+        // Apply them now rather than at the next flush, so a NACK is answered and a widened window is used at once.
+        this.sessionCodec.processAcknowledgements();
     }
 }

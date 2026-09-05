@@ -18,7 +18,10 @@ package org.cloudburstmc.netty.channel.raknet.config;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.DefaultChannelConfig;
+import io.netty.util.internal.ObjectUtil;
+import org.cloudburstmc.netty.channel.raknet.RakChannel;
 
 import java.util.Map;
 
@@ -36,8 +39,8 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     private volatile int orderingChannels = 16;
     private volatile RakChannelMetrics metrics;
     private volatile long sessionTimeout = SESSION_TIMEOUT_MS;
-    private volatile boolean autoFlush = true;
-    private volatile int flushInterval = 10;
+    private volatile boolean autoFlush = false;
+    private volatile int flushInterval = 0;
     private volatile int maxQueuedBytes = 64 * 1024 * 1024; // 64 MB
     private volatile int maxSplitQueuedBytes = 8 * 1024 * 1024; // 8 MB
     private volatile int maxOrderingQueuedBytes = 8 * 1024 * 1024; // 8 MB
@@ -191,6 +194,7 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     @Override
     public RakChannelConfig setSessionTimeout(long timeout) {
         this.sessionTimeout = timeout;
+        this.notifySession(RakSessionConfigUpdate.SESSION_TIMEOUT);
         return this;
     }
 
@@ -207,6 +211,7 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     @Override
     public void setAutoFlush(boolean autoFlush) {
         this.autoFlush = autoFlush;
+        this.notifySession(RakSessionConfigUpdate.AUTO_FLUSH);
     }
 
     @Override
@@ -216,17 +221,20 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
 
     @Override
     public void setFlushInterval(int flushInterval) {
-        this.flushInterval = flushInterval;
+        this.flushInterval = ObjectUtil.checkPositiveOrZero(flushInterval, "flushInterval");
+        this.notifySession(RakSessionConfigUpdate.AUTO_FLUSH);
     }
 
     @Override
     public void setMaxQueuedBytes(int maxQueuedBytes) {
         this.maxQueuedBytes = maxQueuedBytes;
+        this.notifySession(RakSessionConfigUpdate.QUEUE_LIMITS);
     }
 
     @Override
     public void setMaxSplitQueuedBytes(int maxSplitQueuedBytes) {
         this.maxSplitQueuedBytes = maxSplitQueuedBytes;
+        this.notifySession(RakSessionConfigUpdate.QUEUE_LIMITS);
     }
 
     @Override
@@ -237,6 +245,7 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     @Override
     public void setMaxOrderingQueuedBytes(int maxOrderingQueuedBytes) {
         this.maxOrderingQueuedBytes = maxOrderingQueuedBytes;
+        this.notifySession(RakSessionConfigUpdate.QUEUE_LIMITS);
     }
 
     @Override
@@ -247,5 +256,14 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     @Override
     public int getMaxQueuedBytes() {
         return maxQueuedBytes;
+    }
+
+    private void notifySession(RakSessionConfigUpdate update) {
+        if (this.channel instanceof RakChannel) {
+            ChannelPipeline pipeline = ((RakChannel) this.channel).rakPipeline();
+            if (pipeline != null) {
+                pipeline.fireUserEventTriggered(update);
+            }
+        }
     }
 }

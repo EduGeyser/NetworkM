@@ -17,23 +17,27 @@
 package org.cloudburstmc.netty.channel.raknet.packet;
 
 import io.netty.util.AbstractReferenceCounted;
+import io.netty.util.internal.DefaultPriorityQueue;
 import io.netty.util.internal.ObjectPool;
+import io.netty.util.internal.PriorityQueueNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 
-public class RakDatagramPacket extends AbstractReferenceCounted {
+public class RakDatagramPacket extends AbstractReferenceCounted implements PriorityQueueNode {
 
     private static final ObjectPool<RakDatagramPacket> RECYCLER = ObjectPool.newPool(RakDatagramPacket::new);
 
     private final ObjectPool.Handle<RakDatagramPacket> handle;
     private final List<EncapsulatedPacket> packets = new ArrayList<>();
     private byte flags = FLAG_VALID | FLAG_NEEDS_B_AND_AS;
+    // Session-local monotonic milliseconds, not wire timestamps.
     private long sendTime;
     private long nextSend;
     private int sequenceIndex = -1;
+    private int resendQueueIndex = INDEX_NOT_IN_QUEUE;
 
     public static RakDatagramPacket newInstance() {
         return RECYCLER.get();
@@ -90,6 +94,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
         this.sendTime = 0;
         this.nextSend = 0;
         this.sequenceIndex = -1;
+        this.resendQueueIndex = INDEX_NOT_IN_QUEUE;
         setRefCnt(1);
         this.handle.recycle(this);
     }
@@ -128,6 +133,16 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
 
     public void setNextSend(long nextSend) {
         this.nextSend = nextSend;
+    }
+
+    @Override
+    public int priorityQueueIndex(DefaultPriorityQueue<?> queue) {
+        return this.resendQueueIndex;
+    }
+
+    @Override
+    public void priorityQueueIndex(DefaultPriorityQueue<?> queue, int index) {
+        this.resendQueueIndex = index;
     }
 
     public int getSequenceIndex() {
