@@ -27,6 +27,10 @@ dependencies {
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.junit)
     testRuntimeOnly(libs.junit.platform.launcher)
+
+    constraints {
+        testImplementation(libs.jspecify)
+    }
 }
 
 tasks.withType<Test> {
