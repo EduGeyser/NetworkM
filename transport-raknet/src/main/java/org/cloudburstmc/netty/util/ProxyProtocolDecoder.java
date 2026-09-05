@@ -269,13 +269,21 @@ public final class ProxyProtocolDecoder {
      * From HAProxyMessage
      */
     private static boolean skipNextTLV(final ByteBuf header) {
-        // We need at least 4 bytes for a TLV
-        if (header.readableBytes() < 4) {
+        if (!header.isReadable()) {
             return false;
         }
 
+        if (!header.isReadable(3)) {
+            throw new HAProxyProtocolException("incomplete TLV header");
+        }
+
         header.skipBytes(1);
-        header.skipBytes(header.readUnsignedShort());
+        int length = header.readUnsignedShort();
+        if (!header.isReadable(length)) {
+            throw new HAProxyProtocolException("incomplete TLV value: " + header.readableBytes()
+                    + " bytes (expected: " + length + " bytes)");
+        }
+        header.skipBytes(length);
         return true;
     }
 
@@ -590,7 +598,7 @@ public final class ProxyProtocolDecoder {
 
             // ensure we actually have the full header available
             if (n >= totalHeaderBytes) {
-                return totalHeaderBytes;
+                return buffer.readerIndex() + totalHeaderBytes;
             } else {
                 return -1;
             }

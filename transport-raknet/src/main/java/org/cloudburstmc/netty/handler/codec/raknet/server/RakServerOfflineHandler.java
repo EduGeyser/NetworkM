@@ -66,9 +66,10 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
             int packetId = buf.readUnsignedByte();
             switch (packetId) {
                 case ID_UNCONNECTED_PING:
-                    if (buf.isReadable(8)) {
-                        buf.readLong(); // Ping time
+                    if (!buf.isReadable(8)) {
+                        return false;
                     }
+                    buf.skipBytes(8); // Ping time
                 case ID_OPEN_CONNECTION_REQUEST_1:
                 case ID_OPEN_CONNECTION_REQUEST_2:
                     ByteBuf magicBuf = ((RakServerChannelConfig) ctx.channel().config()).getUnconnectedMagic();
@@ -135,12 +136,19 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
 
     private void onOpenConnectionRequest1(ChannelHandlerContext ctx, DatagramPacket packet, ByteBuf magicBuf, long guid) {
         RakServerChannelConfig config = (RakServerChannelConfig) ctx.channel().config();
+        RakServerCookieMode mode = config.getCookieMode();
+        if (mode == RakServerCookieMode.OFFLOADED || mode == RakServerCookieMode.OFFLOADED_PSK) {
+            return;
+        }
 
         ByteBuf buffer = packet.content();
         InetSocketAddress sender = packet.sender();
 
         // Skip already verified magic
         buffer.skipBytes(magicBuf.readableBytes());
+        if (!buffer.isReadable()) {
+            return;
+        }
         int protocolVersion = buffer.readUnsignedByte();
 
         // 1 (Packet ID), (Magic), 1 (Protocol Version), 20/40 (IP Header)
@@ -156,7 +164,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
         // TODO: banned address check?
         // TODO: max connections check?
 
-        boolean sendCookie = config.getCookieMode() == RakServerCookieMode.ACTIVE;
+        boolean sendCookie = mode == RakServerCookieMode.ACTIVE;
 
         int bufferCapacity = sendCookie ? 32 : 28; // 4 byte cookie
 
@@ -182,9 +190,12 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
         // Skip already verified magic
         buffer.skipBytes(magicBuf.readableBytes());
 
-        boolean expectCookie = config.getCookieMode() != RakServerCookieMode.INVALID;
+        boolean expectCookie = mode != RakServerCookieMode.INVALID;
         int cookie = 0;
         if (expectCookie) {
+            if (!buffer.isReadable(5)) {
+                return;
+            }
             cookie = buffer.readInt();
             if (!config.getSipHash().validateCookie(cookie, sender, mode)) {
                 if (log.isTraceEnabled()) {
@@ -203,8 +214,19 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
             buffer.readBoolean(); // Client wrote challenge
         }
 
-        // TODO: Verify serverAddress matches?
-        RakUtils.readAddress(buffer); // serverAddress
+        if (!buffer.isReadable()) {
+            return;
+        }
+        int addressLength = switch (buffer.getUnsignedByte(buffer.readerIndex())) {
+            case 4 -> 7;
+            case 6 -> 29;
+            default -> 0;
+        };
+        if (addressLength == 0 || !buffer.isReadable(addressLength + 10)) {
+            return;
+        }
+        // The requested server address is unused; skip it without allocating an InetSocketAddress.
+        buffer.skipBytes(addressLength);
         int mtu = buffer.readUnsignedShort();
         long clientGuid = buffer.readLong();
 

@@ -49,7 +49,7 @@ public class SipHash {
         this.secret = key.clone();
     }
 
-    private long hash(byte[] data, int length, long k0, long k1) {
+    static long hash(byte[] data, int length, long k0, long k1) {
         long v0 = 0x736f6d6570736575L ^ k0;
         long v1 = 0x646f72616e646f6dL ^ k1;
         long v2 = 0x6c7967656e657261L ^ k0;
@@ -63,6 +63,7 @@ public class SipHash {
             for (int j = 0; j < 8; j++) {
                 m |= ((long) (data[i + j] & 0xFF)) << (j * 8);
             }
+            v3 ^= m;
             
             // SIPROUND x 2
             v0 += v1; v1 = Long.rotateLeft(v1, 13); v1 ^= v0; v0 = Long.rotateLeft(v0, 32);
@@ -76,7 +77,6 @@ public class SipHash {
             v1 ^= v2; v2 = Long.rotateLeft(v2, 32);
 
             v0 ^= m;
-            v3 ^= m;
             i += 8;
         }
 
@@ -150,7 +150,7 @@ public class SipHash {
         data[pos++] = (byte) (port);
         data[pos] = (byte) timestamp;
 
-        long hash = this.hash(data, data.length, keys.k0, keys.k1);
+        long hash = hash(data, data.length, keys.k0, keys.k1);
         return hash & 0xFFFFFF; // Truncate to 24 bits
     }
 

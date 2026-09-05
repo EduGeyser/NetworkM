@@ -41,5 +41,10 @@ The normal handshake, bounded transient-denial retries, stateless cookie modes,
 HAProxy support, and per-channel/server metrics remain available. Channel
 factories accept either a datagram channel class or a `ChannelFactory`.
 
+Cookie signatures now match SipHash-2-4 for IPv6 addresses. IPv4 signatures are
+unchanged. An IPv6 `OFFLOADED_PSK` deployment must update the offloader and server
+together if the offloader used the earlier Network implementation. `ACTIVE`
+clients simply echo the cookie; `OFFLOADED` does not validate its signature.
+
 The packet-flow diagrams under `.github/readme` are retained from
 NetworkCompatible as descriptions of the client and server pipelines.
