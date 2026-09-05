@@ -6,6 +6,7 @@ gson = "2.14.0"
 nmcp = "1.6.2"
 jose4j = "0.9.6"
 slf4j = "2.0.19"
+xmlutil = "1.0.2.1"
 
 [libraries]
 expiringmap = { group = "net.jodah", name = "expiringmap", version = "0.5.11" }
@@ -31,6 +32,14 @@ junit-jupiter-params = { group = "org.junit.jupiter", name = "junit-jupiter-para
 junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher" }
 jspecify = { group = "org.jspecify", name = "jspecify", version = "1.0.1" }
 slf4j-jdk14 = { group = "org.slf4j", name = "slf4j-jdk14", version.ref = "slf4j" }
+
+# Publishing task dependencies
+nmcp-task-okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version = "5.5.0" }
+nmcp-task-okio = { group = "com.squareup.okio", name = "okio", version = "3.18.2" }
+nmcp-task-xmlutil-core = { group = "io.github.pdvrieze.xmlutil", name = "core", version.ref = "xmlutil" }
+nmcp-task-xmlutil-serialization = { group = "io.github.pdvrieze.xmlutil", name = "serialization", version.ref = "xmlutil" }
+nmcp-task-kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version = "2.4.10" }
+nmcp-task-annotations = { group = "org.jetbrains", name = "annotations", version = "26.1.0" }
 
 
 [bundles]

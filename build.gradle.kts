@@ -152,6 +152,24 @@ subprojects {
     }
 }
 
+val nmcpTaskLibraries = listOf(
+    libs.nmcp.task.okhttp,
+    libs.nmcp.task.okio,
+    libs.nmcp.task.xmlutil.core,
+    libs.nmcp.task.xmlutil.serialization,
+    libs.nmcp.task.kotlin.stdlib,
+    libs.nmcp.task.annotations,
+)
+
+// Keep publisher upgrades out of the transport artifacts and Gradle's own classpath.
+allprojects {
+    configurations.named("nmcpTasks") {
+        nmcpTaskLibraries.forEach {
+            dependencyConstraints.add(project.dependencies.constraints.create(it.get()))
+        }
+    }
+}
+
 dependencies {
     nmcpAggregation(project(":transport-raknet"))
     nmcpAggregation(project(":transport-nethernet"))
