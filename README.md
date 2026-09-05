@@ -15,7 +15,10 @@ Gradle provisions JDK 26 for compilation and JDK 21 for tests. Compilation uses
 same tests on Java 21, 25, and 26; use `-PtestJavaVersion=25` or
 `-PtestJavaVersion=26` to select a newer test runtime locally.
 
-Both modules use Netty 4.1.130.Final.
+Both modules use Netty 4.2.17.Final, aligned through its BOM. Applications that
+provide Netty must use compatible 4.2 modules together. RakNet depends on
+`netty-codec-base` rather than the aggregate `netty-codec` artifact, so it does
+not pull in unrelated codecs.
 
 Artifacts use `dev.sendablemetatype.netty:netty-transport-raknet` and
 `dev.sendablemetatype.netty:netty-transport-nethernet`. The group can be changed with

@@ -14,7 +14,8 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import org.cloudburstmc.netty.channel.raknet.RakChannel;
 import org.cloudburstmc.netty.channel.raknet.RakChannelFactory;
@@ -49,8 +50,8 @@ class RakSessionIntegrationTests {
     @MethodSource("transports")
     @Timeout(15)
     void splitDataRoundTripsAcrossEventLoopsAfterChangingAutoFlush(boolean compatible, int size) throws Exception {
-        NioEventLoopGroup transport = new NioEventLoopGroup(1);
-        NioEventLoopGroup application = new NioEventLoopGroup(1);
+        MultiThreadIoEventLoopGroup transport = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        MultiThreadIoEventLoopGroup application = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         Channel server = null;
         Channel client = null;
         CompletableFuture<byte[]> response = new CompletableFuture<>();

@@ -22,7 +22,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import org.cloudburstmc.netty.channel.raknet.*;
 import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
@@ -94,7 +94,7 @@ public class RakTests {
     private static ServerBootstrap serverBootstrap() {
         return new ServerBootstrap()
                 .channelFactory(RakChannelFactory.server(NioDatagramChannel.class))
-                .group(new NioEventLoopGroup())
+                .group(new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()))
                 .option(RakChannelOption.RAK_SUPPORTED_PROTOCOLS, new int[]{11})
                 .option(RakChannelOption.RAK_MAX_CONNECTIONS, 1)
                 .childOption(RakChannelOption.RAK_ORDERING_CHANNELS, 1)
@@ -118,7 +118,7 @@ public class RakTests {
     private static Bootstrap clientBootstrap(int mtu) {
         return new Bootstrap()
                 .channelFactory(RakChannelFactory.client(NioDatagramChannel.class))
-                .group(new NioEventLoopGroup())
+                .group(new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()))
                 .option(RakChannelOption.RAK_PROTOCOL_VERSION, 11)
                 .option(RakChannelOption.RAK_MTU, mtu)
                 .option(RakChannelOption.RAK_ORDERING_CHANNELS, 1);
