@@ -147,6 +147,7 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
         this.partId = 0;
         this.partIndex = 0;
         this.buffer = null;
+        this.needsBAS = false;
         setRefCnt(1);
         this.handle.recycle(this);
     }

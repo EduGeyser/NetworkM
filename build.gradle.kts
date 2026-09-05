@@ -14,22 +14,36 @@
  * under the License.
  */
 
-val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
+plugins {
+    alias(libs.plugins.nmcp.aggregation)
+    `maven-publish`
+}
+
+repositories {
+    mavenCentral()
+}
+
+val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
+val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.kastle.netty")
 
 subprojects {
     apply(plugin = "java-library")
+    apply(plugin = "com.gradleup.nmcp")
     apply(plugin = "maven-publish")
     apply(plugin = "signing")
 
-    group = "org.cloudburstmc.netty"
+    group = networkGroup
     version = networkVersion
 
     repositories {
         mavenLocal()
         mavenCentral()
+        // SendableMetatype webrtc-java fork builds (sendAsync, ICE selected
+        // candidate pair bridge), published as a maven layout git branch.
+        maven("https://raw.githubusercontent.com/SendableMetatype/webrtc-java/maven-repo/") {
+            content { includeGroup("dev.kastle.webrtc") }
+        }
     }
 
     configure<JavaPluginExtension> {
@@ -44,10 +58,7 @@ subprojects {
         repositories {
             maven {
                 name = "maven-deploy"
-                url = uri(
-                        System.getenv("MAVEN_DEPLOY_URL")
-                                ?: "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-                )
+                url = uri(System.getenv("MAVEN_DEPLOY_URL") ?: "https://repo.opencollab.dev/maven-snapshots/")
                 credentials {
                     username = System.getenv("MAVEN_DEPLOY_USERNAME") ?: "username"
                     password = System.getenv("MAVEN_DEPLOY_PASSWORD") ?: "password"
@@ -62,7 +73,8 @@ subprojects {
 
                 pom {
                     description.set(project.description)
-                    url.set("https://github.com/CloudburstMC/Network")
+                    name.set(project.name)
+                    url.set("https://github.com/Kas-tle/NetworkCompatible")
                     inceptionYear.set("2018")
                     licenses {
                         license {
@@ -76,19 +88,24 @@ subprojects {
                             organization.set("CloudburstMC")
                             organizationUrl.set("https://github.com/CloudburstMC")
                         }
+                        developer {
+                            name.set("Kas-tle")
+                            organization.set("Kas-tle")
+                            organizationUrl.set("https://github.com/Kas-tle")
+                        }
                     }
                     scm {
-                        connection.set("scm:git:git://github.com/CloudburstMC/Network.git")
-                        developerConnection.set("scm:git:ssh://github.com:CloudburstMC/my-library.git")
-                        url.set("https://github.com/CloudburstMC/Network")
+                        connection.set("scm:git:git://github.com/Kas-tle/NetworkCompatible.git")
+                        developerConnection.set("scm:git:ssh://github.com:Kas-tle/NetworkCompatible.git")
+                        url.set("https://github.com/Kas-tle/NetworkCompatible")
                     }
                     ciManagement {
                         system.set("GitHub Actions")
-                        url.set("https://github.com/CloudburstMC/Network/actions")
+                        url.set("https://github.com/Kas-tle/NetworkCompatible/actions")
                     }
                     issueManagement {
                         system.set("GitHub Issues")
-                        url.set("https://github.com/CloudburstMC/Network/issues")
+                        url.set("https://github.com/Kas-tle/NetworkCompatible/issues")
                     }
                 }
             }
@@ -112,5 +129,24 @@ subprojects {
             jvmArgs = listOf("-XX:MaxMetaspaceSize=512m")
             useJUnitPlatform()
         }
+    }
+}
+
+dependencies {
+    allprojects {
+        nmcpAggregation(project(path))
+    }
+}
+
+
+nmcpAggregation {
+    centralPortal {
+        project(":transport-raknet")
+        project(":transport-nethernet")
+
+        username.set(System.getenv("MAVEN_CENTRAL_USERNAME"))
+        password.set(System.getenv("MAVEN_CENTRAL_PASSWORD"))
+
+        publishingType.set("AUTOMATIC")
     }
 }

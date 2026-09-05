@@ -36,6 +36,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.BlockingQueue;
@@ -107,14 +109,16 @@ public class RakCookieTests {
                 });
     }
 
-    @Test
-    public void testActiveMode() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void testActiveMode(boolean compatible) {
         // ACTIVE mode: Server generates cookie, client must echo it.
         // Standard client behavior.
         // Cookie requirement: Valid timestamp AND Valid signature.
         setupServer(RakServerCookieMode.ACTIVE, SECRET);
 
         Channel client = clientBootstrap()
+                .option(RakChannelOption.RAK_COMPATIBILITY_MODE, compatible)
                 .connect(new InetSocketAddress("127.0.0.1", PORT))
                 .awaitUninterruptibly()
                 .channel();

@@ -14,10 +14,18 @@
  * under the License.
  */
 
-rootProject.name = "network"
+rootProject.name = "NetworkM"
+
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 include("transport-raknet")
+include("transport-nethernet")

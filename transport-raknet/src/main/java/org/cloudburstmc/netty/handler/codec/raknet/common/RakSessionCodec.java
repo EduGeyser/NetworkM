@@ -39,6 +39,7 @@ import java.net.Inet6Address;
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.Iterator;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
@@ -91,6 +92,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private long[] outgoingPacketNextWeights;
     private FastBinaryMinHeap<EncapsulatedPacket>[] orderingHeaps;
     private long currentPingTime = -1;
+    private long currentPingSentAt;
     private long lastPingTime = -1;
     private long lastPongTime = -1;
     private IntObjectMap<RakDatagramPacket> sentDatagrams;
@@ -98,7 +100,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private DefaultPriorityQueue<RakDatagramPacket> resendQueue;
     private Queue<IntRange> incomingAcks;
     private Queue<IntRange> incomingNaks;
-    private Queue<IntRange> outgoingAcks;
+    private Deque<IntRange> outgoingAcks;
     private Queue<IntRange> outgoingNaks;
     private long lastMinWeight;
 
@@ -414,7 +416,13 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             this.outgoingNaks.offer(new IntRange(packet.getSequenceIndex() - missedDatagrams, packet.getSequenceIndex() - 1));
         }
 
-        this.outgoingAcks.offer(new IntRange(packet.getSequenceIndex(), packet.getSequenceIndex()));
+        int sequenceIndex = packet.getSequenceIndex();
+        IntRange lastAck = this.outgoingAcks.peekLast();
+        if (lastAck != null && lastAck.end == sequenceIndex - 1) {
+            lastAck.end = sequenceIndex;
+        } else {
+            this.outgoingAcks.offer(new IntRange(sequenceIndex, sequenceIndex));
+        }
         // Acknowledgements leave right after the read that produced them, coalesced per read batch.
         this.requestFlush();
 
@@ -743,13 +751,26 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         if (this.deinitialized || this.state != RakState.CONNECTED) {
             return;
         }
-        ChannelHandlerContext ctx = this.ctx();
-        long curTime = System.currentTimeMillis();
+        this.writePing(this.ctx(), System.currentTimeMillis());
+    }
+
+    void writePing(ChannelHandlerContext ctx, long curTime) {
+        // The compatible client sends its first ping with the final handshake batch.
+        if (Boolean.TRUE.equals(this.channel.config().getOption(RakChannelOption.RAK_COMPATIBILITY_MODE))
+                && this.datagramWriteIndex <= 1) {
+            return;
+        }
+        long pingTime = this.pingTimestamp();
         ByteBuf buffer = ctx.alloc().ioBuffer(9);
         buffer.writeByte(ID_CONNECTED_PING);
-        buffer.writeLong(curTime);
-        this.currentPingTime = curTime;
+        buffer.writeLong(pingTime);
+        this.currentPingTime = pingTime;
+        this.currentPingSentAt = this.clock.getAsLong();
         this.write(ctx, new RakMessage(buffer, RakReliability.UNRELIABLE, RakPriority.IMMEDIATE), ctx.voidPromise());
+    }
+
+    long pingTimestamp() {
+        return System.currentTimeMillis();
     }
 
     /**
@@ -928,7 +949,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         if (transmissionBandwidth < this.outgoingPackets.peek().getSize()) {
             return;
         }
-        RakDatagramPacket datagram = RakDatagramPacket.newInstance();
+        RakDatagramPacket datagram = this.createDatagramPacket();
         datagram.setSendTime(curTime);
         EncapsulatedPacket packet;
 
@@ -946,7 +967,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             if (!datagram.tryAddPacket(packet, mtuSize)) {
                 this.sendDatagram(ctx, datagram, curTime);
 
-                datagram = RakDatagramPacket.newInstance();
+                datagram = this.createDatagramPacket();
                 datagram.setSendTime(curTime);
                 if (!datagram.tryAddPacket(packet, mtuSize)) {
                     throw new IllegalArgumentException("Packet too large to fit in MTU (size: " + packet.getSize() + ", MTU: " + mtuSize + ")");
@@ -964,7 +985,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private void sendImmediate(ChannelHandlerContext ctx, EncapsulatedPacket[] packets) {
         long curTime = this.clock.getAsLong();
         for (EncapsulatedPacket packet : packets) {
-            RakDatagramPacket datagram = RakDatagramPacket.newInstance();
+            RakDatagramPacket datagram = this.createDatagramPacket();
             datagram.setSendTime(curTime);
             if (!datagram.tryAddPacket(packet, this.getMtu())) {
                 throw new IllegalArgumentException("Packet too large to fit in MTU (size: " + packet.getSize() + ", MTU: " + this.getMtu() + ")");
@@ -1063,9 +1084,8 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         // Now create the packets.
         EncapsulatedPacket[] packets = new EncapsulatedPacket[buffers.length];
         for (int i = 0, parts = buffers.length; i < parts; i++) {
-            EncapsulatedPacket packet = EncapsulatedPacket.newInstance();
+            EncapsulatedPacket packet = this.createEncapsulatedPacket();
             packet.setBuffer(buffers[i]);
-            packet.setNeedsBAS(true);
             packet.setOrderingChannel((short) orderingChannel);
             packet.setOrderingIndex(orderingIndex);
             // packet.setSequenceIndex(sequencingIndex);
@@ -1175,8 +1195,8 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     public void recalculatePongTime(long pingTime) {
         if (this.currentPingTime == pingTime) {
-            this.lastPingTime = this.currentPingTime;
-            this.lastPongTime = System.currentTimeMillis();
+            this.lastPingTime = this.currentPingSentAt;
+            this.lastPongTime = this.clock.getAsLong();
         }
     }
 
@@ -1228,5 +1248,17 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     public Channel getChannel() {
         return channel;
+    }
+
+    RakDatagramPacket createDatagramPacket() {
+        RakDatagramPacket datagram = RakDatagramPacket.newInstance();
+        datagram.setFlag(FLAG_NEEDS_B_AND_AS);
+        return datagram;
+    }
+
+    EncapsulatedPacket createEncapsulatedPacket() {
+        EncapsulatedPacket packet = EncapsulatedPacket.newInstance();
+        packet.setNeedsBAS(true);
+        return packet;
     }
 }

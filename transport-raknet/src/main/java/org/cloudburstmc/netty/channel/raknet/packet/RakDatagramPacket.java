@@ -32,7 +32,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
 
     private final ObjectPool.Handle<RakDatagramPacket> handle;
     private final List<EncapsulatedPacket> packets = new ArrayList<>();
-    private byte flags = FLAG_VALID | FLAG_NEEDS_B_AND_AS;
+    private byte flags = FLAG_VALID;
     // Session-local monotonic milliseconds, not wire timestamps.
     private long sendTime;
     private long nextSend;
@@ -73,7 +73,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
         }
 
         this.packets.add(packet);
-        if (packet.isSplit()) {
+        if (packet.isSplit() && packet.getPartIndex() > 0) {
             flags |= FLAG_CONTINUOUS_SEND;
         }
         return true;
@@ -90,7 +90,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
             packet.release();
         }
         this.packets.clear();
-        this.flags = FLAG_VALID | FLAG_NEEDS_B_AND_AS;
+        this.flags = FLAG_VALID;
         this.sendTime = 0;
         this.nextSend = 0;
         this.sequenceIndex = -1;
@@ -117,6 +117,10 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
 
     public void setFlags(byte flags) {
         this.flags = flags;
+    }
+
+    public void setFlag(byte flag) {
+        this.flags |= flag;
     }
 
     public long getSendTime() {

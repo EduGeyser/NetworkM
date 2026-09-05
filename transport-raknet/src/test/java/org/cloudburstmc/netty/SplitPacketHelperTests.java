@@ -84,6 +84,25 @@ public class SplitPacketHelperTests {
     }
 
     @Test
+    public void sparsePartsKeepIdentityAndEnforceThePartLimit() {
+        SplitPacketHelper helper = new SplitPacketHelper(0, 8192);
+        EncapsulatedPacket sparse = part(8192, 8191, 1);
+        try {
+            Assertions.assertTrue(helper.matches(sparse));
+            Assertions.assertNull(helper.add(sparse, ALLOC));
+            Assertions.assertEquals(1, helper.getReassembledSize());
+            sparse.setPartId(256);
+            Assertions.assertFalse(helper.matches(sparse));
+            sparse.setPartIndex(8192);
+            Assertions.assertThrows(IllegalArgumentException.class, () -> helper.add(sparse, ALLOC));
+            Assertions.assertThrows(IllegalArgumentException.class, () -> new SplitPacketHelper(0, 8193));
+        } finally {
+            sparse.release();
+            helper.release();
+        }
+    }
+
+    @Test
     public void outOfOrderPartsAndDuplicatesReassembleOnce() {
         SplitPacketHelper helper = new SplitPacketHelper(0, 3);
         EncapsulatedPacket last = part(3, 2, 3);

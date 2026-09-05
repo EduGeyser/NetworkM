@@ -261,7 +261,7 @@ public class DefaultRakSessionConfig extends DefaultChannelConfig implements Rak
     private void notifySession(RakSessionConfigUpdate update) {
         if (this.channel instanceof RakChannel) {
             ChannelPipeline pipeline = ((RakChannel) this.channel).rakPipeline();
-            if (pipeline != null) {
+            if (pipeline != null && pipeline.channel().isRegistered()) {
                 pipeline.fireUserEventTriggered(update);
             }
         }

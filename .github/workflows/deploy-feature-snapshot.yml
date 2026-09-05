@@ -1,9 +1,7 @@
 name: Deploy Feature Snapshot
 
 on:
-  push:
-    branches:
-      - 'feature-snapshot/**'
+  workflow_dispatch:
 
 jobs:
   version:

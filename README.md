@@ -1,54 +1,36 @@
-# Network
+# NetworkM
 
-### Introduction
+NetworkM combines the `develop` branch of Network with the `master` branch of the
+EduGeyser NetworkCompatible fork. It provides one RakNet implementation and a
+separate NetherNet transport.
 
-Network components used within Cloudburst projects.
+| Module | Java target | Packages |
+| --- | --- | --- |
+| `transport-raknet` | 8 | `org.cloudburstmc.netty` |
+| `transport-nethernet` | 17 | `dev.kastle.netty` |
 
-### Components
+Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
+Gradle provisions the module toolchains. Both modules use Netty 4.1.130.Final.
 
-- [`netty-transport-raknet`](transport-raknet/README.md) - A RakNet implementation based on Netty patterns
+Artifacts use `dev.kastle.netty:netty-transport-raknet` and
+`dev.kastle.netty:netty-transport-nethernet`. The group can be changed with
+`-PnetworkGroup=your.group`; Java packages do not change. The local version is
+`1.7.4-networkm-SNAPSHOT`, separate from the source fork's published releases.
+`NETWORK_PUBLISH_VERSION` overrides the version for either publishing backend.
 
-### Maven
+Use only one RakNet artifact at runtime. Network and NetworkCompatible use the
+same RakNet Java packages, even though their Maven groups differ.
 
-##### Repository:
+See [RakNet configuration](transport-raknet/README.md) and
+[NetherNet setup](transport-nethernet/README.md). NetherNet still requires the
+`dev.kastle.webrtc:webrtc-java:1.0.4-edu.3` fork and matching native libraries.
+The custom Maven repository is configured in the root build.
 
-For releases, use Maven Central.
-Snapshots can be found in the repository below.
+Release and feature-snapshot publication are manual workflows. The generic
+Maven deployment workflow remains reusable. Publishing requires the relevant
+repository credentials and signing keys; ordinary builds do not publish.
+Historical POM source links are retained from the upstream forks until a hosted
+NetworkM repository is selected.
 
-<details open>
-<summary>Gradle (Kotlin DSL)</summary>
-
-```kotlin
-repositories {
-    maven("https://repo.opencollab.dev/maven-snapshots/")
-}
-```
-
-</details>
-<details>
-<summary>Gradle</summary>
-
-```groovy
-repositories {
-    maven {
-        url 'https://repo.opencollab.dev/maven-snapshots/'
-    }
-}
-```
-
-</details>
-<details>
-<summary>Maven</summary>
-
-```xml
-
-<repositories>
-  <repository>
-    <id>opencollab-snapshots</id>
-    <url>https://repo.opencollab.dev/maven-snapshots/</url>
-  </repository>
-</repositories>
-```
-
-</details>
-
+`codec-query` and `codec-rcon` source trees are retained for reference. They were
+not included in either active Gradle build and are not included here.

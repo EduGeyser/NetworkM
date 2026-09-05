@@ -37,6 +37,93 @@ import static org.junit.jupiter.api.Assertions.*;
 class RakSessionCodecTests {
     private static final int DATA_ID = 0xfe;
 
+    @Test
+    void sequentialAcksUseOneRangeAndKeepGapsSeparate() {
+        try (Session s = new Session(false, 10000)) {
+            s.receive();
+            s.receive();
+            s.receive();
+            s.sequence = 5;
+            s.receive();
+            s.transport.runPendingTasks();
+            ByteBuf ack = s.transport.readOutbound();
+            try {
+                assertEquals((FLAG_VALID | FLAG_ACK) & 0xff, ack.readUnsignedByte());
+                assertEquals(2, ack.readUnsignedShort());
+                assertFalse(ack.readBoolean());
+                assertEquals(0, ack.readUnsignedMediumLE());
+                assertEquals(2, ack.readUnsignedMediumLE());
+                assertTrue(ack.readBoolean());
+                assertEquals(5, ack.readUnsignedMediumLE());
+                assertFalse(ack.isReadable());
+            } finally {
+                ack.release();
+            }
+            ByteBuf nack = s.transport.readOutbound();
+            try {
+                assertEquals((FLAG_VALID | FLAG_NACK) & 0xff, nack.readUnsignedByte());
+                assertEquals(1, nack.readUnsignedShort());
+                assertFalse(nack.readBoolean());
+                assertEquals(3, nack.readUnsignedMediumLE());
+                assertEquals(4, nack.readUnsignedMediumLE());
+            } finally {
+                nack.release();
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void compatibilityFlagsPreserveDatagramAndFragmentSemantics(boolean compatible) {
+        try (Session s = new Session(false, 10000, true, compatible)) {
+            EncapsulatedPacket packet = s.codec.createEncapsulatedPacket();
+            packet.setBuffer(Unpooled.buffer(1).writeByte(DATA_ID));
+            packet.setReliability(RakReliability.RELIABLE);
+            packet.setSplit(true);
+            packet.setPartIndex(0);
+            RakDatagramPacket first = s.codec.createDatagramPacket();
+            assertTrue(first.tryAddPacket(packet, 1400));
+            try {
+                assertEquals(!compatible, packet.isNeedsBAS());
+                assertEquals((FLAG_VALID | FLAG_NEEDS_B_AND_AS) & 0xff, first.getFlags() & 0xff);
+            } finally {
+                first.release();
+            }
+            RakDatagramPacket later = s.codec.createDatagramPacket();
+            assertTrue(later.tryAddPacket(part(0, 1), 1400));
+            try {
+                assertNotEquals(0, later.getFlags() & FLAG_CONTINUOUS_SEND);
+            } finally {
+                later.release();
+            }
+        }
+    }
+
+    @Test
+    void compatiblePingUsesItsWireTimestampWithoutBreakingElapsedTime() {
+        try (Session s = new Session(false, 10000, true, true)) {
+            s.write(100, RakPriority.IMMEDIATE);
+            s.write(100, RakPriority.IMMEDIATE);
+            s.readData();
+            long before = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+            s.codec.writePing(s.transport.pipeline().context(RakSessionCodec.NAME), 0);
+            RakDatagramPacket ping = s.transport.readOutbound();
+            long timestamp;
+            try {
+                ByteBuf data = ping.getPackets().get(0).getBuffer();
+                assertEquals(ID_CONNECTED_PING, data.readUnsignedByte());
+                timestamp = data.readLong();
+                assertTrue(timestamp >= before);
+                assertTrue(timestamp <= TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+            } finally {
+                ping.release();
+            }
+            s.advance(25);
+            s.codec.recalculatePongTime(timestamp);
+            assertEquals(25, s.codec.getPing());
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void autoFlushDefaultsOffForServerAndClientSessions(boolean client) {
@@ -454,6 +541,10 @@ class RakSessionCodecTests {
         }
 
         Session(Boolean autoFlush, long timeout, boolean client) {
+            this(autoFlush, timeout, client, false);
+        }
+
+        Session(Boolean autoFlush, long timeout, boolean client, boolean compatible) {
             this.transport.freezeTime();
             this.channel = (RakChannel) Proxy.newProxyInstance(RakChannel.class.getClassLoader(),
                     new Class<?>[]{RakChannel.class}, (proxy, method, args) -> {
@@ -466,11 +557,15 @@ class RakSessionCodecTests {
                         }
                     });
             this.config = client ? new DefaultRakClientConfig(this.channel) : new DefaultRakSessionConfig(this.channel);
+            if (client) {
+                this.config.setOption(RakChannelOption.RAK_COMPATIBILITY_MODE, compatible);
+            }
             if (autoFlush != null) {
                 this.config.setAutoFlush(autoFlush);
             }
             this.config.setSessionTimeout(timeout);
-            this.codec = new RakSessionCodec(this.channel, () -> this.now);
+            this.codec = compatible ? new RakSessionCodecCompatible(this.channel, () -> this.now)
+                    : new RakSessionCodec(this.channel, () -> this.now);
             ChannelPipeline pipeline = this.transport.pipeline();
             pipeline.addLast(RakAcknowledgeHandler.NAME, new RakAcknowledgeHandler(this.codec));
             pipeline.addLast(RakSessionCodec.NAME, this.codec);
@@ -494,7 +589,8 @@ class RakSessionCodecTests {
 
         ByteBuf write(int bytes, RakPriority priority) {
             ByteBuf payload = Unpooled.buffer(bytes).writeByte(DATA_ID).writeZero(bytes - 1);
-            this.transport.writeOneOutbound(new RakMessage(payload, RakReliability.RELIABLE, priority));
+            // Write within the current task; EmbeddedChannel.writeOneOutbound also drains tasks in newer Netty.
+            this.transport.pipeline().write(new RakMessage(payload, RakReliability.RELIABLE, priority));
             return payload;
         }
 
