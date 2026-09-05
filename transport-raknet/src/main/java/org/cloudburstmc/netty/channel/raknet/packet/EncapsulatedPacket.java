@@ -52,9 +52,13 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
 
     public void encode(CompositeByteBuf buffer) {
         RakReliability reliability = this.reliability;
+        int payloadSize = this.buffer.readableBytes();
+        if (payloadSize == 0 || payloadSize > (0xffff >>> 3)) {
+            throw new IllegalArgumentException("Encapsulated payload must contain 1 to 8191 bytes");
+        }
         ByteBuf header = buffer.alloc().ioBuffer(3 + reliability.getSize() + (this.split ? 10 : 0));
 
-        int flags = this.reliability.ordinal() << 5;
+        int flags = reliability.getWireId() << 5;
         if (this.split) {
             flags |= RakConstants.FLAG_PACKET_PAIR;
         }
@@ -62,7 +66,7 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
             flags |= RakConstants.FLAG_NEEDS_B_AND_AS;
         }
         header.writeByte(flags);
-        header.writeShort(this.buffer.readableBytes() << 3); // size
+        header.writeShort(payloadSize << 3); // size
 
         if (reliability.isReliable()) {
             header.writeMediumLE(this.reliabilityIndex);
@@ -88,7 +92,7 @@ public class EncapsulatedPacket extends AbstractReferenceCounted {
     }
 
     public void decode(ByteBuf buf) {
-        byte flags = buf.readByte();
+        int flags = buf.readUnsignedByte();
         this.reliability = RakReliability.fromId(flags >>> 5);
         this.split = (flags & RakConstants.FLAG_PACKET_PAIR) != 0;
         this.needsBAS = (flags & RakConstants.FLAG_NEEDS_B_AND_AS) != 0;

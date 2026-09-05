@@ -28,19 +28,25 @@ public enum RakReliability {
     RELIABLE_ORDERED_WITH_ACK_RECEIPT(true, true, false, true),
     RELIABLE_SEQUENCED_WITH_ACK_RECEIPT(true, false, true, true);
 
-    private static final RakReliability[] VALUES = values();
+    private static final RakReliability[] VALUES = {
+            UNRELIABLE, UNRELIABLE_SEQUENCED, RELIABLE, RELIABLE_ORDERED,
+            RELIABLE_SEQUENCED, UNRELIABLE_WITH_ACK_RECEIPT,
+            RELIABLE_WITH_ACK_RECEIPT, RELIABLE_ORDERED_WITH_ACK_RECEIPT
+    };
 
     final boolean reliable;
     final boolean ordered;
     final boolean sequenced;
     final boolean withAckReceipt;
     final int size;
+    private final int wireId;
 
     RakReliability(boolean reliable, boolean ordered, boolean sequenced, boolean withAckReceipt) {
         this.reliable = reliable;
         this.ordered = ordered;
         this.sequenced = sequenced;
         this.withAckReceipt = withAckReceipt;
+        this.wireId = sequenced ? (reliable ? 4 : 1) : ordered ? 3 : reliable ? 2 : 0;
 
         int size = 0;
         if (this.reliable) {
@@ -51,7 +57,7 @@ public enum RakReliability {
             size += 3;
         }
 
-        if (this.ordered) {
+        if (this.ordered || this.sequenced) {
             size += 4;
         }
         this.size = size;
@@ -66,6 +72,16 @@ public enum RakReliability {
 
     public int getSize() {
         return size;
+    }
+
+    /**
+     * Returns the base reliability encoded on the wire. Receipt requests are
+     * local sender state and do not change the peer's packet format.
+     *
+     * @return the three-bit reliability ID
+     */
+    public int getWireId() {
+        return wireId;
     }
 
     public boolean isOrdered() {

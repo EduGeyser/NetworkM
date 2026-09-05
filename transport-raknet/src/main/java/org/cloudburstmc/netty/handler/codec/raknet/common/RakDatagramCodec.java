@@ -19,9 +19,8 @@ package org.cloudburstmc.netty.handler.codec.raknet.common;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.handler.codec.MessageToMessageCodec;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.cloudburstmc.netty.channel.raknet.packet.EncapsulatedPacket;
 import org.cloudburstmc.netty.channel.raknet.packet.RakDatagramPacket;
 
@@ -32,29 +31,41 @@ import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 public class RakDatagramCodec extends MessageToMessageCodec<ByteBuf, RakDatagramPacket> {
     public static final String NAME = "rak-datagram-codec";
 
-    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakDatagramCodec.class);
-
     public RakDatagramCodec() {
     }
 
     @Override
     protected void encode(ChannelHandlerContext ctx, RakDatagramPacket packet, List<Object> out) throws Exception {
-        ByteBuf header = ctx.alloc().ioBuffer(4);
-        header.writeByte(packet.getFlags());
-        header.writeMediumLE(packet.getSequenceIndex());
+        if (packet.getPackets().isEmpty()) {
+            throw new IllegalArgumentException("A RakNet datagram must contain an encapsulated packet");
+        }
 
         // Use a composite buffer so we don't have to do any memory copying.
         CompositeByteBuf buf = ctx.alloc().compositeBuffer((packet.getPackets().size() * 2) + 1);
-        buf.addComponent(true, header);
+        boolean transferred = false;
+        try {
+            ByteBuf header = ctx.alloc().ioBuffer(4);
+            header.writeByte(packet.getFlags());
+            header.writeMediumLE(packet.getSequenceIndex());
+            buf.addComponent(true, header);
 
-        for (EncapsulatedPacket encapsulated : packet.getPackets()) {
-            encapsulated.encode(buf);
+            for (EncapsulatedPacket encapsulated : packet.getPackets()) {
+                encapsulated.encode(buf);
+            }
+            out.add(buf);
+            transferred = true;
+        } finally {
+            if (!transferred) {
+                buf.release();
+            }
         }
-        out.add(buf);
     }
 
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf buffer, List<Object> list) throws Exception {
+        if (!buffer.isReadable()) {
+            return;
+        }
         byte potentialFlags = buffer.getByte(buffer.readerIndex());
         if ((potentialFlags & FLAG_VALID) == 0) {
             // Not a RakNet datagram
@@ -68,23 +79,32 @@ public class RakDatagramCodec extends MessageToMessageCodec<ByteBuf, RakDatagram
             return;
         }
 
+        if (buffer.readableBytes() < 4) {
+            throw new CorruptedFrameException("Truncated RakNet datagram header");
+        }
+
         RakDatagramPacket packet = RakDatagramPacket.newInstance();
         try {
             packet.setFlags(buffer.readByte());
             packet.setSequenceIndex(buffer.readUnsignedMediumLE());
+            if (!buffer.isReadable()) {
+                throw new CorruptedFrameException("A RakNet datagram must contain an encapsulated packet");
+            }
             while (buffer.isReadable()) {
                 EncapsulatedPacket encapsulated = EncapsulatedPacket.newInstance();
                 try {
                     encapsulated.decode(buffer);
+                    if (!encapsulated.getBuffer().isReadable()) {
+                        throw new CorruptedFrameException("An encapsulated packet must contain a payload");
+                    }
                     packet.getPackets().add(encapsulated.retain());
-                } catch (Throwable t) {
-                    log.error("Error decoding encapsulated packet", t); // TODO: this is just temporary for debugging
-                    throw t;
                 } finally {
                     encapsulated.release();
                 }
             }
             list.add(packet.retain());
+        } catch (IndexOutOfBoundsException cause) {
+            throw new CorruptedFrameException("Truncated encapsulated packet", cause);
         } finally {
             packet.release();
         }
