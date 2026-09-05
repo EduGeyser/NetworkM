@@ -17,6 +17,7 @@
 package org.cloudburstmc.netty.channel.raknet;
 
 import org.cloudburstmc.netty.channel.raknet.packet.RakDatagramPacket;
+import org.cloudburstmc.netty.util.RakSequence;
 
 import static org.cloudburstmc.netty.channel.raknet.RakConstants.*;
 
@@ -90,7 +91,8 @@ public class RakSlidingWindow {
             this.deviationRTT += d * (Math.abs(difference) - this.deviationRTT);
         }
 
-        boolean isNewCongestionControlPeriod = datagram.getSequenceIndex() > this.nextCongestionControlBlock;
+        boolean isNewCongestionControlPeriod = RakSequence.difference(datagram.getSequenceIndex(),
+                (int) this.nextCongestionControlBlock) > 0;
 
         if (isNewCongestionControlPeriod) {
             this.backoffThisBlock = false;

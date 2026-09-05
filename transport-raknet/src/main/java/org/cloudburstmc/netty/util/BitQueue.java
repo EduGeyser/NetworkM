@@ -16,6 +16,8 @@
 
 package org.cloudburstmc.netty.util;
 
+import java.util.Arrays;
+
 public class BitQueue {
 
     private long[] queue;
@@ -46,6 +48,52 @@ public class BitQueue {
         long bi = 1L << (this.head & 63);
         this.queue[by] ^= ((bit ? 0xFFFFFFFFFFFFFFFFL : 0) ^ this.queue[by]) & bi;
         this.head = (this.head + 1) & ((this.queue.length << 6) - 1);
+    }
+
+    /** Appends {@code count} copies of a bit, filling complete words in bulk. */
+    public void add(boolean bit, int count) {
+        if (count < 0) {
+            throw new IllegalArgumentException("count must not be negative");
+        }
+        if (count == 0) {
+            return;
+        }
+        long requiredCapacity = (long) this.size() + count + 1;
+        int capacity = this.queue.length << 6;
+        if (requiredCapacity > capacity) {
+            // The cursor arithmetic requires a positive power-of-two capacity.
+            if (requiredCapacity > 1 << 30) {
+                throw new IllegalArgumentException("Required queue capacity is too large");
+            }
+            this.resize(RakUtils.powerOfTwoCeiling((int) requiredCapacity));
+            capacity = this.queue.length << 6;
+        }
+
+        int firstCount = Math.min(count, capacity - this.head);
+        long value = bit ? -1L : 0L;
+        this.fill(this.head, firstCount, value);
+        if (firstCount < count) {
+            this.fill(0, count - firstCount, value);
+        }
+        this.head = (this.head + count) & (capacity - 1);
+    }
+
+    private void fill(int start, int count, long value) {
+        int word = start >>> 6;
+        int firstBits = Math.min(count, 64 - (start & 63));
+        long mask = (-1L >>> (64 - firstBits)) << (start & 63);
+        this.queue[word] = (this.queue[word] & ~mask) | (value & mask);
+        count -= firstBits;
+        word++;
+
+        int fullWords = count >>> 6;
+        Arrays.fill(this.queue, word, word + fullWords, value);
+        int lastBits = count & 63;
+        if (lastBits != 0) {
+            word += fullWords;
+            mask = (1L << lastBits) - 1;
+            this.queue[word] = (this.queue[word] & ~mask) | (value & mask);
+        }
     }
 
     private void resize(int capacity) {

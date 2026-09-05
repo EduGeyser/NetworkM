@@ -21,11 +21,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.cloudburstmc.netty.channel.raknet.packet.EncapsulatedPacket;
 import org.cloudburstmc.netty.channel.raknet.packet.RakDatagramPacket;
 import org.cloudburstmc.netty.channel.raknet.packet.RakMessage;
+import org.cloudburstmc.netty.util.RakSequence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Proxy;
+import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +39,295 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RakSessionCodecTests {
     private static final int DATA_ID = 0xfe;
+
+    @ParameterizedTest
+    @EnumSource(value = RakReliability.class, names = {"UNRELIABLE_SEQUENCED", "RELIABLE_SEQUENCED",
+            "UNRELIABLE_SEQUENCED_WITH_ACK_RECEIPT", "RELIABLE_SEQUENCED_WITH_ACK_RECEIPT"})
+    void sequencedWritesAdvancePerChannelAndResetAfterOrderedWrites(RakReliability reliability) {
+        try (Session s = new Session(false, 10000)) {
+            s.write(10, RakPriority.IMMEDIATE, reliability, 0);
+            s.write(10, RakPriority.IMMEDIATE, reliability, 0);
+            s.write(10, RakPriority.IMMEDIATE, reliability, 1);
+            s.write(10, RakPriority.IMMEDIATE, RakReliability.RELIABLE_ORDERED, 0);
+            s.write(10, RakPriority.IMMEDIATE, reliability, 0);
+            s.write(10, RakPriority.IMMEDIATE, reliability, 1);
+            List<Sent> sent = s.readData();
+            assertEquals(List.of(0, 1, 0, 0, 0, 1), sent.stream().map(packet -> packet.sequenceIndex).toList());
+            assertEquals(List.of(0, 0, 0, 0, 1, 0), sent.stream().map(packet -> packet.orderingIndex).toList());
+            assertEquals(List.of(0, 0, 1, 0, 0, 1), sent.stream().map(packet -> packet.orderingChannel).toList());
+        }
+    }
+
+    @Test
+    void sequencedWritesWrapBeforeTheNextOrderedBoundary() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            int[] sequenceWriteIndex = (int[]) getField(s.codec, "sequenceWriteIndex");
+            sequenceWriteIndex[0] = RakSequence.MASK - 1;
+            for (int i = 0; i < 3; i++) {
+                s.write(10, RakPriority.IMMEDIATE, RakReliability.UNRELIABLE_SEQUENCED);
+            }
+            assertEquals(List.of(RakSequence.MASK - 1, RakSequence.MASK, 0),
+                    s.readData().stream().map(packet -> packet.sequenceIndex).toList());
+            s.write(10, RakPriority.IMMEDIATE, RakReliability.RELIABLE_ORDERED);
+            s.write(10, RakPriority.IMMEDIATE, RakReliability.UNRELIABLE_SEQUENCED);
+            List<Sent> afterBoundary = s.readData();
+            assertEquals(1, afterBoundary.get(1).orderingIndex);
+            assertEquals(0, afterBoundary.get(1).sequenceIndex);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sequencedReadsDropOlderAndDuplicateValuesPerChannel(boolean reliable) {
+        try (Session s = new Session(false, 10000)) {
+            s.receive(sequenced(reliable, 0, 0, 0, 100));
+            s.receive(sequenced(reliable, 1, 0, 2, 102));
+            EncapsulatedPacket stale = sequenced(reliable, 2, 0, 1, 101);
+            ByteBuf staleBuffer = stale.getBuffer();
+            s.receive(stale);
+            s.receive(sequenced(reliable, 3, 0, 2, 202));
+            s.receive(sequenced(reliable, 4, 0, 3, 103));
+            EncapsulatedPacket otherChannel = sequenced(reliable, 5, 0, 0, 200);
+            otherChannel.setOrderingChannel((short) 1);
+            s.receive(otherChannel);
+            assertEquals(List.of(100, 102, 103, 200), s.readOrdered());
+            assertEquals(0, staleBuffer.refCnt());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void queuedSequencedPacketsPrecedeTheirOrderedBoundary(boolean reliable) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            s.receive(ordered(0, 1));
+            s.receive(sequenced(reliable, 1, 1, 2, 102));
+            s.receive(sequenced(reliable, 2, 1, 1, 101));
+            s.receive(sequenced(reliable, 3, 1, 2, 102));
+            assertTrue(s.readOrdered().isEmpty(), "A missing ordered predecessor also blocks sequenced data");
+            s.receive(ordered(4, 0));
+            assertEquals(List.of(0, 101, 102, 1), s.readOrdered());
+            s.receive(sequenced(reliable, 5, 2, 0, 200));
+            s.receive(sequenced(reliable, 6, 1, 3, 103));
+            s.receive(sequenced(reliable, 7, 3, 0, 300));
+            assertEquals(List.of(200), s.readOrdered(), "An old ordering index stays stale even with a newer sequence");
+            s.receive(ordered(8, 2));
+            assertEquals(List.of(2, 300), s.readOrdered());
+            assertEquals(0L, getField(s.codec, "orderingQueuedBytes"));
+        }
+    }
+
+    @Test
+    void queuedSequenceNumbersHaveATotalOrderAcrossTheWireSpace() {
+        try (Session s = new Session(false, 10000)) {
+            s.receive(sequenced(false, 0, 1, 0xc00000, 102));
+            s.receive(sequenced(false, 0, 1, 0, 100));
+            s.receive(sequenced(false, 0, 1, 0x600000, 101));
+            s.receive(ordered(0, 1));
+            s.receive(ordered(1, 0));
+            assertEquals(List.of(0, 100, 101, 102, 1), s.readOrdered());
+        }
+    }
+
+    @Test
+    void queuedSequencedPacketsShareTheOrderingBudgetAndAreReleasedOnClose() {
+        try (Session s = new Session(false, 10000)) {
+            s.config.setMaxOrderingQueuedBytes(4);
+            EncapsulatedPacket first = sequenced(false, 0, 1, 0, 100);
+            ByteBuf firstBuffer = first.getBuffer();
+            s.receive(first);
+            assertTrue(s.transport.isOpen());
+            assertEquals(1, firstBuffer.refCnt());
+            EncapsulatedPacket second = sequenced(false, 0, 1, 1, 101);
+            ByteBuf secondBuffer = second.getBuffer();
+            s.receive(second);
+            assertFalse(s.transport.isOpen());
+            assertEquals(0, firstBuffer.refCnt());
+            assertEquals(0, secondBuffer.refCnt());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sequencedReceiveAndOrderedBoundariesSurviveWrapping(boolean reliable) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            ((long[]) getField(s.codec, "orderReadIndex"))[0] = RakSequence.MASK;
+            ((int[]) getField(s.codec, "sequenceReadIndex"))[0] = RakSequence.MASK - 1;
+            s.receive(sequenced(reliable, 0, RakSequence.MASK, RakSequence.MASK - 1, 10));
+            s.receive(sequenced(reliable, 1, RakSequence.MASK, 0, 12));
+            s.receive(sequenced(reliable, 2, RakSequence.MASK, RakSequence.MASK, 11));
+            s.receive(ordered(3, 0));
+            s.receive(sequenced(reliable, 4, 0, 0, 20));
+            s.receive(ordered(5, RakSequence.MASK));
+            s.receive(sequenced(reliable, 6, 1, 0, 30));
+            assertEquals(List.of(10, 12, RakSequence.MASK, 20, 0, 30), s.readOrdered());
+            assertEquals(0L, getField(s.codec, "orderingQueuedBytes"));
+        }
+    }
+
+    @Test
+    void splittingSequencedReceiptMessagesPreservesOneSequenceAndUpgradesReliability() {
+        try (Session s = new Session(false, 10000)) {
+            s.write(4000, RakPriority.IMMEDIATE, RakReliability.UNRELIABLE_SEQUENCED_WITH_ACK_RECEIPT);
+            RakDatagramPacket datagram;
+            int parts = 0;
+            while ((datagram = s.transport.readOutbound()) != null) {
+                try {
+                    for (EncapsulatedPacket packet : datagram.getPackets()) {
+                        assertEquals(RakReliability.RELIABLE_SEQUENCED_WITH_ACK_RECEIPT, packet.getReliability());
+                        assertEquals(0, packet.getSequenceIndex());
+                        assertEquals(0, packet.getOrderingIndex());
+                        assertTrue(packet.isSplit());
+                        parts++;
+                    }
+                } finally {
+                    datagram.release();
+                }
+            }
+            assertTrue(parts > 1);
+            s.write(10, RakPriority.IMMEDIATE, RakReliability.UNRELIABLE_SEQUENCED);
+            assertEquals(1, s.readData().get(0).sequenceIndex);
+        }
+    }
+
+    private static EncapsulatedPacket sequenced(boolean reliable, int reliabilityIndex, int orderingIndex,
+                                                int sequenceIndex, int value) {
+        EncapsulatedPacket packet = EncapsulatedPacket.newInstance();
+        packet.setReliability(reliable ? RakReliability.RELIABLE_SEQUENCED : RakReliability.UNRELIABLE_SEQUENCED);
+        packet.setReliabilityIndex(reliabilityIndex);
+        packet.setOrderingIndex(orderingIndex);
+        packet.setSequenceIndex(sequenceIndex);
+        packet.setBuffer(Unpooled.buffer(4).writeInt(value));
+        return packet;
+    }
+
+    @Test
+    void outgoingCountersAndAcknowledgementsSurviveTheirWireWrap() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            setField(s.codec, "datagramWriteIndex", (long) RakSequence.MASK - 1);
+            setField(s.codec, "reliabilityWriteIndex", RakSequence.MASK - 1);
+            int[] orderWriteIndex = (int[]) getField(s.codec, "orderWriteIndex");
+            orderWriteIndex[0] = RakSequence.MASK - 1;
+            ByteBuf first = s.write(10, RakPriority.IMMEDIATE, RakReliability.RELIABLE_ORDERED);
+            ByteBuf second = s.write(10, RakPriority.IMMEDIATE, RakReliability.RELIABLE_ORDERED);
+            ByteBuf third = s.write(10, RakPriority.IMMEDIATE, RakReliability.RELIABLE_ORDERED);
+            List<Sent> sent = s.readData();
+            assertEquals(3, sent.size());
+            int[] expected = {RakSequence.MASK - 1, RakSequence.MASK, 0};
+            for (int i = 0; i < expected.length; i++) {
+                assertEquals(expected[i], sent.get(i).sequence);
+                assertEquals(expected[i], sent.get(i).reliabilityIndex);
+                assertEquals(expected[i], sent.get(i).orderingIndex);
+            }
+            s.ack(RakSequence.MASK - 1, RakSequence.MASK, false);
+            s.ack(0, false);
+            assertEquals(0, first.refCnt());
+            assertEquals(0, second.refCnt());
+            assertEquals(0, third.refCnt());
+            s.advance(2000);
+            assertTrue(s.readData().isEmpty());
+        }
+    }
+
+    @Test
+    void inboundReorderingAndDuplicateDetectionSurviveTheWireWrap() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            setField(s.codec, "datagramReadIndex", RakSequence.MASK - 1);
+            setField(s.codec, "reliabilityReadIndex", RakSequence.MASK - 1);
+            long[] orderReadIndex = (long[]) getField(s.codec, "orderReadIndex");
+            orderReadIndex[0] = RakSequence.MASK - 1;
+
+            s.sequence = 1;
+            s.receive(ordered(1, 1));
+            s.sequence = RakSequence.MASK;
+            s.receive(ordered(0, 0));
+            s.sequence = RakSequence.MASK - 1;
+            s.receive(ordered(RakSequence.MASK - 1, RakSequence.MASK - 1));
+            s.sequence = 0;
+            s.receive(ordered(RakSequence.MASK, RakSequence.MASK));
+            s.receive(ordered(RakSequence.MASK, RakSequence.MASK));
+            assertEquals(List.of(RakSequence.MASK - 1, RakSequence.MASK, 0, 1), s.readOrdered());
+            assertEquals(2, getField(s.codec, "reliabilityReadIndex"));
+            assertEquals(0L, getField(s.codec, "orderingQueuedBytes"));
+
+            s.transport.runPendingTasks();
+            ByteBuf ack = s.transport.readOutbound();
+            ack.release();
+            ByteBuf nack = s.transport.readOutbound();
+            try {
+                assertEquals((FLAG_VALID | FLAG_NACK) & 0xff, nack.readUnsignedByte());
+                assertEquals(2, nack.readUnsignedShort());
+                assertFalse(nack.readBoolean());
+                assertEquals(RakSequence.MASK - 1, nack.readUnsignedMediumLE());
+                assertEquals(RakSequence.MASK, nack.readUnsignedMediumLE());
+                assertTrue(nack.readBoolean());
+                assertEquals(0, nack.readUnsignedMediumLE());
+            } finally {
+                nack.release();
+            }
+        }
+    }
+
+    @Test
+    void repeatedOrderingIndicesDoNotBlockFollowingPackets() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            s.receive(ordered(0, 1));
+            EncapsulatedPacket repeated = ordered(1, 1);
+            ByteBuf repeatedBuffer = repeated.getBuffer();
+            s.receive(repeated);
+            s.receive(ordered(2, 2));
+            s.receive(ordered(3, 0));
+            s.receive(ordered(4, 3));
+            assertEquals(List.of(0, 1, 2, 3), s.readOrdered());
+            assertEquals(0, repeatedBuffer.refCnt());
+            assertEquals(0L, getField(s.codec, "orderingQueuedBytes"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void broadAcknowledgementRangesOnlyProcessRetainedDatagrams(boolean nack) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            setField(s.codec, "datagramWriteIndex", 1000000L);
+            ByteBuf first = s.write(10, RakPriority.IMMEDIATE);
+            ByteBuf second = s.write(10, RakPriority.IMMEDIATE);
+            List<Sent> original = s.readData();
+            s.ack(0, 1000001, nack);
+            List<Sent> resent = s.readData();
+            if (nack) {
+                assertEquals(2, resent.size());
+                assertEquals(List.of(original.get(0).reliabilityIndex, original.get(1).reliabilityIndex).stream().sorted().toList(),
+                        resent.stream().map(packet -> packet.reliabilityIndex).sorted().toList());
+                for (Sent packet : resent) {
+                    s.ack(packet.sequence, false);
+                }
+            } else {
+                assertTrue(resent.isEmpty());
+            }
+            assertEquals(0, first.refCnt());
+            assertEquals(0, second.refCnt());
+        }
+    }
+
+    private static Object getField(Object target, String name) throws Exception {
+        Field field = RakSessionCodec.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Field field = RakSessionCodec.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
+    private static EncapsulatedPacket ordered(int reliabilityIndex, int orderingIndex) {
+        EncapsulatedPacket packet = EncapsulatedPacket.newInstance();
+        packet.setReliability(RakReliability.RELIABLE_ORDERED);
+        packet.setReliabilityIndex(reliabilityIndex);
+        packet.setOrderingIndex(orderingIndex);
+        packet.setBuffer(Unpooled.buffer(4).writeInt(orderingIndex));
+        return packet;
+    }
 
     @Test
     void sequentialAcksUseOneRangeAndKeepGapsSeparate() {
@@ -518,11 +810,17 @@ class RakSessionCodecTests {
     private static class Sent {
         final int sequence;
         final int reliabilityIndex;
+        final int orderingIndex;
+        final int sequenceIndex;
+        final int orderingChannel;
         final int bytes;
 
         Sent(RakDatagramPacket datagram, EncapsulatedPacket packet) {
             this.sequence = datagram.getSequenceIndex();
             this.reliabilityIndex = packet.getReliabilityIndex();
+            this.orderingIndex = packet.getOrderingIndex();
+            this.sequenceIndex = packet.getSequenceIndex();
+            this.orderingChannel = packet.getOrderingChannel();
             this.bytes = packet.getBuffer().readableBytes();
         }
     }
@@ -588,9 +886,17 @@ class RakSessionCodecTests {
         }
 
         ByteBuf write(int bytes, RakPriority priority) {
+            return this.write(bytes, priority, RakReliability.RELIABLE);
+        }
+
+        ByteBuf write(int bytes, RakPriority priority, RakReliability reliability) {
+            return this.write(bytes, priority, reliability, 0);
+        }
+
+        ByteBuf write(int bytes, RakPriority priority, RakReliability reliability, int orderingChannel) {
             ByteBuf payload = Unpooled.buffer(bytes).writeByte(DATA_ID).writeZero(bytes - 1);
             // Write within the current task; EmbeddedChannel.writeOneOutbound also drains tasks in newer Netty.
-            this.transport.pipeline().write(new RakMessage(payload, RakReliability.RELIABLE, priority));
+            this.transport.pipeline().write(new RakMessage(payload, reliability, priority, orderingChannel));
             return payload;
         }
 
@@ -604,10 +910,30 @@ class RakSessionCodecTests {
         }
 
         void ack(int sequence, boolean nack) {
-            ByteBuf buffer = Unpooled.buffer(7);
+            this.ack(sequence, sequence, nack);
+        }
+
+        void ack(int start, int end, boolean nack) {
+            ByteBuf buffer = Unpooled.buffer(10);
             buffer.writeByte(FLAG_VALID | (nack ? FLAG_NACK : FLAG_ACK));
-            buffer.writeShort(1).writeBoolean(true).writeMediumLE(sequence);
+            buffer.writeShort(1).writeBoolean(start == end).writeMediumLE(start);
+            if (start != end) {
+                buffer.writeMediumLE(end);
+            }
             this.transport.writeInbound(buffer);
+        }
+
+        List<Integer> readOrdered() {
+            List<Integer> indices = new ArrayList<>();
+            EncapsulatedPacket packet;
+            while ((packet = this.transport.readInbound()) != null) {
+                try {
+                    indices.add(packet.getBuffer().readInt());
+                } finally {
+                    packet.release();
+                }
+            }
+            return indices;
         }
 
         List<Sent> readData() {

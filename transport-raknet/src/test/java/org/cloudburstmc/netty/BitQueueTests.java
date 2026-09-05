@@ -19,12 +19,71 @@ package org.cloudburstmc.netty;
 import org.cloudburstmc.netty.util.BitQueue;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class BitQueueTests {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void bulkAppendsMatchScalarWritesAcrossWrapAndGrowth(boolean value) {
+        int[] offsets = {0, 1, 7, 63, 64, 65, 127};
+        int[] counts = {0, 1, 2, 7, 8, 63, 64, 65, 127, 128, 129, 511, 512, 513, 8192};
+        for (boolean wrapped : new boolean[]{false, true}) {
+            for (int offset : offsets) {
+                for (int count : counts) {
+                    BitQueue bulk = new BitQueue(256);
+                    BitQueue scalar = new BitQueue(256);
+                    for (int i = 0; i < 255; i++) {
+                        bulk.add(i % 3 == 0);
+                        scalar.add(i % 3 == 0);
+                    }
+                    if (wrapped) {
+                        for (int i = 0; i < 137; i++) {
+                            bulk.poll();
+                            scalar.poll();
+                        }
+                        for (int i = 0; i < 64; i++) {
+                            bulk.add((i & 1) == 0);
+                            scalar.add((i & 1) == 0);
+                        }
+                    }
+                    for (int i = 0; i < offset; i++) {
+                        bulk.poll();
+                        scalar.poll();
+                    }
+
+                    bulk.add(value, count);
+                    for (int i = 0; i < count; i++) {
+                        scalar.add(value);
+                    }
+                    Assertions.assertEquals(scalar.size(), bulk.size());
+                    String scenario = "wrapped=" + wrapped + ", offset=" + offset + ", count=" + count;
+                    while (!scalar.isEmpty()) {
+                        Assertions.assertEquals(scalar.poll(), bulk.poll(), scenario);
+                    }
+                    Assertions.assertTrue(bulk.isEmpty());
+                }
+            }
+        }
+    }
+
+    @Test
+    public void invalidBulkCountsLeaveExistingBitsUntouched() {
+        BitQueue queue = new BitQueue(64);
+        queue.add(true);
+        queue.add(false);
+        Assertions.assertThrows(IllegalArgumentException.class, () -> queue.add(true, -1));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> queue.add(true, Integer.MAX_VALUE));
+        queue.add(false, 0);
+        Assertions.assertEquals(2, queue.size());
+        Assertions.assertTrue(queue.poll());
+        Assertions.assertFalse(queue.poll());
+    }
 
     @Test
     public void settingBitsWorksAcrossWordsAndAWrappedTail() {

@@ -41,6 +41,7 @@ import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
@@ -52,6 +53,20 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     public static final String NAME = "rak-session-codec";
 
     private static final long CONNECTED_PING_INTERVAL_MS = 2000;
+    private static final Comparator<OrderedPacket> ORDERING_COMPARATOR = (first, second) -> {
+        int order = Long.compare(first.orderingIndex(), second.orderingIndex());
+        if (order != 0) {
+            return order;
+        }
+        boolean firstSequenced = first.packet().getReliability().isSequenced();
+        boolean secondSequenced = second.packet().getReliability().isSequenced();
+        if (firstSequenced && secondSequenced) {
+            // Future ordering indices start at sequence zero; modular pairwise comparison is not transitive.
+            return Integer.compare(first.packet().getSequenceIndex(), second.packet().getSequenceIndex());
+        }
+        // Sequenced messages precede the ordered message that closes their ordering index.
+        return firstSequenced ? -1 : secondSequenced ? 1 : 0;
+    };
 
     private final RakChannel channel;
     private final LongSupplier clock;
@@ -78,11 +93,13 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private RakSlidingWindow slidingWindow;
     private int splitIndex;
     private int datagramReadIndex;
-    private int datagramWriteIndex;
+    private long datagramWriteIndex;
     private int reliabilityReadIndex;
     private int reliabilityWriteIndex;
-    private int[] orderReadIndex;
+    private long[] orderReadIndex;
     private int[] orderWriteIndex;
+    private int[] sequenceReadIndex;
+    private int[] sequenceWriteIndex;
 
     private RoundRobinArray<SplitPacketHelper> splitPackets;
     private int splitPacketCount;
@@ -90,7 +107,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private FastBinaryMinHeap<EncapsulatedPacket> outgoingPackets;
     private long[] outgoingPacketNextWeights;
-    private FastBinaryMinHeap<EncapsulatedPacket>[] orderingHeaps;
+    private PriorityQueue<OrderedPacket>[] orderingHeaps;
     private long currentPingTime = -1;
     private long currentPingSentAt;
     private long lastPingTime = -1;
@@ -145,13 +162,15 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.initHeapWeights();
 
         int maxChannels = this.channel.config().getOption(RakChannelOption.RAK_ORDERING_CHANNELS);
-        this.orderReadIndex = new int[maxChannels];
+        this.orderReadIndex = new long[maxChannels];
         this.orderWriteIndex = new int[maxChannels];
+        this.sequenceReadIndex = new int[maxChannels];
+        this.sequenceWriteIndex = new int[maxChannels];
 
         // Noinspection unchecked
-        this.orderingHeaps = new FastBinaryMinHeap[maxChannels];
+        this.orderingHeaps = new PriorityQueue[maxChannels];
         for (int i = 0; i < maxChannels; i++) {
-            orderingHeaps[i] = new FastBinaryMinHeap<>(64);
+            orderingHeaps[i] = new PriorityQueue<>(64, ORDERING_COMPARATOR);
         }
 
         this.outgoingPackets = new FastBinaryMinHeap<>(8);
@@ -209,15 +228,14 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             this.sentDatagrams.clear();
         }
 
-        FastBinaryMinHeap<EncapsulatedPacket>[] orderingHeaps = this.orderingHeaps;
+        PriorityQueue<OrderedPacket>[] orderingHeaps = this.orderingHeaps;
         this.orderingHeaps = null;
         if (orderingHeaps != null) {
-            for (FastBinaryMinHeap<EncapsulatedPacket> orderingHeap : orderingHeaps) {
-                EncapsulatedPacket packet;
+            for (PriorityQueue<OrderedPacket> orderingHeap : orderingHeaps) {
+                OrderedPacket packet;
                 while ((packet = orderingHeap.poll()) != null) {
-                    packet.release();
+                    packet.packet().release();
                 }
-                orderingHeap.release();
             }
         }
 
@@ -406,17 +424,24 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         this.slidingWindow.onPacketReceived(packet.getSendTime());
 
-        int prevSequenceIndex = this.datagramReadIndex;
-        if (prevSequenceIndex <= packet.getSequenceIndex()) {
-            this.datagramReadIndex = packet.getSequenceIndex() + 1;
-        }
-
-        int missedDatagrams = packet.getSequenceIndex() - prevSequenceIndex;
-        if (missedDatagrams > 0) {
-            this.outgoingNaks.offer(new IntRange(packet.getSequenceIndex() - missedDatagrams, packet.getSequenceIndex() - 1));
-        }
-
         int sequenceIndex = packet.getSequenceIndex();
+        int prevSequenceIndex = this.datagramReadIndex;
+        int missedDatagrams = RakSequence.difference(sequenceIndex, prevSequenceIndex);
+        if (missedDatagrams >= 0) {
+            this.datagramReadIndex = (sequenceIndex + 1) & RakSequence.MASK;
+        }
+        if (missedDatagrams > 0) {
+            if (sequenceIndex < prevSequenceIndex) {
+                // ACK ranges cannot wrap, even though their sequence numbers can.
+                this.outgoingNaks.offer(new IntRange(prevSequenceIndex, RakSequence.MASK));
+                if (sequenceIndex > 0) {
+                    this.outgoingNaks.offer(new IntRange(0, sequenceIndex - 1));
+                }
+            } else {
+                this.outgoingNaks.offer(new IntRange(prevSequenceIndex, sequenceIndex - 1));
+            }
+        }
+
         IntRange lastAck = this.outgoingAcks.peekLast();
         if (lastAck != null && lastAck.end == sequenceIndex - 1) {
             lastAck.end = sequenceIndex;
@@ -432,7 +457,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 break;
             }
             if (encapsulated.getReliability().isReliable()) {
-                int missed = encapsulated.getReliabilityIndex() - this.reliabilityReadIndex;
+                int missed = RakSequence.difference(encapsulated.getReliabilityIndex(), this.reliabilityReadIndex);
                 if (missed > 0) {
                     if (missed < this.reliableDatagramQueue.size()) {
                         if (this.reliableDatagramQueue.get(missed)) {
@@ -443,14 +468,12 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                         }
                     } else {
                         int count = (missed - this.reliableDatagramQueue.size());
-                        for (int i = 0; i < count; i++) {
-                            this.reliableDatagramQueue.add(true);
-                        }
+                        this.reliableDatagramQueue.add(true, count);
 
                         this.reliableDatagramQueue.add(false);
                     }
                 } else if (missed == 0) {
-                    this.reliabilityReadIndex++;
+                    this.reliabilityReadIndex = (this.reliabilityReadIndex + 1) & RakSequence.MASK;
                     if (!this.reliableDatagramQueue.isEmpty()) {
                         this.reliableDatagramQueue.poll();
                     }
@@ -461,7 +484,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
                 while (!this.reliableDatagramQueue.isEmpty() && !this.reliableDatagramQueue.peek()) {
                     this.reliableDatagramQueue.poll();
-                    ++this.reliabilityReadIndex;
+                    this.reliabilityReadIndex = (this.reliabilityReadIndex + 1) & RakSequence.MASK;
                 }
             }
 
@@ -489,7 +512,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     private void checkForOrdered(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
-        if (packet.getReliability().isOrdered()) {
+        if (packet.getReliability().isOrdered() || packet.getReliability().isSequenced()) {
             this.onOrderedReceived(ctx, packet);
         } else {
             ctx.fireChannelRead(packet.retain());
@@ -497,31 +520,34 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     private void onOrderedReceived(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
-        FastBinaryMinHeap<EncapsulatedPacket> binaryHeap = this.orderingHeaps[packet.getOrderingChannel()];
-        if (this.orderReadIndex[packet.getOrderingChannel()] < packet.getOrderingIndex()) {
+        int orderingChannel = packet.getOrderingChannel();
+        PriorityQueue<OrderedPacket> binaryHeap = this.orderingHeaps[orderingChannel];
+        long expectedIndex = this.orderReadIndex[orderingChannel];
+        int distance = RakSequence.difference(packet.getOrderingIndex(), (int) expectedIndex);
+        if (distance > 0) {
             // Not next in line so add to queue.
-            binaryHeap.insert(packet.getOrderingIndex(), packet.retain());
+            binaryHeap.add(new OrderedPacket(expectedIndex + distance, packet.retain()));
             this.orderingQueuedBytes += packet.getBuffer().readableBytes();
             this.checkOrderingQueuedBytes();
             return;
-        } else if (this.orderReadIndex[packet.getOrderingChannel()] > packet.getOrderingIndex()) {
+        } else if (distance < 0) {
             // We already have this
             return;
         }
-        this.orderReadIndex[packet.getOrderingChannel()]++;
+        this.deliverOrdered(ctx, packet, orderingChannel);
 
-        // Can be handled
-        ctx.fireChannelRead(packet.retain());
-
-        EncapsulatedPacket queuedPacket;
-        while (this.state == RakState.CONNECTED && (queuedPacket = binaryHeap.peek()) != null) {
-            if (queuedPacket.getOrderingIndex() == this.orderReadIndex[packet.getOrderingChannel()]) {
+        OrderedPacket queued;
+        while (this.state == RakState.CONNECTED && (queued = binaryHeap.peek()) != null) {
+            EncapsulatedPacket queuedPacket = queued.packet();
+            int queuedDistance = Long.compare(queued.orderingIndex(), this.orderReadIndex[orderingChannel]);
+            if (queuedDistance <= 0) {
                 try {
-                    // We got the expected packet
                     binaryHeap.remove();
                     this.orderingQueuedBytes -= queuedPacket.getBuffer().readableBytes();
-                    this.orderReadIndex[packet.getOrderingChannel()]++;
-                    ctx.fireChannelRead(queuedPacket.retain());
+                    // Repeated ordering indices must not block the next gap from draining.
+                    if (queuedDistance == 0) {
+                        this.deliverOrdered(ctx, queuedPacket, orderingChannel);
+                    }
                 } finally {
                     queuedPacket.release();
                 }
@@ -530,6 +556,22 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 break;
             }
         }
+    }
+
+    private void deliverOrdered(ChannelHandlerContext ctx, EncapsulatedPacket packet, int orderingChannel) {
+        if (packet.getReliability().isSequenced()) {
+            if (RakSequence.difference(packet.getSequenceIndex(), this.sequenceReadIndex[orderingChannel]) < 0) {
+                return;
+            }
+            this.sequenceReadIndex[orderingChannel] = (packet.getSequenceIndex() + 1) & RakSequence.MASK;
+        } else {
+            this.orderReadIndex[orderingChannel]++;
+            this.sequenceReadIndex[orderingChannel] = 0;
+        }
+        ctx.fireChannelRead(packet.retain());
+    }
+
+    private record OrderedPacket(long orderingIndex, EncapsulatedPacket packet) {
     }
 
     private EncapsulatedPacket getReassembledPacket(EncapsulatedPacket splitPacket, ByteBufAllocator alloc) {
@@ -878,10 +920,34 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         IntRange range;
         while ((range = queue.poll()) != null) {
-            if (range.end < range.start || range.end >= this.datagramWriteIndex) {
+            if (range.start < 0 || range.end > RakSequence.MASK || range.end < range.start
+                    || RakSequence.difference(range.end, (int) this.datagramWriteIndex) >= 0) {
                 if (log.isDebugEnabled()) {
                     log.debug("Received {} with out-of-range indices [{}, {}] from {} (write index: {})",
                             nack ? "NACK" : "ACK", range.start, range.end, this.getRemoteAddress(), this.datagramWriteIndex);
+                }
+                continue;
+            }
+
+            if (range.end - range.start + 1 > this.sentDatagrams.size()) {
+                // Sparse or hostile ranges must cost at most a scan of the datagrams we retain.
+                Queue<RakDatagramPacket> acknowledged = new ArrayDeque<>();
+                Iterator<IntObjectMap.PrimitiveEntry<RakDatagramPacket>> iterator = this.sentDatagrams.entries().iterator();
+                while (iterator.hasNext()) {
+                    IntObjectMap.PrimitiveEntry<RakDatagramPacket> entry = iterator.next();
+                    if (entry.key() >= range.start && entry.key() <= range.end) {
+                        acknowledged.add(entry.value());
+                        iterator.remove();
+                    }
+                }
+                RakDatagramPacket datagram;
+                while ((datagram = acknowledged.poll()) != null) {
+                    this.resendQueue.removeTyped(datagram);
+                    if (nack) {
+                        this.onIncomingNack(ctx, datagram, curTime);
+                    } else {
+                        this.onIncomingAck(datagram, curTime);
+                    }
                 }
                 continue;
             }
@@ -902,7 +968,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private void onIncomingAck(RakDatagramPacket datagram, long curTime) {
         try {
-            this.slidingWindow.onAck(curTime, datagram, this.datagramReadIndex);
+            this.slidingWindow.onAck(curTime, datagram, this.datagramWriteIndex);
         } finally {
             datagram.release();
         }
@@ -1007,7 +1073,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
 
         int oldIndex = datagram.getSequenceIndex();
-        datagram.setSequenceIndex(this.datagramWriteIndex++);
+        datagram.setSequenceIndex((int) this.datagramWriteIndex++ & RakSequence.MASK);
 
         for (EncapsulatedPacket packet : datagram.getPackets()) {
             // Check if packet is reliable so it can be resent later if a NAK is received.
@@ -1052,6 +1118,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 case UNRELIABLE_SEQUENCED:
                     reliability = RakReliability.RELIABLE_SEQUENCED;
                     break;
+                case UNRELIABLE_SEQUENCED_WITH_ACK_RECEIPT:
+                    reliability = RakReliability.RELIABLE_SEQUENCED_WITH_ACK_RECEIPT;
+                    break;
                 case UNRELIABLE_WITH_ACK_RECEIPT:
                     reliability = RakReliability.RELIABLE_WITH_ACK_RECEIPT;
                     break;
@@ -1075,10 +1144,16 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
 
         // Set meta
-        // TODO: sequencing
         int orderingIndex = 0;
-        if (reliability.isOrdered()) {
-            orderingIndex = this.orderWriteIndex[orderingChannel]++;
+        int sequenceIndex = 0;
+        if (reliability.isSequenced()) {
+            orderingIndex = this.orderWriteIndex[orderingChannel];
+            sequenceIndex = this.sequenceWriteIndex[orderingChannel];
+            this.sequenceWriteIndex[orderingChannel] = (sequenceIndex + 1) & RakSequence.MASK;
+        } else if (reliability.isOrdered()) {
+            orderingIndex = this.orderWriteIndex[orderingChannel];
+            this.orderWriteIndex[orderingChannel] = (orderingIndex + 1) & RakSequence.MASK;
+            this.sequenceWriteIndex[orderingChannel] = 0;
         }
 
         // Now create the packets.
@@ -1088,10 +1163,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             packet.setBuffer(buffers[i]);
             packet.setOrderingChannel((short) orderingChannel);
             packet.setOrderingIndex(orderingIndex);
-            // packet.setSequenceIndex(sequencingIndex);
+            packet.setSequenceIndex(sequenceIndex);
             packet.setReliability(reliability);
             if (reliability.isReliable()) {
-                packet.setReliabilityIndex(this.reliabilityWriteIndex++);
+                packet.setReliabilityIndex(this.reliabilityWriteIndex);
+                this.reliabilityWriteIndex = (this.reliabilityWriteIndex + 1) & RakSequence.MASK;
             }
 
             if (parts > 1) {
