@@ -23,7 +23,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Objects;
-import java.util.function.Consumer;
 
 public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements Iterable<E> {
 
@@ -39,6 +38,10 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
     private Entry[] heap;
 
     public FastBinaryMinHeap(int initialCapacity) {
+        if (initialCapacity < 0) {
+            throw new IllegalArgumentException("initialCapacity must not be negative");
+        }
+        initialCapacity = Math.max(1, initialCapacity);
         this.heap = new Entry[++initialCapacity];
         Arrays.fill(this.heap, INFIMUM);
         this.heap[0] = SUPREMUM;
@@ -107,7 +110,8 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
         boolean optimized = this.size == 0;
         if (!optimized) {
             optimized = true;
-            for (int parentIdx = 0, currentIdx = this.size; parentIdx < currentIdx; parentIdx++) {
+            int lastParent = Math.min(this.size, (this.size + elements.length) >>> 1);
+            for (int parentIdx = (this.size + 1) >>> 1; parentIdx <= lastParent; parentIdx++) {
                 if (weight < this.heap[parentIdx].weight) {
                     optimized = false;
                     break;
@@ -196,9 +200,7 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
     @Override
     protected void deallocate() {
         while (this.size > 0) {
-            Entry entry = this.heap[1];
             this.remove();
-            entry.release();
         }
     }
 
@@ -251,6 +253,9 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
 
         @Override
         public E next() {
+            if (!this.hasNext()) {
+                throw new NoSuchElementException();
+            }
             return (E) heap[index++].element;
         }
     }

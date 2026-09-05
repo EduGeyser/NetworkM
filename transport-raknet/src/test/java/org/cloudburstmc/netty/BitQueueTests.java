@@ -27,6 +27,30 @@ import java.util.concurrent.ThreadLocalRandom;
 public class BitQueueTests {
 
     @Test
+    public void settingBitsWorksAcrossWordsAndAWrappedTail() {
+        BitQueue queue = new BitQueue(256);
+        for (int i = 0; i < 200; i++) {
+            queue.add(false);
+        }
+        for (int i = 0; i < 73; i++) {
+            queue.poll();
+        }
+        for (int i = 0; i < 100; i++) {
+            queue.add(false);
+        }
+        for (int i = 0; i < queue.size(); i++) {
+            queue.set(i, true);
+            Assertions.assertTrue(queue.get(i), "Bit " + i);
+        }
+        for (int i = 0; i < queue.size(); i += 2) {
+            queue.set(i, false);
+        }
+        for (int i = 0; !queue.isEmpty(); i++) {
+            Assertions.assertEquals((i & 1) != 0, queue.poll());
+        }
+    }
+
+    @Test
     public void testQueue() {
         Queue<Boolean> bits = new ArrayDeque<>();
         BitQueue queue = new BitQueue();
