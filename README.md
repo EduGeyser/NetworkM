@@ -6,11 +6,16 @@ separate NetherNet transport.
 
 | Module | Java target | Packages |
 | --- | --- | --- |
-| `transport-raknet` | 8 | `org.cloudburstmc.netty` |
-| `transport-nethernet` | 17 | `dev.kastle.netty` |
+| `transport-raknet` | 21 | `org.cloudburstmc.netty` |
+| `transport-nethernet` | 21 | `dev.kastle.netty` |
 
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
-Gradle provisions the module toolchains. Both modules use Netty 4.1.130.Final.
+Gradle provisions JDK 26 for compilation and JDK 21 for tests. Compilation uses
+`--release 21`, so both modules require Java 21 or newer at runtime. CI runs the
+same tests on Java 21, 25, and 26; use `-PtestJavaVersion=25` or
+`-PtestJavaVersion=26` to select a newer test runtime locally.
+
+Both modules use Netty 4.1.130.Final.
 
 Artifacts use `dev.sendablemetatype.netty:netty-transport-raknet` and
 `dev.sendablemetatype.netty:netty-transport-nethernet`. The group can be changed with

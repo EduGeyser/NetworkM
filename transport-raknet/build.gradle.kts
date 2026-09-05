@@ -23,6 +23,7 @@ dependencies {
     api(libs.netty.codec.haproxy)
     api(libs.expiringmap)
 
+    testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.junit)
     testRuntimeOnly(libs.junit.platform.launcher)
 }

@@ -26,6 +26,7 @@ repositories {
 val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
 val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.sendablemetatype.netty")
+val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(21)
 
 subprojects {
     apply(plugin = "java-library")
@@ -48,11 +49,15 @@ subprojects {
 
     configure<JavaPluginExtension> {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(8))
+            languageVersion.set(JavaLanguageVersion.of(26))
         }
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
         withJavadocJar()
         withSourcesJar()
     }
+
+    val javaToolchains = extensions.getByType<JavaToolchainService>()
 
     configure<PublishingExtension> {
         repositories {
@@ -72,7 +77,7 @@ subprojects {
                 from(components["java"])
 
                 pom {
-                    description.set(project.description)
+                    description.set(providers.provider { project.description })
                     name.set(project.name)
                     url.set("https://github.com/Kas-tle/NetworkCompatible")
                     inceptionYear.set("2018")
@@ -120,10 +125,25 @@ subprojects {
     }
 
     tasks {
-        named<JavaCompile>("compileJava") {
+        withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
+            options.release.set(21)
         }
-        named<Test>("test") {
+        withType<Javadoc>().configureEach {
+            (options as StandardJavadocDocletOptions).apply {
+                encoding = "UTF-8"
+                addStringOption("-release", "21")
+            }
+        }
+        withType<JavaExec>().configureEach {
+            javaLauncher.set(javaToolchains.launcherFor {
+                languageVersion.set(JavaLanguageVersion.of(21))
+            })
+        }
+        withType<Test>().configureEach {
+            javaLauncher.set(javaToolchains.launcherFor {
+                languageVersion.set(testJavaVersion.map(JavaLanguageVersion::of))
+            })
             minHeapSize = "512m"
             maxHeapSize = "1024m"
             jvmArgs = listOf("-XX:MaxMetaspaceSize=512m")
@@ -133,17 +153,13 @@ subprojects {
 }
 
 dependencies {
-    allprojects {
-        nmcpAggregation(project(path))
-    }
+    nmcpAggregation(project(":transport-raknet"))
+    nmcpAggregation(project(":transport-nethernet"))
 }
 
 
 nmcpAggregation {
     centralPortal {
-        project(":transport-raknet")
-        project(":transport-nethernet")
-
         username.set(System.getenv("MAVEN_CENTRAL_USERNAME"))
         password.set(System.getenv("MAVEN_CENTRAL_PASSWORD"))
 
