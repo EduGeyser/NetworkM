@@ -44,7 +44,7 @@ public class SplitPacketHelperTests {
 
     @Test
     public void reassembledSizeTracksRetainedBytes() {
-        SplitPacketHelper helper = new SplitPacketHelper(3);
+        SplitPacketHelper helper = new SplitPacketHelper(0, 3);
         Assertions.assertEquals(0, helper.getReassembledSize());
 
         EncapsulatedPacket p0 = part(3, 0, 100);
@@ -77,8 +77,41 @@ public class SplitPacketHelperTests {
 
     @Test
     public void expiresAfterTimeout() {
-        SplitPacketHelper helper = new SplitPacketHelper(2);
-        Assertions.assertFalse(helper.expired());
+        SplitPacketHelper helper = new SplitPacketHelper(0, 2, 100);
+        Assertions.assertFalse(helper.expired(30099));
+        Assertions.assertTrue(helper.expired(30100));
         helper.release();
+    }
+
+    @Test
+    public void outOfOrderPartsAndDuplicatesReassembleOnce() {
+        SplitPacketHelper helper = new SplitPacketHelper(0, 3);
+        EncapsulatedPacket last = part(3, 2, 3);
+        last.getBuffer().setZero(0, 3).setByte(0, 3);
+        EncapsulatedPacket first = part(3, 0, 1);
+        first.getBuffer().setByte(0, 1);
+        EncapsulatedPacket middle = part(3, 1, 2);
+        middle.getBuffer().setByte(0, 2);
+        try {
+            Assertions.assertNull(helper.add(last, ALLOC));
+            Assertions.assertNull(helper.add(last, ALLOC));
+            Assertions.assertNull(helper.add(first, ALLOC));
+            EncapsulatedPacket reassembled = helper.add(middle, ALLOC);
+            Assertions.assertNotNull(reassembled);
+            try {
+                ByteBuf buffer = reassembled.getBuffer();
+                Assertions.assertEquals(6, buffer.readableBytes());
+                Assertions.assertEquals(1, buffer.getByte(0));
+                Assertions.assertEquals(2, buffer.getByte(1));
+                Assertions.assertEquals(3, buffer.getByte(3));
+            } finally {
+                reassembled.release();
+            }
+        } finally {
+            first.release();
+            middle.release();
+            last.release();
+            helper.release();
+        }
     }
 }

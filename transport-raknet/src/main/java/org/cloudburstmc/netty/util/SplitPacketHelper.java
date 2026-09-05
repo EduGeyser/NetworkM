@@ -25,14 +25,22 @@ import io.netty.util.ReferenceCounted;
 import org.cloudburstmc.netty.channel.raknet.packet.EncapsulatedPacket;
 
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 public class SplitPacketHelper extends AbstractReferenceCounted {
+    private static final long TIMEOUT_MILLIS = 30000;
     private final EncapsulatedPacket[] packets;
     private final int partId;
-    private final long created = System.currentTimeMillis();
+    private final long created;
     private int reassembledSize;
+    private int receivedParts;
 
     public SplitPacketHelper(int partId, long expectedLength) {
+        this(partId, expectedLength, TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+    }
+
+    /** Creates a reassembly using the session's monotonic clock, in milliseconds. */
+    public SplitPacketHelper(int partId, long expectedLength, long created) {
         if (expectedLength < 2) {
             throw new IllegalArgumentException("expectedLength must be greater than 1");
         }
@@ -40,6 +48,7 @@ public class SplitPacketHelper extends AbstractReferenceCounted {
             throw new IllegalArgumentException("Too many split parts, expectedLength must be less than 8192");
         }
         this.partId = partId;
+        this.created = created;
         this.packets = new EncapsulatedPacket[(int) expectedLength];
     }
 
@@ -68,16 +77,12 @@ public class SplitPacketHelper extends AbstractReferenceCounted {
         this.packets[partIndex] = packet.retain();
         this.reassembledSize += packet.getBuffer().readableBytes();
 
-        int sz = 0;
-        for (EncapsulatedPacket netPacket : this.packets) {
-            if (netPacket == null) {
-                return null;
-            }
-            sz += netPacket.getBuffer().readableBytes();
+        if (++this.receivedParts != this.packets.length) {
+            return null;
         }
 
         // We can't use a composite buffer as the native code will choke on it
-        ByteBuf reassembled = alloc.ioBuffer(sz);
+        ByteBuf reassembled = alloc.ioBuffer(this.reassembledSize);
         for (EncapsulatedPacket netPacket : this.packets) {
             ByteBuf buf = netPacket.getBuffer();
             reassembled.writeBytes(buf, buf.readerIndex(), buf.readableBytes());
@@ -94,10 +99,18 @@ public class SplitPacketHelper extends AbstractReferenceCounted {
     }
 
     public boolean expired() {
+        return this.expired(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+    }
+
+    public boolean expired(long now) {
         // If we're waiting on a split packet for more than 30 seconds, the client on the other end is either severely
         // lagging, or has died.
         if (this.refCnt() <= 0) throw new IllegalReferenceCountException(this.refCnt());
-        return System.currentTimeMillis() - created >= 30000;
+        return now - this.created >= TIMEOUT_MILLIS;
+    }
+
+    public long getExpiresAt() {
+        return this.created + TIMEOUT_MILLIS;
     }
 
     @Override
