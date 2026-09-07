@@ -11,8 +11,8 @@ tests.
 
 | Module | Java target | Packages |
 | --- | --- | --- |
-| `transport-raknet` | 21 | `dev.sendablemetatype.netty` |
-| `transport-nethernet` | 21 | `dev.sendablemetatype.netty` |
+| `transport-raknet` | 21 | `io.github.sendablemetatype.netty` |
+| `transport-nethernet` | 21 | `io.github.sendablemetatype.netty` |
 
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
 Gradle provisions JDK 26 for compilation and JDK 21 for tests. Compilation uses
@@ -25,8 +25,8 @@ provide Netty must use compatible 4.2 modules together. RakNet depends on
 `netty-codec-base` rather than the aggregate `netty-codec` artifact, so it does
 not pull in unrelated codecs.
 
-Artifacts use `dev.sendablemetatype.netty:netty-transport-raknet` and
-`dev.sendablemetatype.netty:netty-transport-nethernet`. The group can be changed with
+Artifacts use `io.github.sendablemetatype.netty:netty-transport-raknet` and
+`io.github.sendablemetatype.netty:netty-transport-nethernet`. The group can be changed with
 `-PnetworkGroup=your.group`; Java packages do not change. The local version is
 `1.7.4-networkm-SNAPSHOT`, separate from the source fork's published releases.
 `NETWORK_PUBLISH_VERSION` overrides the version for either publishing backend.

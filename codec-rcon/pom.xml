@@ -6,7 +6,7 @@
     <version>4.1.51.Final</version>
     <parent>
         <artifactId>cloudburstmc-netty-parent</artifactId>
-        <groupId>dev.sendablemetatype.netty</groupId>
+        <groupId>io.github.sendablemetatype.netty</groupId>
         <version>1.0.0.Final-SNAPSHOT</version>
     </parent>
 

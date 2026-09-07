@@ -25,7 +25,7 @@ repositories {
 
 val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
-val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.sendablemetatype.netty")
+val networkGroup = providers.gradleProperty("networkGroup").getOrElse("io.github.sendablemetatype.netty")
 val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(21)
 val networkRepository = providers.gradleProperty("networkRepository")
         .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
@@ -128,6 +128,10 @@ subprojects {
     }
 
     tasks {
+        named<Jar>("sourcesJar") {
+            // Package renames can leave empty directories in local checkouts.
+            includeEmptyDirs = false
+        }
         withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
             options.release.set(21)

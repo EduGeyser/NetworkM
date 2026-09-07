@@ -27,10 +27,10 @@ dependencies {
 }
 
 tasks.jar {
-    manifest.attributes["Automatic-Module-Name"] = "dev.sendablemetatype.netty.transport.nethernet"
+    manifest.attributes["Automatic-Module-Name"] = "io.github.sendablemetatype.netty.transport.nethernet"
 }
 
 tasks.register<JavaExec>("runDiscovery") {
-    mainClass.set("dev.sendablemetatype.netty.util.nethernet.NetherNetScanner")
+    mainClass.set("io.github.sendablemetatype.netty.util.nethernet.NetherNetScanner")
     classpath = sourceSets["main"].runtimeClasspath
 }
