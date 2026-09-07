@@ -41,8 +41,9 @@ Its custom Maven repository is configured in the root build.
 Release and feature-snapshot publication are manual workflows. The generic
 Maven deployment workflow remains reusable. Publishing requires the relevant
 repository credentials and signing keys; ordinary builds do not publish.
-Historical POM source links are retained from the upstream forks until a hosted
-NetworkM repository is selected.
+POM project, source, issue, and CI links use GitHub Actions' `GITHUB_REPOSITORY`.
+For local publication, set `-PnetworkRepository=owner/repository`. Local builds
+without this setting omit repository links.
 
 `codec-query` and `codec-rcon` source trees are retained for reference. They were
 not included in either active Gradle build and are not included here.

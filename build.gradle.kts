@@ -27,6 +27,9 @@ val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { 
         ?: rootProject.property("version") as String
 val networkGroup = providers.gradleProperty("networkGroup").getOrElse("dev.sendablemetatype.netty")
 val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(21)
+val networkRepository = providers.gradleProperty("networkRepository")
+        .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
+val networkRepositoryUrl = networkRepository.map { "https://github.com/$it" }
 
 subprojects {
     apply(plugin = "java-library")
@@ -79,7 +82,7 @@ subprojects {
                 pom {
                     description.set(providers.provider { project.description })
                     name.set(project.name)
-                    url.set("https://github.com/Kas-tle/NetworkCompatible")
+                    url.set(networkRepositoryUrl)
                     inceptionYear.set("2018")
                     licenses {
                         license {
@@ -100,17 +103,17 @@ subprojects {
                         }
                     }
                     scm {
-                        connection.set("scm:git:git://github.com/Kas-tle/NetworkCompatible.git")
-                        developerConnection.set("scm:git:ssh://github.com:Kas-tle/NetworkCompatible.git")
-                        url.set("https://github.com/Kas-tle/NetworkCompatible")
+                        connection.set(networkRepositoryUrl.map { "scm:git:$it.git" })
+                        developerConnection.set(networkRepository.map { "scm:git:ssh://git@github.com/$it.git" })
+                        url.set(networkRepositoryUrl)
                     }
                     ciManagement {
                         system.set("GitHub Actions")
-                        url.set("https://github.com/Kas-tle/NetworkCompatible/actions")
+                        url.set(networkRepositoryUrl.map { "$it/actions" })
                     }
                     issueManagement {
                         system.set("GitHub Issues")
-                        url.set("https://github.com/Kas-tle/NetworkCompatible/issues")
+                        url.set(networkRepositoryUrl.map { "$it/issues" })
                     }
                 }
             }
