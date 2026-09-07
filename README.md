@@ -32,9 +32,11 @@ reference transport classes, such as Cloudburst Protocol's connection module,
 also need a build targeting NetworkM.
 
 See [RakNet configuration](transport-raknet/README.md) and
-[NetherNet setup](transport-nethernet/README.md). NetherNet still requires the
-`dev.kastle.webrtc:webrtc-java:1.0.4-edu.3` fork and matching native libraries.
-The custom Maven repository is configured in the root build.
+[NetherNet setup](transport-nethernet/README.md). NetherNet requires the
+[EduGeyser webrtc-java fork](https://github.com/EduGeyser/webrtc-java), published
+as `dev.kastle.webrtc:webrtc-java:1.0.4-edu.3`, and matching native libraries.
+The fork retains the `dev.kastle.webrtc` Maven group and Java packages.
+Its custom Maven repository is configured in the root build.
 
 Release and feature-snapshot publication are manual workflows. The generic
 Maven deployment workflow remains reusable. Publishing requires the relevant
