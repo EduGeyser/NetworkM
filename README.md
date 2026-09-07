@@ -1,8 +1,13 @@
 # NetworkM
 
-NetworkM combines the `develop` branch of Network with the `master` branch of the
-EduGeyser NetworkCompatible fork. It provides one RakNet implementation and a
-separate NetherNet transport.
+NetworkM is a networking library providing RakNet and NetherNet transports for
+Netty. It was created by merging EduGeyser's Network and NetworkCompatible forks,
+bringing their transport features and fixes into one codebase.
+
+Since the merge, NetworkM has been modernized with Java 21, Netty 4.2, and updated
+build tooling and dependencies. Further work has improved transport performance,
+connection handling, and protocol compatibility, with fixes covered by automated
+tests.
 
 | Module | Java target | Packages |
 | --- | --- | --- |
