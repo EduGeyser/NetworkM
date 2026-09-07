@@ -1,6 +1,6 @@
 package dev.kastle.webrtc;
 
-import dev.kastle.netty.channel.nethernet.backend.WebRtcRtt;
+import dev.sendablemetatype.netty.channel.nethernet.backend.WebRtcRtt;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;

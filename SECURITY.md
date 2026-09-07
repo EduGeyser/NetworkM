@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Support is only maintained for the latest version of the library published to [Maven Central](https://central.sonatype.com/artifact/dev.kastle.netty/netty-transport-raknet).
+Support is only maintained for the latest version of the library published to [Maven Central](https://central.sonatype.com/artifact/dev.sendablemetatype.netty/netty-transport-raknet).
 
 ## Reporting a Vulnerability
 

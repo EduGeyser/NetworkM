@@ -44,5 +44,5 @@ tasks.withType<Test> {
 }
 
 tasks.jar {
-    manifest.attributes["Automatic-Module-Name"] = "org.cloudburstmc.netty.transport.raknet"
+    manifest.attributes["Automatic-Module-Name"] = "dev.sendablemetatype.netty.transport.raknet"
 }

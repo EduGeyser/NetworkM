@@ -6,8 +6,8 @@ separate NetherNet transport.
 
 | Module | Java target | Packages |
 | --- | --- | --- |
-| `transport-raknet` | 21 | `org.cloudburstmc.netty` |
-| `transport-nethernet` | 21 | `dev.kastle.netty` |
+| `transport-raknet` | 21 | `dev.sendablemetatype.netty` |
+| `transport-nethernet` | 21 | `dev.sendablemetatype.netty` |
 
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
 Gradle provisions JDK 26 for compilation and JDK 21 for tests. Compilation uses
@@ -26,8 +26,10 @@ Artifacts use `dev.sendablemetatype.netty:netty-transport-raknet` and
 `1.7.4-networkm-SNAPSHOT`, separate from the source fork's published releases.
 `NETWORK_PUBLISH_VERSION` overrides the version for either publishing backend.
 
-Use only one RakNet artifact at runtime. Network and NetworkCompatible use the
-same RakNet Java packages, even though their Maven groups differ.
+NetworkM uses its own Java packages. Consumers migrating from Network or
+NetworkCompatible must update their imports and rebuild. Libraries that directly
+reference transport classes, such as Cloudburst Protocol's connection module,
+also need a build targeting NetworkM.
 
 See [RakNet configuration](transport-raknet/README.md) and
 [NetherNet setup](transport-nethernet/README.md). NetherNet still requires the
