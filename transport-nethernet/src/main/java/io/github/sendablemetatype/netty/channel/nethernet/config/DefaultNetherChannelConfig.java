@@ -1,7 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChannel;
-import dev.kastle.webrtc.PortAllocatorConfig;
+import io.github.sendablemetatype.webrtc.PortAllocatorConfig;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.DefaultChannelConfig;

@@ -5,10 +5,10 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherCl
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
-import dev.kastle.webrtc.RTCDataChannelBuffer;
-import dev.kastle.webrtc.RTCDataChannelInit;
-import dev.kastle.webrtc.RTCDataChannelObserver;
-import dev.kastle.webrtc.RTCDataChannelState;
+import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
+import io.github.sendablemetatype.webrtc.RTCDataChannelInit;
+import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
+import io.github.sendablemetatype.webrtc.RTCDataChannelState;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;

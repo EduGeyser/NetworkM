@@ -8,7 +8,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherSe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
-import dev.kastle.webrtc.PeerConnectionFactory;
+import io.github.sendablemetatype.webrtc.PeerConnectionFactory;
 import io.netty.channel.AbstractServerChannel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelMetadata;

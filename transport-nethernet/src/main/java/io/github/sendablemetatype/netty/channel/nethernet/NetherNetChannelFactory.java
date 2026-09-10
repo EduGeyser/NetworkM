@@ -4,7 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.backend.LibWebRtcServe
 import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcServerBackend;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
-import dev.kastle.webrtc.PeerConnectionFactory;
+import io.github.sendablemetatype.webrtc.PeerConnectionFactory;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
 
