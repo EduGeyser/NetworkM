@@ -24,7 +24,7 @@ jobs:
             exit 1
           fi
       - name: Test
-        run: ./gradlew check
+        run: ./gradlew check -PwebrtcNativePlatform=linux-x86_64
       - name: Publish both transports
         run: ./gradlew nmcpPublishAggregationToCentralPortal
         env:
