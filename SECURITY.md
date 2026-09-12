@@ -2,8 +2,8 @@
 
 ## Supported Versions
 
-NetworkM has no published releases yet. Security fixes target the latest code
-on the default branch.
+The current supported release is [NetworkM 1.0.0](https://github.com/EduGeyser/NetworkM/releases/tag/v1.0.0).
+Security fixes are developed on `develop` and published in new releases.
 
 ## Reporting a Vulnerability
 
