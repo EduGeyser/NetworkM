@@ -81,11 +81,13 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
     private static final class PendingRequest {
         final CompletableFuture<JsonObject> future;
         final Channel channel;
+        final @Nullable FailureHandler failureHandler;
         private ScheduledFuture<?> timeout;
 
-        PendingRequest(CompletableFuture<JsonObject> future, Channel channel) {
+        PendingRequest(CompletableFuture<JsonObject> future, Channel channel, @Nullable FailureHandler failureHandler) {
             this.future = future;
             this.channel = channel;
+            this.failureHandler = failureHandler;
         }
 
         synchronized void setTimeout(ScheduledFuture<?> timeout) {
@@ -251,8 +253,8 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
 
                 // Reported once, and not for a request that already timed out or a replaced socket
                 boolean completed = future.completeExceptionally(new RpcResponseException(msg));
-                if (completed && isNotFound && isCurrentChannel(source)) {
-                    reportFailure(msg);
+                if (completed && isNotFound && isCurrentChannel(source) && pending.failureHandler != null) {
+                    pending.failureHandler.onFailure(msg);
                 }
             } else {
                 future.complete(
@@ -332,7 +334,7 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         innerMsg.addProperty("jsonrpc", "2.0");
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_DELIVERY);
         sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
-                createSendParams(from, innerMsg.toString()));
+                createSendParams(from, innerMsg.toString()), true);
 
         if (NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC.equals(innerMethod)) {
             try {
@@ -466,7 +468,7 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC);
 
         sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
-                createSendParams(targetNetworkId, innerMsg.toString()));
+                createSendParams(targetNetworkId, innerMsg.toString()), true);
     }
 
     private JsonObject createSendParams(String toPlayerId, String message) {
@@ -481,7 +483,12 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
      * Sends a request on the current socket. It fails if that socket closes first, or if no reply
      * arrives within {@link #CONNECT_TIMEOUT_SECONDS}.
      */
-    synchronized CompletableFuture<JsonObject> sendJsonRpcRequest(String method, JsonObject params) {
+    CompletableFuture<JsonObject> sendJsonRpcRequest(String method, JsonObject params) {
+        return sendJsonRpcRequest(method, params, false);
+    }
+
+    synchronized CompletableFuture<JsonObject> sendJsonRpcRequest(String method, JsonObject params,
+                                                                  boolean reportPeerFailure) {
         String id = UUID.randomUUID().toString();
         JsonObject rpc = new JsonObject();
         rpc.add("params", params);
@@ -497,7 +504,8 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
             return future;
         }
 
-        PendingRequest pending = new PendingRequest(future, source);
+        // A retry may install another handler before this request's error arrives.
+        PendingRequest pending = new PendingRequest(future, source, reportPeerFailure ? failureHandler : null);
         pendingRequests.put(id, pending);
         future.whenComplete((result, error) -> {
             pendingRequests.remove(id, pending);
