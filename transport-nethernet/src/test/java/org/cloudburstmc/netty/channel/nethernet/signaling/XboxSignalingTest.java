@@ -39,6 +39,8 @@ public class XboxSignalingTest {
     void open() {
         this.signaling = new NetherNetXboxSignaling("7", "MCToken test");
         this.socket = new EmbeddedChannel(this.signaling);
+        // Frames only count on the signaling's current socket
+        this.signaling.channel = this.socket;
     }
 
     @AfterEach

@@ -20,14 +20,19 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketClientProtocolHandler.ClientHandshakeStateEvent;
+import io.netty.util.ReferenceCountUtil;
 import org.cloudburstmc.netty.channel.nethernet.NetherNetConstants;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -51,6 +56,8 @@ public class XboxRpcSignalingTest {
     void open() {
         this.signaling = new NetherNetXboxRpcSignaling("7", "MCToken test");
         this.socket = new EmbeddedChannel(this.signaling);
+        // Frames only count on the signaling's current socket
+        this.signaling.channel = this.socket;
     }
 
     @AfterEach
@@ -87,7 +94,6 @@ public class XboxRpcSignalingTest {
 
     @Test
     void reportsAPeerThatIsNotRegistered() {
-        this.signaling.channel = this.socket;
         List<String> failures = new ArrayList<>();
         this.signaling.setFailureHandler(failures::add);
 
@@ -97,10 +103,17 @@ public class XboxRpcSignalingTest {
         assertEquals(List.of("Player not registered"), failures);
     }
 
-    /** Acknowledging a message with no socket used to leave the acknowledgement pending for good. */
+    /** An acknowledgement that could not be sent used to stay pending for good. */
     @Test
     void aRequestThatCannotGoOutLeavesNothingPending() {
         this.signaling.setSignalHandler("11", signal -> { });
+        this.socket.pipeline().addFirst(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                ReferenceCountUtil.release(msg);
+                promise.setFailure(new ClosedChannelException());
+            }
+        });
 
         this.receive(message(NetherNetConstants.buildSignalCandidateAdd("11", "a")));
 
@@ -109,7 +122,6 @@ public class XboxRpcSignalingTest {
 
     @Test
     void theSocketClosingFailsTheRequestsInFlight() {
-        this.signaling.channel = this.socket;
         this.signaling.sendSignal(SERVER, NetherNetConstants.buildSignalConnectRequest("11", "offer"));
         assertEquals(1, this.signaling.pendingRequestCount());
 
@@ -121,7 +133,6 @@ public class XboxRpcSignalingTest {
     /** Each reconnect used to add a keepalive on top of the ones before it. */
     @Test
     void theKeepaliveStopsWithTheSocket() {
-        this.signaling.channel = this.socket;
         this.socket.pipeline().fireUserEventTriggered(ClientHandshakeStateEvent.HANDSHAKE_COMPLETE);
         assertNotEquals(-1, this.socket.runScheduledPendingTasks(), "no keepalive was scheduled");
 
