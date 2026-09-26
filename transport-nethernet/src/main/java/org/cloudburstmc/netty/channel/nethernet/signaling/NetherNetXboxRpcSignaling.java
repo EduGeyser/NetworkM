@@ -172,14 +172,16 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_TURN_AUTH, new JsonObject())
                 .thenAccept(response -> updateIceServers(source, parseTurnServers(response)))
                 .exceptionally(t -> {
+                    CompletableFuture<List<IceServerInfo>> pending;
                     synchronized (this) {
                         if (!isCurrentChannel(source)) {
                             return null;
                         }
-                        log.error("Failed to fetch TURN credentials", t);
-                        if (connectFuture != null && !connectFuture.isDone()) {
-                            connectFuture.completeExceptionally(t);
-                        }
+                        pending = connectFuture;
+                    }
+                    log.error("Failed to fetch TURN credentials", t);
+                    if (pending != null) {
+                        pending.completeExceptionally(t);
                     }
                     return null;
                 });
@@ -203,12 +205,8 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
     }
 
     @Override
-    public void close() {
-        try {
-            super.close();
-        } finally {
-            pendingRequests.forEach((id, request) -> request.future.completeExceptionally(new ClosedChannelException()));
-        }
+    protected void onClosed() {
+        pendingRequests.forEach((id, request) -> request.future.completeExceptionally(new ClosedChannelException()));
     }
 
     @Override
@@ -220,7 +218,7 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
             if (json.has("result") || (json.has("error") && json.has("id"))) {
                 handleResponse(ctx.channel(), json);
             } else if (json.has("method")) {
-                handleRequest(json);
+                handleRequest(ctx.channel(), json);
             }
         } catch (Exception e) {
             log.error("Error processing signaling frame: " + text, e);
@@ -266,14 +264,14 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         }
     }
 
-    private void handleRequest(JsonObject json) {
+    private void handleRequest(Channel source, JsonObject json) {
         String method = json.get("method").getAsString();
         JsonElement id = json.get("id");
 
         switch (method) {
             case NetherNetConstants.XBOX_RPC_METHOD_RECEIVE_MESSAGE -> {
                 if (id != null) {
-                    sendJsonRpcResult(id, null);
+                    sendJsonRpcResult(source, id, null);
                 }
 
                 // One message, or a batch of them
@@ -288,7 +286,7 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
             }
             case NetherNetConstants.XBOX_RPC_METHOD_PONG, NetherNetConstants.XBOX_RPC_METHOD_PING -> {
                 if (id != null) {
-                    sendJsonRpcResult(id, null);
+                    sendJsonRpcResult(source, id, null);
                 }
             }
         }
@@ -533,14 +531,13 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         return future;
     }
 
-    private void sendJsonRpcResult(JsonElement id, JsonElement result) {
+    private void sendJsonRpcResult(Channel source, JsonElement id, JsonElement result) {
         JsonObject response = new JsonObject();
         response.add("id", id);
         response.add("result", result);
         response.addProperty("jsonrpc", "2.0");
-        Channel channel = this.channel;
-        if (channel != null && channel.isActive()) {
-            channel.writeAndFlush(new TextWebSocketFrame(gson.toJson(response)));
+        if (isCurrentChannel(source) && source.isActive()) {
+            source.writeAndFlush(new TextWebSocketFrame(gson.toJson(response)));
         }
     }
 }
