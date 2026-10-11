@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.github.sendablemetatype.netty.channel.raknet.RakConstants;
 import io.github.sendablemetatype.netty.channel.raknet.RakReliability;
 import io.github.sendablemetatype.netty.channel.raknet.packet.EncapsulatedPacket;
 import io.github.sendablemetatype.netty.util.SplitPacketHelper;
@@ -132,5 +133,12 @@ public class SplitPacketHelperTests {
             last.release();
             helper.release();
         }
+    }
+
+    @Test
+    public void testAcceptsMorePartsThanItSends() {
+        new SplitPacketHelper(0, RakConstants.MAXIMUM_RECEIVED_SPLIT_COUNT).release();
+        Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new SplitPacketHelper(0, RakConstants.MAXIMUM_RECEIVED_SPLIT_COUNT + 1));
     }
 }

@@ -30,6 +30,8 @@ import io.github.sendablemetatype.netty.handler.codec.raknet.client.RakClientPro
 import io.github.sendablemetatype.netty.handler.codec.raknet.client.RakClientRouteHandler;
 import io.github.sendablemetatype.netty.handler.codec.raknet.common.*;
 
+import java.nio.channels.ClosedChannelException;
+
 public class RakClientChannel extends ProxyChannel<DatagramChannel> implements RakChannel {
 
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RakClientChannel.class);
@@ -61,6 +63,8 @@ public class RakClientChannel extends ProxyChannel<DatagramChannel> implements R
                 this.close();
             }
         });
+        // A close during the handshake, such as a remote disconnect, would otherwise fail the connect as cancelled
+        this.closeFuture().addListener(future -> this.connectPromise.tryFailure(new ClosedChannelException()));
     }
 
     /**

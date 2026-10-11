@@ -16,13 +16,11 @@
 
 package io.github.sendablemetatype.netty.channel.raknet;
 
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.util.AttributeKey;
-import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.PromiseCombiner;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -163,8 +161,6 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
             reservation.attach(channel);
             channel.attr(THROTTLE_RESERVATION).set(reservation);
         }
-        ThrottleReservation acceptedReservation = reservation;
-        channel.closeFuture().addListener((GenericFutureListener<ChannelFuture>) future -> this.onChildClosed(future, acceptedReservation));
         // Set before fireChannelRead because initChannel runs async on the child worker thread.
         if (protocolVersion != 0) {
             channel.config().setOption(RakChannelOption.RAK_PROTOCOL_VERSION, protocolVersion);
@@ -191,9 +187,10 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         return this.childChannelMap.get(address);
     }
 
-    private void onChildClosed(ChannelFuture channelFuture, ThrottleReservation reservation) {
-        RakChildChannel channel = (RakChildChannel) channelFuture.channel();
+    // Called from the child's doClose(), which unlike the close future also runs on closeForcibly().
+    void onChildClosed(RakChildChannel channel) {
         this.childChannelMap.remove(channel.remoteOrProxyAddress(), channel);
+        ThrottleReservation reservation = channel.attr(THROTTLE_RESERVATION).get();
 
         try {
             RakServerMetrics metrics = this.config().getMetrics();

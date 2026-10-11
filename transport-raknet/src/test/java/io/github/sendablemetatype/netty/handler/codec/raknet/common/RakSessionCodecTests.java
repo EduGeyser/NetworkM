@@ -131,7 +131,8 @@ class RakSessionCodecTests {
     @Test
     void queuedSequencedPacketsShareTheOrderingBudgetAndAreReleasedOnClose() {
         try (Session s = new Session(false, 10000)) {
-            s.config.setMaxOrderingQueuedBytes(4);
+            // Room for one queued entry: its fixed charge and four payload bytes
+            s.config.setMaxOrderingQueuedBytes(RakSessionCodec.ORDERING_ENTRY_OVERHEAD + 4);
             EncapsulatedPacket first = sequenced(false, 0, 1, 0, 100);
             ByteBuf firstBuffer = first.getBuffer();
             s.receive(first);

@@ -173,6 +173,7 @@ allprojects {
 }
 
 dependencies {
+    nmcpAggregation(project(":transport-common"))
     nmcpAggregation(project(":transport-raknet"))
     nmcpAggregation(project(":transport-nethernet"))
 }

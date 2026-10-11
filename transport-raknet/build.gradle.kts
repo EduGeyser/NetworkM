@@ -20,12 +20,14 @@ description = "RakNet transport for Netty"
 
 dependencies {
     api(platform(libs.netty.bom))
+    api(project(":transport-common"))
     api(libs.bundles.netty)
     api(libs.netty.codec.haproxy)
     api(libs.expiringmap)
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.junit)
+    testImplementation(variantOf(libs.netty.transport.native.epoll) { classifier("linux-x86_64") })
     testRuntimeOnly(libs.junit.platform.launcher)
 
     constraints {

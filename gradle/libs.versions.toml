@@ -19,6 +19,7 @@ netty-codec-http = { group = "io.netty", name = "netty-codec-http" }
 netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-unix-common = { group = "io.netty", name = "netty-transport-native-unix-common" }
+netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }
 webrtc-java = { group = "io.github.sendablemetatype.webrtc", name = "webrtc-java", version.ref = "webrtc-java" }
 jose4j = { group = "org.bitbucket.b_c", name = "jose4j", version.ref = "jose4j" }
 slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }

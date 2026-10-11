@@ -27,6 +27,7 @@ jobs:
         with:
           name: networkm-${{ matrix.os }}-java${{ matrix.java }}
           path: |
+            transport-common/build/libs/*.jar
             transport-raknet/build/libs/*.jar
             transport-nethernet/build/libs/*.jar
           if-no-files-found: error
