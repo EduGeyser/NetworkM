@@ -17,8 +17,8 @@
 package io.github.sendablemetatype.netty.channel.raknet.packet;
 
 import io.netty.util.AbstractReferenceCounted;
+import io.netty.util.Recycler;
 import io.netty.util.internal.DefaultPriorityQueue;
-import io.netty.util.internal.ObjectPool;
 import io.netty.util.internal.PriorityQueueNode;
 
 import java.util.ArrayList;
@@ -28,9 +28,14 @@ import static io.github.sendablemetatype.netty.channel.raknet.RakConstants.*;
 
 public class RakDatagramPacket extends AbstractReferenceCounted implements PriorityQueueNode {
 
-    private static final ObjectPool<RakDatagramPacket> RECYCLER = ObjectPool.newPool(RakDatagramPacket::new);
+    private static final Recycler<RakDatagramPacket> RECYCLER = new Recycler<>() {
+        @Override
+        protected RakDatagramPacket newObject(Handle<RakDatagramPacket> handle) {
+            return new RakDatagramPacket(handle);
+        }
+    };
 
-    private final ObjectPool.Handle<RakDatagramPacket> handle;
+    private final Recycler.Handle<RakDatagramPacket> handle;
     private final List<EncapsulatedPacket> packets = new ArrayList<>();
     private byte flags = FLAG_VALID;
     // Session-local monotonic milliseconds, not wire timestamps.
@@ -43,7 +48,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
         return RECYCLER.get();
     }
 
-    private RakDatagramPacket(ObjectPool.Handle<RakDatagramPacket> handle) {
+    private RakDatagramPacket(Recycler.Handle<RakDatagramPacket> handle) {
         this.handle = handle;
     }
 

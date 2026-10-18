@@ -17,7 +17,7 @@
 package io.github.sendablemetatype.netty.util;
 
 import io.netty.util.AbstractReferenceCounted;
-import io.netty.util.internal.ObjectPool;
+import io.netty.util.Recycler;
 
 import java.util.Arrays;
 import java.util.Iterator;
@@ -28,7 +28,12 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
 
     private static final Entry INFIMUM = new Entry(Long.MAX_VALUE);
     private static final Entry SUPREMUM = new Entry(Long.MIN_VALUE);
-    private static final ObjectPool<Entry> RECYCLER = ObjectPool.newPool(Entry::new);
+    private static final Recycler<Entry> RECYCLER = new Recycler<>() {
+        @Override
+        protected Entry newObject(Handle<Entry> handle) {
+            return new Entry(handle);
+        }
+    };
     private int size;
 
     public FastBinaryMinHeap() {
@@ -215,7 +220,7 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
     }
 
     private static class Entry extends AbstractReferenceCounted {
-        private final ObjectPool.Handle<Entry> handle;
+        private final Recycler.Handle<Entry> handle;
         private Object element;
         private long weight;
 
@@ -224,7 +229,7 @@ public class FastBinaryMinHeap<E> extends AbstractReferenceCounted implements It
             this.handle = null;
         }
 
-        private Entry(ObjectPool.Handle<Entry> handle) {
+        private Entry(Recycler.Handle<Entry> handle) {
             this.handle = handle;
         }
 

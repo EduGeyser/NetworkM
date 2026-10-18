@@ -5,9 +5,9 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.local.LocalIoHandler;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakServerThrottle;
@@ -37,7 +37,7 @@ class RakServerChannelTests {
     private static final InetSocketAddress OTHER_REMOTE = new InetSocketAddress("127.0.0.1", 19135);
 
     private final EventLoopGroup parentGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-    private final EventLoopGroup childGroup = new DefaultEventLoopGroup(1);
+    private final EventLoopGroup childGroup = new MultiThreadIoEventLoopGroup(1, LocalIoHandler.newFactory());
     private final LinkedBlockingQueue<RakChildChannel> initialized = new LinkedBlockingQueue<>();
     private RakServerChannel server;
 
