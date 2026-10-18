@@ -4,15 +4,15 @@ NetworkM is a networking library providing RakNet and NetherNet transports for
 Netty. It was created by merging EduGeyser's Network and NetworkCompatible forks,
 bringing their transport features and fixes into one codebase.
 
-Since the merge, NetworkM has been modernized with Java 21, Netty 4.2, and updated
+Since the merge, NetworkM has been modernized with Java 25, Netty 4.2, and updated
 build tooling and dependencies. Further work has improved transport performance,
 connection handling, and protocol compatibility, with fixes covered by automated
 tests.
 
 ## Usage
 
-NetworkM **1.0.0** is available from Maven Central. Both transports require
-**Java 21 or newer**. Add Maven Central to your `build.gradle.kts`:
+NetworkM **1.2.0** is available from Maven Central. Both transports require
+**Java 25 or newer**. Add Maven Central to your `build.gradle.kts`:
 
 ```kotlin
 repositories {
@@ -26,7 +26,7 @@ For RakNet:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:1.0.0")
+    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:1.2.0")
 }
 ```
 
@@ -35,13 +35,13 @@ This example targets Linux x86-64:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:1.0.0")
-    runtimeOnly("io.github.sendablemetatype.webrtc:webrtc-java:0.17.0-sm.1:linux-x86_64")
+    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:1.2.0")
+    runtimeOnly("io.github.sendablemetatype.webrtc:webrtc-java:0.21.0-sm.1:linux-x86_64")
 }
 ```
 
 The WebRTC Java API is included transitively. Keep the native version matched
-to it; NetworkM 1.0.0 uses WebRTC **0.17.0-sm.1**. Replace the classifier in the
+to it; NetworkM 1.2.0 uses WebRTC **0.21.0-sm.1**. Replace the classifier in the
 example with the one for your platform, or include each platform your
 application supports:
 
@@ -62,11 +62,12 @@ See [RakNet configuration](transport-raknet/README.md) and
 
 | Module | Java target | Packages |
 | --- | --- | --- |
-| `transport-raknet` | 21 | `io.github.sendablemetatype.netty` |
-| `transport-nethernet` | 21 | `io.github.sendablemetatype.netty` |
+| `transport-common` | 25 | `io.github.sendablemetatype.netty` |
+| `transport-raknet` | 25 | `io.github.sendablemetatype.netty` |
+| `transport-nethernet` | 25 | `io.github.sendablemetatype.netty` |
 
-Both modules use Netty 4.2.17.Final, aligned through its BOM. Applications that
-provide Netty must use compatible 4.2 modules together. RakNet depends on
+All three modules use Netty 4.2.19.Final, aligned through its BOM. Applications
+that provide Netty must use compatible 4.2 modules together. RakNet depends on
 `netty-codec-base` rather than the aggregate `netty-codec` artifact, so it does
 not pull in unrelated codecs.
 
