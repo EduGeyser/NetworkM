@@ -11,6 +11,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelMetadata;
 import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.AbstractReferenceCounted;
@@ -634,26 +635,32 @@ public abstract class NetherNetChannel extends AbstractChannel {
     }
 
     @Override
-    protected void doRegister() throws Exception {
-        if (eventLoop() instanceof SingleThreadEventExecutor executor) {
-            executor.addShutdownHook(shutdownHook);
-        }
-        if (isActive()) {
-            // Netty's register flow fires channelActive itself for already
-            // active channels; pre set the flag so it is not fired twice, and
-            // start the sampler here since fireChannelActiveIfReady's CAS
-            // will never win on this path.
-            channelActiveFired.set(true);
-            startRttSampler();
-        }
-        // Handler initialization and Netty's initial channelActive run after doRegister returns.
-        eventLoop().execute(() -> {
-            if (!isOpen()) {
-                return;
+    protected void doRegister(ChannelPromise promise) {
+        try {
+            if (eventLoop() instanceof SingleThreadEventExecutor executor) {
+                executor.addShutdownHook(shutdownHook);
             }
-            inboundReady = true;
-            fireChannelActiveIfReady();
-        });
+            if (isActive()) {
+                // Netty's register flow fires channelActive itself for already
+                // active channels; pre set the flag so it is not fired twice, and
+                // start the sampler here since fireChannelActiveIfReady's CAS
+                // will never win on this path.
+                channelActiveFired.set(true);
+                startRttSampler();
+            }
+            // Handler initialization and Netty's initial channelActive run once the promise succeeds.
+            eventLoop().execute(() -> {
+                if (!isOpen()) {
+                    return;
+                }
+                inboundReady = true;
+                fireChannelActiveIfReady();
+            });
+        } catch (Throwable cause) {
+            promise.setFailure(cause);
+            return;
+        }
+        promise.setSuccess();
     }
 
     @Override

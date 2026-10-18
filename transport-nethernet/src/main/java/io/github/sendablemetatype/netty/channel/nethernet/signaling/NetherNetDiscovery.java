@@ -98,7 +98,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             bootstrap.group(group)
              .channel(NioDatagramChannel.class)
              .option(ChannelOption.SO_BROADCAST, true)
-             .option(ChannelOption.RCVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(65535))
+             .option(ChannelOption.RECVBUF_ALLOCATOR, new FixedRecvByteBufAllocator(65535))
              .handler(this);
 
             bind = bootstrap.bind(address);
