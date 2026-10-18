@@ -81,10 +81,9 @@ Its Java packages use the `io.github.sendablemetatype.webrtc` namespace.
 ## Building from source
 
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
-Gradle provisions JDK 26 for compilation and JDK 21 for tests. Compilation uses
-`--release 21`. CI runs the same tests on Java 21, 25, and 26; use
-`-PtestJavaVersion=25` or `-PtestJavaVersion=26` to select a newer test runtime
-locally.
+Gradle provisions JDK 27 for compilation and tests. Compilation uses
+`--release 25`. CI runs the same tests on Java 25 and 27; use
+`-PtestJavaVersion=25` to test on the minimum supported version locally.
 
 Local builds use the development version declared in [gradle.properties](gradle.properties).
 `NETWORK_PUBLISH_VERSION` overrides it when preparing a release. Forks can change

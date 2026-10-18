@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        java: [21, 25, 26]
+        java: [25, 27]
         include:
           - os: ubuntu-latest
             native: linux-x86_64

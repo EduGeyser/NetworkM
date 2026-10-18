@@ -1,6 +1,6 @@
 # netty-transport-nethernet
 
-In NetworkM this module targets Java 21 and uses the
+In NetworkM this module targets Java 25 and uses the
 [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java),
 with Maven coordinates `io.github.sendablemetatype.webrtc:webrtc-java` and Java
 packages under `io.github.sendablemetatype.webrtc`. Consumers also need matching

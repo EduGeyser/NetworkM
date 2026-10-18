@@ -26,7 +26,7 @@ repositories {
 val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
 val networkGroup = providers.gradleProperty("networkGroup").getOrElse("io.github.sendablemetatype.netty")
-val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(21)
+val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(27)
 val networkRepository = providers.gradleProperty("networkRepository")
         .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
 val networkRepositoryUrl = networkRepository.map { "https://github.com/$it" }
@@ -47,10 +47,10 @@ subprojects {
 
     configure<JavaPluginExtension> {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(26))
+            languageVersion.set(JavaLanguageVersion.of(27))
         }
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
         withJavadocJar()
         withSourcesJar()
     }
@@ -129,17 +129,17 @@ subprojects {
         }
         withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
-            options.release.set(21)
+            options.release.set(25)
         }
         withType<Javadoc>().configureEach {
             (options as StandardJavadocDocletOptions).apply {
                 encoding = "UTF-8"
-                addStringOption("-release", "21")
+                addStringOption("-release", "25")
             }
         }
         withType<JavaExec>().configureEach {
             javaLauncher.set(javaToolchains.launcherFor {
-                languageVersion.set(JavaLanguageVersion.of(21))
+                languageVersion.set(JavaLanguageVersion.of(27))
             })
         }
         withType<Test>().configureEach {
