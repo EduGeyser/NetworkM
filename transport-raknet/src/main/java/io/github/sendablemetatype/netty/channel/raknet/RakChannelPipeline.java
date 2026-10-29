@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.raknet;
 
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.DefaultChannelPipeline;
@@ -77,7 +78,7 @@ public class RakChannelPipeline extends DefaultChannelPipeline {
     @Override
     protected void onUnhandledInboundUserEventTriggered(Object evt) {
         this.child.pipeline().fireUserEventTriggered(evt);
-        if (evt instanceof RakDisconnectReason) {
+        if (evt instanceof TransportDisconnectReason) {
             this.child.close();
         }
     }

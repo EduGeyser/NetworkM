@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.handler.codec.raknet.common;
 
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.*;
@@ -359,7 +360,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     @Override
     public void disconnect(ChannelHandlerContext ctx, ChannelPromise promise) throws Exception {
-        ChannelFuture disconnectFuture = this.disconnect0(RakDisconnectReason.DISCONNECTED, false);
+        ChannelFuture disconnectFuture = this.disconnect0(TransportDisconnectReason.DISCONNECTED, false);
         if (disconnectFuture.isVoid()) {
             // Already disconnecting or closed, so complete once the close lands
             disconnectFuture = this.channel.closeFuture();
@@ -411,7 +412,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private void checkQueuedBytes() {
         int maxQueuedBytes = this.channel.config().getOption(RakChannelOption.RAK_MAX_QUEUED_BYTES);
         if (maxQueuedBytes > 0 && this.queuedBytes > maxQueuedBytes) {
-            this.disconnect(RakDisconnectReason.QUEUE_TOO_LONG);
+            this.disconnect(TransportDisconnectReason.QUEUE_TOO_LONG);
         }
     }
 
@@ -421,7 +422,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             // Reassemblies the peer legitimately abandoned must not count against it.
             this.evictExpiredSplitPackets();
             if (this.splitQueuedBytes > maxSplitQueuedBytes) {
-                this.disconnect(RakDisconnectReason.SPLIT_QUEUE_TOO_LONG);
+                this.disconnect(TransportDisconnectReason.SPLIT_QUEUE_TOO_LONG);
             }
         }
     }
@@ -429,7 +430,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private void checkOrderingQueuedBytes() {
         int limit = this.channel.config().getMaxOrderingQueuedBytes();
         if (limit > 0 && this.orderingQueuedBytes > limit) {
-            this.disconnect(RakDisconnectReason.ORDERING_QUEUE_TOO_LONG);
+            this.disconnect(TransportDisconnectReason.ORDERING_QUEUE_TOO_LONG);
         }
     }
 
@@ -477,7 +478,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             if (encapsulated.getReliability().isReliable()) {
                 int missed = RakSequence.difference(encapsulated.getReliabilityIndex(), this.reliabilityReadIndex);
                 if (missed >= MAX_RECEIVE_GAP) {
-                    this.disconnect(RakDisconnectReason.BAD_PACKET);
+                    this.disconnect(TransportDisconnectReason.BAD_PACKET);
                     return;
                 } else if (missed > 0) {
                     if (missed < this.reliableDatagramQueue.size()) {
@@ -546,7 +547,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         long expectedIndex = this.orderReadIndex[orderingChannel];
         int distance = RakSequence.difference(packet.getOrderingIndex(), (int) expectedIndex);
         if (distance >= MAX_RECEIVE_GAP) {
-            this.disconnect(RakDisconnectReason.BAD_PACKET);
+            this.disconnect(TransportDisconnectReason.BAD_PACKET);
             return;
         } else if (distance > 0) {
             // Not next in line so add to queue.
@@ -805,9 +806,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         long idle = this.clock.getAsLong() - this.lastActivity;
         if (idle >= timeout) {
             if (this.state == RakState.UNCONNECTED) {
-                this.close(RakDisconnectReason.TIMED_OUT);
+                this.close(TransportDisconnectReason.TIMED_OUT);
             } else {
-                this.disconnect(RakDisconnectReason.TIMED_OUT);
+                this.disconnect(TransportDisconnectReason.TIMED_OUT);
             }
             return;
         }
@@ -1278,21 +1279,21 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     /**
-     * Sends a disconnect notification to the peer, then closes the channel. Fires no {@link RakDisconnectReason},
+     * Sends a disconnect notification to the peer, then closes the channel. Fires no {@link TransportDisconnectReason},
      * as the caller already knows why it disconnects. {@link Channel#disconnect()} behaves the same.
      */
     public void disconnect() {
-        this.disconnect(RakDisconnectReason.DISCONNECTED, false);
+        this.disconnect(TransportDisconnectReason.DISCONNECTED, false);
     }
 
     /**
      * Like {@link #disconnect()}, but fires {@code reason} as a user event before closing.
      */
-    public void disconnect(RakDisconnectReason reason) {
+    public void disconnect(TransportDisconnectReason reason) {
         this.disconnect(reason, true);
     }
 
-    private void disconnect(RakDisconnectReason reason, boolean fireEvent) {
+    private void disconnect(TransportDisconnectReason reason, boolean fireEvent) {
         // Ensure we disconnect on the right thread
         if (this.channel.parent().eventLoop().inEventLoop()) {
             this.disconnect0(reason, fireEvent);
@@ -1301,7 +1302,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
     }
 
-    private ChannelPromise disconnect0(RakDisconnectReason reason, boolean fireEvent) {
+    private ChannelPromise disconnect0(TransportDisconnectReason reason, boolean fireEvent) {
         // Disconnecting, or already closed
         if (this.deinitialized || this.state != RakState.CONNECTED) {
             return this.channel.voidPromise();
@@ -1333,7 +1334,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         return promise;
     }
 
-    public void close(RakDisconnectReason reason) {
+    public void close(TransportDisconnectReason reason) {
         if (this.deinitialized || this.state == RakState.DISCONNECTING) {
             return;
         }

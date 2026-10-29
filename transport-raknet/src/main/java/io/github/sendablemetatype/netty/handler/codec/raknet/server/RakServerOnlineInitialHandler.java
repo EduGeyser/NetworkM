@@ -23,7 +23,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakChildChannel;
-import io.github.sendablemetatype.netty.channel.raknet.RakDisconnectReason;
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.github.sendablemetatype.netty.channel.raknet.RakPriority;
 import io.github.sendablemetatype.netty.channel.raknet.RakReliability;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelOption;
@@ -120,7 +120,7 @@ public class RakServerOnlineInitialHandler extends SimpleChannelInboundHandler<E
         reply.writeLong(guid);
 
         sendRaw(ctx, reply);
-        this.channel.pipeline().fireUserEventTriggered(RakDisconnectReason.CONNECTION_REQUEST_FAILED).close();
+        this.channel.pipeline().fireUserEventTriggered(TransportDisconnectReason.CONNECTION_REQUEST_FAILED).close();
     }
 
     private void sendRaw(ChannelHandlerContext ctx, ByteBuf buf) {

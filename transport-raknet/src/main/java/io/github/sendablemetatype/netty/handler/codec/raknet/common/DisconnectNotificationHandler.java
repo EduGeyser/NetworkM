@@ -22,7 +22,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakConstants;
-import io.github.sendablemetatype.netty.channel.raknet.RakDisconnectReason;
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.github.sendablemetatype.netty.channel.raknet.packet.EncapsulatedPacket;
 import io.github.sendablemetatype.netty.handler.codec.raknet.AdvancedChannelInboundHandler;
 
@@ -51,6 +51,6 @@ public class DisconnectNotificationHandler extends AdvancedChannelInboundHandler
             log.trace("RakNet Session ({} => {}) by remote peer!", ctx.channel().localAddress(), ctx.channel().remoteAddress());
         }
         // Close the RakChannel itself, as nothing else closes a client channel on a remote disconnect
-        ctx.pipeline().get(RakSessionCodec.class).close(RakDisconnectReason.CLOSED_BY_REMOTE_PEER);
+        ctx.pipeline().get(RakSessionCodec.class).close(TransportDisconnectReason.CLOSED_BY_REMOTE_PEER);
     }
 }

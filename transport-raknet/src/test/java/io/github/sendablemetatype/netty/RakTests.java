@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty;
 
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.AbstractByteBufAllocator;
@@ -197,7 +198,7 @@ public class RakTests {
         return new ChannelInboundHandlerAdapter() {
             @Override
             public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
-                if (evt instanceof RakDisconnectReason) {
+                if (evt instanceof TransportDisconnectReason) {
                     fired.set(true);
                 }
                 ctx.fireUserEventTriggered(evt);
@@ -283,7 +284,7 @@ public class RakTests {
 
         RakChildChannel child = children.poll(5, TimeUnit.SECONDS);
         Assertions.assertNotNull(child, "Server should create a child channel");
-        child.rakPipeline().get(RakSessionCodec.class).disconnect(RakDisconnectReason.DISCONNECTED);
+        child.rakPipeline().get(RakSessionCodec.class).disconnect(TransportDisconnectReason.DISCONNECTED);
 
         Assertions.assertTrue(channel.closeFuture().await(5, TimeUnit.SECONDS),
                 "Client should close when the server disconnects");
@@ -356,7 +357,7 @@ public class RakTests {
         RakChildChannel child = children.poll(5, TimeUnit.SECONDS);
         Assertions.assertNotNull(child, "Server should create a child channel");
         allocator.failNotification = true;
-        child.rakPipeline().get(RakSessionCodec.class).disconnect(RakDisconnectReason.DISCONNECTED);
+        child.rakPipeline().get(RakSessionCodec.class).disconnect(TransportDisconnectReason.DISCONNECTED);
 
         // The live client keeps the session from timing out, so only the disconnect can close it
         Assertions.assertTrue(child.closeFuture().await(5, TimeUnit.SECONDS),
@@ -612,6 +613,20 @@ public class RakTests {
             Assertions.assertEquals(RakConstants.MAXIMUM_SPLIT_COUNT * (RakConstants.MINIMUM_MTU_SIZE
                     - RakConstants.UDP_HEADER_SIZE - 40 - RakConstants.MAXIMUM_ENCAPSULATED_HEADER_SIZE
                     - RakConstants.RAKNET_DATAGRAM_HEADER_SIZE), ((RakChannel) channel).maxMessageSize());
+        } finally {
+            channel.close().awaitUninterruptibly();
+        }
+    }
+
+    @Test
+    public void testPingWithoutASession() {
+        Channel channel = clientBootstrap(RakConstants.MAXIMUM_MTU_SIZE)
+                .handler(new ChannelInboundHandlerAdapter())
+                .register()
+                .syncUninterruptibly()
+                .channel();
+        try {
+            Assertions.assertEquals(0, ((RakChannel) channel).getPing());
         } finally {
             channel.close().awaitUninterruptibly();
         }
