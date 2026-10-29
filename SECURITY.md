@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The current supported release is [NetworkM 1.2.0](https://github.com/EduGeyser/NetworkM/releases/tag/v1.2.0).
+The current supported release is [NetworkM 1.3.0](https://github.com/EduGeyser/NetworkM/releases/tag/v1.3.0).
 Security fixes are developed on `develop` and published in new releases.
 
 ## Reporting a Vulnerability

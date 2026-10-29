@@ -11,7 +11,7 @@ tests.
 
 ## Usage
 
-NetworkM **1.2.0** is available from Maven Central. Both transports require
+NetworkM **1.3.0** is available from Maven Central. Both transports require
 **Java 25 or newer**. Add Maven Central to your `build.gradle.kts`:
 
 ```kotlin
@@ -26,7 +26,7 @@ For RakNet:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:1.2.0")
+    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:1.3.0")
 }
 ```
 
@@ -35,13 +35,13 @@ This example targets Linux x86-64:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:1.2.0")
+    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:1.3.0")
     runtimeOnly("io.github.sendablemetatype.webrtc:webrtc-java:0.21.0-sm.1:linux-x86_64")
 }
 ```
 
 The WebRTC Java API is included transitively. Keep the native version matched
-to it; NetworkM 1.2.0 uses WebRTC **0.21.0-sm.1**. Replace the classifier in the
+to it; NetworkM 1.3.0 uses WebRTC **0.21.0-sm.1**. Replace the classifier in the
 example with the one for your platform, or include each platform your
 application supports:
 
