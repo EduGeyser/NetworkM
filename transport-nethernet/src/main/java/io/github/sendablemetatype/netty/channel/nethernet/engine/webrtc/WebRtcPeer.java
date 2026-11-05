@@ -453,6 +453,9 @@ final class WebRtcPeer implements Peer {
      */
     private void holdOrDeliver(LocalEvent event) {
         synchronized (lock) {
+            if (closeRequested.get()) {
+                return;
+            }
             if (!localDescriptionReturned) {
                 heldLocal.add(event);
                 return;
