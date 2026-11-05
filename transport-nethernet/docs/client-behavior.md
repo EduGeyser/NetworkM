@@ -106,6 +106,10 @@ What follows from this:
   header. It drops larger packets on send. On receive it has no size cap and
   accepts up to 256 segments (Decompiled: client 1.26.52 and 1.26.60, BDS
   1.26.52.3 and 1.26.60.28, 2026-09-26).
+- On receive, vanilla closes the session for a segment of 1 byte or less (a
+  header with no payload, which is what an empty message would be) and for a
+  countdown header that is not one less than the previous segment's. Nothing
+  else about a message makes it close (Decompiled, same builds).
 
 ## Networks
 
