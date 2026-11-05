@@ -10,6 +10,9 @@ NetherNet's identity library uses SLF4J 2.0. Applications that use SLF4J logging
 must provide a backend compatible with the 2.0 API. NetworkM leaves backend
 selection to the application; its tests use the SLF4J bridge to Java logging.
 
+What real retail and Education clients send and expect, and how vanilla BDS
+answers, is recorded per version in [docs/client-behavior.md](docs/client-behavior.md).
+
 ## Usage
 
 > [!IMPORTANT]
