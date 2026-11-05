@@ -63,7 +63,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * no construction path can reach an answer without an identity to sign
      * it with.
      */
-    private final ServerIdentity serverIdentity = generateDefaultIdentity();
+    private final ServerIdentity serverIdentity = ServerIdentity.ephemeral("self");
 
     /**
      * Creates a NetherNetServerChannel with a single default engine factory.
@@ -129,14 +129,6 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         this.backendSupplier = backendSupplier;
         this.signaling = signaling;
         this.config = new DefaultNetherServerChannelConfig(this);
-    }
-
-    private static ServerIdentity generateDefaultIdentity() {
-        try {
-            return ServerIdentity.generate("self");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
     }
 
     @Override

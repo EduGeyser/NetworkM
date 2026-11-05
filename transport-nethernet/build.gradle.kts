@@ -15,6 +15,8 @@ dependencies {
 
     implementation(libs.gson)
     implementation(libs.jose4j)
+    // Reads and writes the server identity key as PEM, which the JDK has no stable API for
+    implementation(libs.bouncycastle.pkix)
     // Direct declarations preserve the transitive upgrades for Maven consumers too.
     implementation(libs.slf4j.api)
     implementation(libs.errorprone.annotations)
