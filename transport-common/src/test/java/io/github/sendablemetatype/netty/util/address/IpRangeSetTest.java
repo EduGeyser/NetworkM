@@ -150,6 +150,19 @@ class IpRangeSetTest {
     }
 
     @Test
+    void anIpv4MappedRangeKeepsItsPrefix() throws Exception {
+        IpRangeSet range = IpRangeSet.parse(List.of("::ffff:10.0.0.0/104"));
+        assertTrue(range.contains(InetAddress.getByName("10.1.2.3")));
+        assertFalse(range.contains(InetAddress.getByName("11.0.0.1")));
+
+        IpRangeSet host = IpRangeSet.parse(List.of("::ffff:10.0.0.1/128"));
+        assertTrue(host.contains(InetAddress.getByName("10.0.0.1")));
+        assertFalse(host.contains(InetAddress.getByName("10.0.0.2")));
+
+        assertTrue(IpRangeSet.parse(List.of("::ffff:10.0.0.0/80")).isEmpty(), "Wider than the mapped block");
+    }
+
+    @Test
     void aBareAddressCoversOnlyItself() throws Exception {
         IpRangeSet set = IpRangeSet.parse(List.of("192.168.1.5"));
 

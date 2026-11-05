@@ -100,12 +100,21 @@ public final class IpRangeSet {
     private static List<Range> read(String entry, Resolver resolver) throws UnknownHostException {
         int slash = entry.indexOf('/');
         if (slash >= 0) {
-            InetAddress address = EndpointAddress.parse(entry.substring(0, slash).trim());
+            String literal = entry.substring(0, slash).trim();
+            InetAddress address = EndpointAddress.parse(literal);
             String prefix = entry.substring(slash + 1).trim();
             if (!prefix.matches("[0-9]{1,3}")) {
                 throw new IllegalArgumentException("Invalid prefix length " + prefix);
             }
-            return List.of(Range.of(address, Integer.parseInt(prefix)));
+            int length = Integer.parseInt(prefix);
+            if (address.getAddress().length == 4 && literal.indexOf(':') >= 0) {
+                // An IPv4-mapped IPv6 range; parsing made the address IPv4, so its prefix follows.
+                if (length < 96 || length > 128) {
+                    throw new IllegalArgumentException("An IPv4-mapped range needs a prefix from 96 to 128: " + entry);
+                }
+                length -= 96;
+            }
+            return List.of(Range.of(address, length));
         }
         try {
             InetAddress address = EndpointAddress.parse(entry);
