@@ -106,6 +106,29 @@ Set discovery authentication flags to match the endpoint's admission policy.
 This policy applies to HTTP offers. LAN and Xbox signaling behavior is unchanged,
 as is the server identity assertion attached to answers.
 
+### Xbox signaling
+
+`NetherNetXboxRpcSignaling` keeps its WebSocket to the Xbox signaling service up
+by itself. `bind` and `connect` start it in the background, so a server channel
+binds even while Xbox is unreachable. The consumer provides a token supplier,
+which is asked before every connection attempt; `refresh` is true after the
+service refused the previous token:
+
+```java
+NetherNetXboxRpcSignaling signaling = new NetherNetXboxRpcSignaling(networkId,
+        refresh -> tokens.mcToken(refresh)); // CompletionStage<String>, "MCToken ..."
+signaling.addHealthListener(health -> log.info("Xbox signaling: {}", health));
+```
+
+Failed attempts are retried with exponential backoff (2 s doubling to 2 min,
+with jitter). A lost socket is replaced in place: the network ID, registered
+handlers and connected players stay. A socket counts as lost when the service
+closes it, it fails, no frame arrives for 45 s, two `System_Ping` requests in a
+row go unanswered, or the self-addressed route probe shows that joins no longer
+reach it. `health()` returns the state (`STARTING`, `CONNECTED`,
+`RECONNECTING`, `CLOSED`), the failed attempts in a row, the last failure and
+when the next attempt starts. `reconnect()` replaces the socket on request.
+
 ### LAN advertisements
 
 `NetherNetDiscovery` answers discovery requests with binary server data v7, the

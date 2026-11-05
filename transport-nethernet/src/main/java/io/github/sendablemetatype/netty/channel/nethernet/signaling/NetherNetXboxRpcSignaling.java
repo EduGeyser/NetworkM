@@ -245,12 +245,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     /**
-     * Adds a listener for health changes. It runs on the signaling's event loop and must not block.
+     * Adds a listener for health changes. It sees changes from now on; {@link #health()} gives the
+     * current state. It runs on the signaling's event loop and must not block.
      */
     public void addHealthListener(Consumer<SignalingHealth> listener) {
         supervisor.addListener(listener);
     }
 
+    /** Removes a listener added with {@link #addHealthListener}. */
     public void removeHealthListener(Consumer<SignalingHealth> listener) {
         supervisor.removeListener(listener);
     }
