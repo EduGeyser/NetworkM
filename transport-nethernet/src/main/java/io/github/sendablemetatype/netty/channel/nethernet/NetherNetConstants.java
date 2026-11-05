@@ -31,13 +31,6 @@ public class NetherNetConstants {
     // Signaling User Agent String
     public static final String SIGNALING_USER_AGENT = "libHttpClient/1.0.0.0";
 
-    // Xbox Signaling Message Types
-    public static final int XBOX_SIGNAL_NOT_FOUND = 0;
-    public static final int XBOX_SIGNAL_SIGNAL = 1;
-    public static final int XBOX_SIGNAL_CREDENTIALS = 2;
-    public static final int XBOX_SIGNAL_ACCEPTED = 3;
-    public static final int XBOX_SIGNAL_ACK = 4;
-
     // Xbox JSON-RPC Signaling Method Names
     public static final String XBOX_RPC_METHOD_TURN_AUTH = "Signaling_TurnAuth_v1_0";
     public static final String XBOX_RPC_METHOD_SEND_MESSAGE = "Signaling_SendClientMessage_v1_0";

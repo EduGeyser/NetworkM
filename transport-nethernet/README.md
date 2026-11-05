@@ -27,8 +27,8 @@ leading zeros and numeric-looking IDs outside the uint64 range. Missing IDs,
 malformed percent escapes, invalid UTF-8 and unescaped path delimiters receive
 HTTP 400.
 
-The Xbox WebSocket path encodes the local ID as a single segment; JSON signaling
-keeps peer IDs as strings. Generated IDs remain decimal strings for compatibility.
+Xbox signaling keeps peer IDs as strings. Generated IDs remain decimal strings
+for compatibility.
 LAN discovery still uses uint64 IDs in its binary wire format. The numeric
 `NetherNetAddress` constructor and `getNetworkIdAsLong()` remain available for
 that representation; use `getNetworkId()` when handling opaque IDs.
