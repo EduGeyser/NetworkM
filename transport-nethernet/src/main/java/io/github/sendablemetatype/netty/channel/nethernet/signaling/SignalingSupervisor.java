@@ -137,7 +137,7 @@ final class SignalingSupervisor {
                 attemptNow();
             }
             propagate(next, result);
-        });
+        }, result);
         return result;
     }
 
@@ -162,7 +162,7 @@ final class SignalingSupervisor {
                 attemptNow();
             }
             propagate(next, result);
-        });
+        }, result);
         return result;
     }
 
@@ -354,6 +354,15 @@ final class SignalingSupervisor {
             if (!closed) {
                 log.warn("Signaling executor rejected a task", e);
             }
+        }
+    }
+
+    /** Posts a task a caller waits on through {@code result}, which fails if the task cannot run. */
+    private void post(Runnable task, CompletableFuture<Void> result) {
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException e) {
+            result.completeExceptionally(new ClosedChannelException());
         }
     }
 

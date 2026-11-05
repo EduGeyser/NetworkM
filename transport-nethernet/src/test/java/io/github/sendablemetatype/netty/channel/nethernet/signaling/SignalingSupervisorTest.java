@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.netty.channel.DefaultEventLoop;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -239,6 +240,30 @@ class SignalingSupervisorTest {
         CompletableFuture<Void> afterClose = supervisor.reconnect();
         run();
         assertTrue(afterClose.isCompletedExceptionally());
+    }
+
+    @Test
+    void callsAfterTheExecutorShutDownFailInsteadOfWaitingForever() throws Exception {
+        DefaultEventLoop executor = new DefaultEventLoop();
+        SignalingSupervisor stopped = new SignalingSupervisor(executor,
+                refresh -> CompletableFuture.completedFuture("MCToken"),
+                new SignalingSupervisor.Connector() {
+                    @Override
+                    public CompletionStage<?> open(String token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    @Override
+                    public void abort() {
+                    }
+                });
+        stopped.close();
+        executor.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
+
+        assertInstanceOf(ClosedChannelException.class,
+                assertThrows(CompletionException.class, () -> stopped.reconnect().join()).getCause());
+        assertInstanceOf(ClosedChannelException.class,
+                assertThrows(CompletionException.class, () -> stopped.nextConnection().join()).getCause());
     }
 
     private void succeed(int attempt) {
