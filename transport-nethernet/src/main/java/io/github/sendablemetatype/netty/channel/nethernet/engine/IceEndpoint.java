@@ -14,6 +14,9 @@ import java.util.function.Consumer;
  * joins it through {@link PeerConfig#endpoint()}. A connectivity check from a
  * new address reaches a peer only if it authenticates with that peer's local
  * ICE credentials.
+ *
+ * <p>Settings take effect shortly after their method returns, in the order of
+ * the calls. Queries complete once the endpoint's own thread has answered them.
  */
 public interface IceEndpoint {
 
@@ -65,6 +68,7 @@ public interface IceEndpoint {
      * from that client authenticated. An empty list removes the relays.
      *
      * @param relays the relays
+     * @throws IllegalArgumentException if an entry is neither
      */
     void proxyRelays(List<String> relays);
 
@@ -72,21 +76,26 @@ public interface IceEndpoint {
      * The relay a client's datagrams come through.
      *
      * @param client the client's address as the relay declared it
-     * @return the relay, if the client is behind one
+     * @return completes with the relay, if the client is behind one
      */
-    Optional<InetSocketAddress> relayOf(InetSocketAddress client);
+    CompletionStage<Optional<InetSocketAddress>> relayOf(InetSocketAddress client);
 
     /**
      * Keeps a binding with a STUN server alive from this port, which keeps the
      * port's NAT mapping open and known.
      *
      * @param server the server's resolved address
-     * @return the monitor; close it to stop
+     * @return completes with the monitor, or exceptionally if the endpoint
+     *         cannot send to the server; close the monitor to stop
      */
-    StunMonitor monitorStun(InetSocketAddress server);
+    CompletionStage<StunMonitor> monitorStun(InetSocketAddress server);
 
-    /** The endpoint's counters since it opened, and its current sizes. */
-    Stats stats();
+    /**
+     * The endpoint's counters since it opened, and its current sizes.
+     *
+     * @return completes with the counters
+     */
+    CompletionStage<Stats> stats();
 
     /**
      * Closes the endpoint's sockets. Peers still on it stop sending and
@@ -118,8 +127,13 @@ public interface IceEndpoint {
     /** A STUN binding the endpoint keeps alive. */
     interface StunMonitor extends AutoCloseable {
 
-        /** The binding's state now. */
-        StunReading read();
+        /**
+         * The binding's state now.
+         *
+         * @return completes with the state, or exceptionally once the monitor
+         *         or its endpoint is closed
+         */
+        CompletionStage<StunReading> read();
 
         /** Stops keeping the binding alive. Idempotent. */
         @Override

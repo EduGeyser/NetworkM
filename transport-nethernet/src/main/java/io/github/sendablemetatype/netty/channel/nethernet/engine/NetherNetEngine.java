@@ -21,6 +21,7 @@ public interface NetherNetEngine {
      * @param config the peer's configuration
      * @param listener receives the peer's events on engine threads
      * @return the new peer, owned by the caller
+     * @throws IllegalStateException if the engine is closed
      */
     Peer createPeer(PeerConfig config, PeerListener listener);
 
@@ -28,8 +29,8 @@ public interface NetherNetEngine {
      * Opens a UDP port that peers can share for their ICE host candidates.
      *
      * @param config the port and the local addresses to bind on
-     * @return completes with the endpoint once its sockets are bound, or
-     *         exceptionally if binding failed
+     * @return completes with the endpoint once its port is known to be free,
+     *         or exceptionally if it is taken or the engine is closed
      */
     CompletionStage<IceEndpoint> openEndpoint(EndpointConfig config);
 
