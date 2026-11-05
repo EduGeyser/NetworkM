@@ -148,6 +148,18 @@ class RemoteCandidateIntakeTest {
         assertEquals(RemoteCandidateIntake.MAX_CANDIDATES, taken);
     }
 
+    /** Java reads 008.008.008.008 as an address; the engine would take it for a name and look it up. */
+    @Test
+    void passesAddressesOnInCanonicalForm() {
+        RemoteCandidateIntake intake = RemoteCandidateIntake.server();
+        String offer = intake.remoteDescription(OFFER.replace("192.168.1.76 55473 typ host", "008.008.008.008 55473 typ host"));
+
+        assertTrue(offer.contains("a=candidate:1 1 udp 2122194687 8.8.8.8 55473 typ host generation 0 network-id 1"));
+        assertFalse(offer.contains("008.008.008.008 55473"));
+        assertEquals("candidate:5 1 udp 2130706431 8.8.4.4 5000 typ host",
+                intake.trickled("candidate:5 1 udp 2130706431 008.008.004.004 5000 typ host").orElseThrow().sdp());
+    }
+
     @Test
     void refusesNamesTcpAndUnreadableTrickledCandidates() {
         RemoteCandidateIntake intake = RemoteCandidateIntake.server();

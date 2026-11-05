@@ -144,6 +144,8 @@ public final class RemoteCandidateIntake {
                     continue;
                 }
                 kept++;
+                out.add(candidate.get().withCanonicalAddress().attribute());
+                continue;
             }
             out.add(line);
         }
@@ -168,7 +170,7 @@ public final class RemoteCandidateIntake {
             return Optional.empty();
         }
         this.trickled++;
-        return Optional.of(new RemoteCandidate(line.get().sdp(), this.mid, this.mLineIndex));
+        return Optional.of(new RemoteCandidate(line.get().withCanonicalAddress().sdp(), this.mid, this.mLineIndex));
     }
 
     /**

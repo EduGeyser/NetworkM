@@ -130,6 +130,27 @@ public final class CandidateLine {
     }
 
     /**
+     * The same candidate with its connection address in canonical form. Java reads some literals
+     * that the engine's parser refuses, such as IPv4 with leading zeros ({@code 008.008.008.008});
+     * the engine would take those for a name and look it up. A name comes back as it is.
+     *
+     * @return The candidate with a canonical address
+     */
+    public CandidateLine withCanonicalAddress() {
+        Optional<InetAddress> address = ipAddress();
+        if (address.isEmpty()) {
+            return this;
+        }
+        String canonical = NetUtil.toAddressString(address.get());
+        if (canonical.equals(this.tokens[4])) {
+            return this;
+        }
+        String[] tokens = this.tokens.clone();
+        tokens[4] = canonical;
+        return new CandidateLine(String.join(" ", tokens), tokens, this.type, this.port);
+    }
+
+    /**
      * The same candidate with its related address, which names where a reflexive or relayed
      * candidate came from, replaced by the unspecified address and port 0. A candidate without
      * one comes back as it is.
