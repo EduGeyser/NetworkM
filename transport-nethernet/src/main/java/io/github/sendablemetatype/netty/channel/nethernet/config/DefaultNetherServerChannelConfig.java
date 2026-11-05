@@ -9,6 +9,7 @@ import java.util.Map;
 public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig  {
     private volatile int serverRtcHandshakeTimeoutSeconds = 30;
     private volatile NetherNetAnswerDecorator answerDecorator;
+    private volatile NetherServerMetrics serverMetrics;
 
     public DefaultNetherServerChannelConfig(Channel channel) {
         super(channel);
@@ -18,7 +19,8 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
     public Map<ChannelOption<?>, Object> getOptions() {
         return this.getOptions(
                 super.getOptions(), NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS,
-                NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR
+                NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR,
+                NetherChannelOption.NETHER_SERVER_METRICS
         );
     }
 
@@ -30,6 +32,9 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
         }
         if (option == NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR) {
             return (T) this.answerDecorator;
+        }
+        if (option == NetherChannelOption.NETHER_SERVER_METRICS) {
+            return (T) this.serverMetrics;
         }
 
         return super.getOption(option);
@@ -45,6 +50,9 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
         } else if (option == NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR) {
             this.answerDecorator = (NetherNetAnswerDecorator) value;
             return true;
+        } else if (option == NetherChannelOption.NETHER_SERVER_METRICS) {
+            this.serverMetrics = (NetherServerMetrics) value;
+            return true;
         } else {
             return super.setOption(option, value);
         }
@@ -52,5 +60,9 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
 
     void setServerRtcHandshakeTimeoutSeconds(int serverRtcHandshakeTimeoutSeconds) {
         this.serverRtcHandshakeTimeoutSeconds = serverRtcHandshakeTimeoutSeconds;
+    }
+
+    public NetherServerMetrics getServerMetrics() {
+        return serverMetrics;
     }
 }
