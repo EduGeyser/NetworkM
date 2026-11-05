@@ -47,6 +47,7 @@ import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -122,8 +123,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     static final long LIVENESS_CHECK_SECONDS = 5;
     /** TURN refresh when the service states no lifetime, and the longest wait between refreshes. */
     static final long TURN_REFRESH_FALLBACK_SECONDS = 30 * 60;
-    static final long TURN_REFRESH_MIN_SECONDS = 10;
+    static final long TURN_REFRESH_MIN_SECONDS = 1;
     static final long TURN_RETRY_SECONDS = 60;
+    /** Signals held while a socket waits for its first TURN credentials. */
+    static final int HELD_SIGNAL_LIMIT = 256;
 
     /** Timers tied to one socket's lifetime, cancelled when it goes inactive, so a replaced
      * socket's loops never keep running on the shared event loop. */
@@ -169,6 +172,9 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private record TurnCredentials(List<IceServerInfo> servers, long expirationSeconds) {
     }
 
+    private record HeldSignal(String sender, String message) {
+    }
+
     private final String localNetworkId;
     private final EventLoopGroup eventLoopGroup;
     private final SignalingSupervisor supervisor;
@@ -184,6 +190,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private Channel channel;
     private CompletableFuture<List<IceServerInfo>> connectFuture;
     private boolean closed;
+    // Signals from the current socket that arrived before its first TURN credentials. A join
+    // created then would get no TURN servers, and Xbox offers trickle every candidate, so the
+    // join's later signals wait with it to keep their order.
+    private final ArrayDeque<HeldSignal> heldSignals = new ArrayDeque<>();
 
     // Liveness of the current socket; reset when a socket connects.
     private volatile long lastFrameAtNanos;
@@ -382,6 +392,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             }
             this.token = token;
             connectFuture = future;
+            heldSignals.clear();
         }
         ChannelFuture connect;
         try {
@@ -447,6 +458,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             channel = null;
             attempt = connectFuture;
             connectFuture = null;
+            heldSignals.clear();
         }
         if (attempt != null && !attempt.isDone()) {
             attempt.completeExceptionally(new ClosedChannelException());
@@ -469,6 +481,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             channel = null;
             attempt = connectFuture;
             connectFuture = null;
+            heldSignals.clear();
         }
         if (attempt != null && !attempt.isDone()) {
             attempt.completeExceptionally(cause);
@@ -605,11 +618,19 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     private void scheduleOnce(ChannelHandlerContext ctx, Runnable task, long delaySeconds) {
-        trackSocketTask(ctx, ctx.executor().schedule(() -> {
+        ScheduledFuture<?> future = ctx.executor().schedule(() -> {
             if (isCurrentChannel(ctx.channel()) && ctx.channel().isActive()) {
                 task.run();
             }
-        }, delaySeconds, TimeUnit.SECONDS));
+        }, delaySeconds, TimeUnit.SECONDS);
+        trackSocketTask(ctx, future);
+        // Refresh timers repeat for the socket's whole life; keep only the pending ones.
+        future.addListener(done -> {
+            CopyOnWriteArrayList<ScheduledFuture<?>> tasks = ctx.channel().attr(SOCKET_TASKS).get();
+            if (tasks != null) {
+                tasks.remove(future);
+            }
+        });
     }
 
     private static void trackSocketTask(ChannelHandlerContext ctx, ScheduledFuture<?> future) {
@@ -719,12 +740,17 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                 return;
             }
             TurnCredentials credentials = parseTurnCredentials(response);
-            if (connecting || !credentials.servers().isEmpty()) {
-                iceServers = credentials.servers();
+            if (!connecting && credentials.servers().isEmpty()) {
+                // The kept credentials expire on their own schedule, not the empty answer's.
+                log.warn("TURN refresh returned no servers, keeping the previous ones and retrying in {} s", TURN_RETRY_SECONDS);
+                scheduleOnce(ctx, () -> refreshTurnCredentials(ctx), TURN_RETRY_SECONDS);
+                return;
             }
+            iceServers = credentials.servers();
             scheduleOnce(ctx, () -> refreshTurnCredentials(ctx), turnRefreshDelaySeconds(credentials.expirationSeconds()));
             if (connecting) {
                 attempt.complete(iceServers);
+                replayHeldSignals(source);
             }
         });
     }
@@ -894,11 +920,40 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         if (innerJson != null && NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC.equals(innerMethod)) {
             try {
                 String payload = innerJson.getAsJsonObject("params").get("message").getAsString();
-                dispatchSignal(from, payload);
+                if (!holdUntilCredentials(source, from, payload)) {
+                    dispatchSignal(from, payload);
+                }
             } catch (Exception e) {
                 log.error("Failed to parse inner signaling message from " + from, e);
             }
         }
+    }
+
+    /** Holds the signal if the socket still waits for its first TURN credentials. */
+    private boolean holdUntilCredentials(Channel source, String sender, String message) {
+        synchronized (this) {
+            if (!isCurrentChannel(source) || connectFuture == null || connectFuture.isDone()) {
+                return false;
+            }
+            if (heldSignals.size() >= HELD_SIGNAL_LIMIT) {
+                log.warn("Dropping a signal from {}: {} signals already wait for TURN credentials", sender, HELD_SIGNAL_LIMIT);
+                return true;
+            }
+            heldSignals.add(new HeldSignal(sender, message));
+            return true;
+        }
+    }
+
+    private void replayHeldSignals(Channel source) {
+        List<HeldSignal> held;
+        synchronized (this) {
+            if (!isCurrentChannel(source)) {
+                return;
+            }
+            held = List.copyOf(heldSignals);
+            heldSignals.clear();
+        }
+        held.forEach(signal -> dispatchSignal(signal.sender(), signal.message()));
     }
 
     private void dispatchSignal(String sender, String rawMsg) {

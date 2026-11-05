@@ -221,7 +221,7 @@ class NetherNetXboxRpcSignalingTest {
     // TURN credentials.
 
     @ParameterizedTest
-    @CsvSource({"0, 1800", "-5, 1800", "600, 300", "10, 10", "30, 15", "86400, 1800"})
+    @CsvSource({"0, 1800", "-5, 1800", "600, 300", "10, 5", "1, 1", "30, 15", "86400, 1800"})
     void turnCredentialsAreRefreshedHalfwayThroughTheirLifetime(long lifetime, long refreshAfter) {
         assertEquals(refreshAfter, NetherNetXboxRpcSignaling.turnRefreshDelaySeconds(lifetime));
     }
@@ -240,6 +240,43 @@ class NetherNetXboxRpcSignalingTest {
         assertEquals(List.of("turn:b.invalid"), signaling.getIceServers().getFirst().urls());
         assertTrue(turnRequests(keepAlive(socket, 1795)).isEmpty());
         assertEquals(1, turnRequests(keepAlive(socket, 5)).size());
+    }
+
+    @Test
+    void anEmptyRefreshRetriesBeforeTheKeptCredentialsExpire() {
+        tokenCarriesPlayerId = false;
+        EmbeddedChannel socket = connect(turnResult(600, "turn:a.invalid"));
+
+        JsonObject refresh = turnRequests(keepAlive(socket, 300)).getFirst();
+        respond(socket, refresh.get("id").getAsString(), "result", turnResult(0));
+        run();
+
+        assertEquals(List.of("turn:a.invalid"), signaling.getIceServers().getFirst().urls());
+        assertTrue(turnRequests(keepAlive(socket, 55)).isEmpty());
+        assertEquals(1, turnRequests(keepAlive(socket, 5)).size());
+    }
+
+    @Test
+    void joinsWaitForTheFirstTurnCredentialsAndKeepTheirSignalOrder() {
+        List<String> events = new ArrayList<>();
+        signaling.setNewConnectionHandler((connectionId, remoteNetworkId, payload) -> {
+            events.add("join " + payload + " with " + signaling.getIceServers().size() + " TURN servers");
+            signaling.setSignalHandler(connectionId, events::add);
+        });
+        signaling.start();
+        run();
+        EmbeddedChannel socket = signaling.sockets.getLast();
+        socket.pipeline().fireUserEventTriggered(WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE);
+        JsonObject turn = turnRequests(drain(socket)).getFirst();
+
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        receiveWebRtc(socket, "CANDIDATEADD 9 candidate", false);
+        assertEquals(List.of(), events);
+
+        respond(socket, turn.get("id").getAsString(), "result", turnResult(0, "turn:a.invalid"));
+        run();
+
+        assertEquals(List.of("join offer with 1 TURN servers", "CANDIDATEADD 9 candidate"), events);
     }
 
     @Test
