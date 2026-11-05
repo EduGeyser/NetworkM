@@ -87,6 +87,15 @@ class AnswerCandidatesTest {
         return sdp.lines().filter(line -> line.contains(part)).count();
     }
 
+    @Test
+    void aSessionLevelConnectionLineNamesOnlyWhatARelayedAnswerAnnounces() {
+        String answer = relayed(ANSWER.replace("t=0 0\r\n", "t=0 0\r\nc=IN IP4 192.168.1.5\r\n")
+                .replace("c=IN IP4 203.0.113.50\r\n", ""), "198.51.100.200:19132");
+
+        assertFalse(answer.contains("192.168.1.5"), answer);
+        assertFalse(answer.contains("203.0.113.50"), answer);
+    }
+
     // Advertised addresses, ported from upstream's SdpUtilTest
 
     @Test

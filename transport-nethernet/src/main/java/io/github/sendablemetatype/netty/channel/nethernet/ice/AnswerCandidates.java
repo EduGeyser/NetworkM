@@ -48,6 +48,9 @@ public final class AnswerCandidates {
      * this rewrite, not before. Then each m-section's {@code m=} port and {@code c=} address are
      * set from the candidates it now announces, so that a relayed or narrowed answer names only
      * what it announces. Blank lines are removed.
+     * <p>
+     * NetherNet descriptions carry one bundled application section, so every candidate belongs to
+     * the first m-section; announced candidates join that section.
      *
      * @param sdp          The answer as the engine produced it, after gathering
      * @param announcement What to announce
@@ -164,18 +167,30 @@ public final class AnswerCandidates {
     static List<String> withConnectionAddresses(List<String> lines) {
         List<String> out = new ArrayList<>(lines);
         int start = -1;
+        String firstConnection = null;
         for (int i = 0; i <= out.size(); i++) {
             if (i == out.size() || out.get(i).startsWith("m=")) {
                 if (start >= 0) {
-                    updateSection(out, start, i);
+                    String connection = updateSection(out, start, i);
+                    if (firstConnection == null) {
+                        firstConnection = connection;
+                    }
                 }
                 start = i;
+            }
+        }
+        // A session-level c= line is the default for sections without their own, so it must not
+        // keep naming an address the answer no longer announces.
+        for (int i = 0; firstConnection != null && i < out.size() && !out.get(i).startsWith("m="); i++) {
+            if (out.get(i).startsWith("c=")) {
+                out.set(i, firstConnection);
             }
         }
         return out;
     }
 
-    private static void updateSection(List<String> lines, int start, int end) {
+    /** Updates one section and returns its connection line. */
+    private static String updateSection(List<String> lines, int start, int end) {
         InetAddress address = null;
         int port = 9;
         int preference = 0;
@@ -207,12 +222,14 @@ public final class AnswerCandidates {
         if (media.length == 3 && !"0".equals(media[1])) {
             lines.set(start, media[0] + " " + port + " " + media[2]);
         }
+        String connection = address == null ? "c=IN IP4 0.0.0.0"
+                : "c=IN " + (address instanceof Inet4Address ? "IP4 " : "IP6 ") + NetUtil.toAddressString(address);
         for (int i = start + 1; i < end; i++) {
             if (lines.get(i).startsWith("c=")) {
-                lines.set(i, address == null ? "c=IN IP4 0.0.0.0"
-                        : "c=IN " + (address instanceof Inet4Address ? "IP4 " : "IP6 ") + NetUtil.toAddressString(address));
+                lines.set(i, connection);
                 break;
             }
         }
+        return connection;
     }
 }
