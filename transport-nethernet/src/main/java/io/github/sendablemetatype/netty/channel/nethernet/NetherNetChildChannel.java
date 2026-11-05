@@ -1,9 +1,13 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherChannelConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoop;
@@ -13,25 +17,46 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.PublicKey;
 import java.util.Objects;
-import java.util.function.DoubleConsumer;
-import java.util.function.Consumer;
 
 /**
- * A server accepted NetherNet connection, backed by a
- * {@link WebRtcSession} from the backend seam. The parent server channel
- * bridges session events (open, close, inbound messages, remote address)
- * into this channel.
+ * A NetherNet connection a {@link NetherNetServerChannel} accepted. The server
+ * exposes it as soon as it accepts the join; the child owns its engine peer
+ * from creation, negotiates in its own initializer once registered, and goes
+ * active when the client opened both data channels and the reliable one is
+ * open.
  */
 public class NetherNetChildChannel extends NetherNetChannel {
     /** Validated offer identity, also accessible through channel wrappers that delegate attributes. */
     public static final AttributeKey<ClientIdentity> CLIENT_IDENTITY =
             AttributeKey.valueOf(NetherNetChildChannel.class, "clientIdentity");
 
-    private volatile WebRtcSession session;
+    /**
+     * The connection ID the client chose for this join, as an unsigned decimal
+     * string: what ties the child back to its offer and its signaling.
+     */
+    public static final AttributeKey<String> CONNECTION_ID =
+            AttributeKey.valueOf(NetherNetChildChannel.class, "connectionId");
 
-    public NetherNetChildChannel(Channel parent, InetSocketAddress remote, InetSocketAddress local) {
+    private final DataChannelSlots slots = new DataChannelSlots();
+    private final Negotiation negotiation;
+    private volatile boolean reliableOpen;
+
+    NetherNetChildChannel(Channel parent, InetSocketAddress remote, InetSocketAddress local, Negotiation negotiation) {
         super(parent, remote, local);
+        this.negotiation = Objects.requireNonNull(negotiation, "negotiation");
         this.config = new DefaultNetherChannelConfig(this);
+    }
+
+    /**
+     * The server side of the join's signaling, which the child's peer events
+     * feed. Called on engine threads.
+     */
+    interface Negotiation {
+        /** The peer gathered a local candidate. */
+        void localCandidate(String candidate, String mid);
+
+        /** Negotiation failed; the remote peer should hear so. */
+        void failed(String reason);
     }
 
     /** Returns the validated offer identity, or null when validation was disabled or unsupported by the signaling path. */
@@ -57,22 +82,74 @@ public class NetherNetChildChannel extends NetherNetChannel {
     }
 
     /**
-     * Attaches the negotiated session. Called once by the server channel
-     * right after the backend accepts the offer, before the transport can
-     * open.
+     * Creates this child's peer, which the child owns from now on and closes
+     * with itself. A child closed meanwhile closes the peer at once.
      */
-    public void attachSession(WebRtcSession session) {
-        Objects.requireNonNull(session, "session");
-        synchronized (this) {
-            if (isOpen()) {
-                if (this.session != null) {
-                    throw new IllegalStateException("A session is already attached");
-                }
-                this.session = session;
-                return;
+    Peer openPeer(NetherNetEngine engine, PeerConfig peerConfig) {
+        Peer created = engine.createPeer(peerConfig, new Events());
+        attachPeer(created);
+        return created;
+    }
+
+    /** The remote peer said it gave up. */
+    void connectErrorReceived() {
+        if (!isActive()) {
+            connectionFailed(NetherConnectionFailure.CONNECT_ERROR);
+        }
+        close();
+    }
+
+    private final class Events extends PeerEvents {
+        @Override
+        public void onLocalCandidate(String candidate, String mid) {
+            if (!stale()) {
+                negotiation.localCandidate(candidate, mid);
             }
         }
-        session.close();
+
+        @Override
+        public void onGatheringComplete() {
+            // A full ICE answer waits on Peer.gatheredLocalDescription instead.
+        }
+
+        @Override
+        public boolean onRemoteChannel(DataLink link) {
+            if (stale() || !slots.admit(link)) {
+                return false;
+            }
+            if (link == slots.reliable()) {
+                if (reliableLink() != link) {
+                    bindReliable(link);
+                }
+            } else {
+                bindUnreliable(link);
+            }
+            activateIfReady();
+            return true;
+        }
+
+        @Override
+        public void onChannelOpen(DataLink link) {
+            if (!stale() && link == slots.reliable()) {
+                reliableOpen = true;
+                activateIfReady();
+            }
+        }
+
+        @Override
+        void endedBeforeActivation(CloseCause cause, boolean reliableChannel) {
+            connectionFailed(failureOf(cause));
+            if (cause == CloseCause.NEGOTIATION_FAILED) {
+                negotiation.failed("Negotiation failed");
+            }
+            close();
+        }
+    }
+
+    private void activateIfReady() {
+        if (reliableOpen && slots.complete()) {
+            markTransportOpen();
+        }
     }
 
     @Override
@@ -86,25 +163,6 @@ public class NetherNetChildChannel extends NetherNetChannel {
                 throw e;
             }
             return parent().eventLoop();
-        }
-    }
-
-    @Override
-    protected void sendFramed(ByteBuf framed, Consumer<Throwable> completion) {
-        WebRtcSession session = this.session;
-        if (session == null) {
-            throw new IllegalStateException("WebRTC session is unavailable");
-        }
-        session.send(toNioBuffer(framed), completion);
-    }
-
-    @Override
-    protected void requestRttSample(DoubleConsumer callback) {
-        WebRtcSession session = this.session;
-        if (session != null) {
-            session.requestRtt(callback);
-        } else {
-            callback.accept(-1);
         }
     }
 
@@ -125,14 +183,7 @@ public class NetherNetChildChannel extends NetherNetChannel {
 
     @Override
     protected void doClose() throws Exception {
-        WebRtcSession session;
-        synchronized (this) {
-            super.doClose();
-            session = this.session;
-            this.session = null;
-        }
-        if (session != null) {
-            session.close();
-        }
+        slots.stopAccepting();
+        super.doClose();
     }
 }

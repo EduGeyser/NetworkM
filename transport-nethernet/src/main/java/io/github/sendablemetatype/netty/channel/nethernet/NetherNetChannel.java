@@ -1,8 +1,21 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.TransportChannel;
+import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherChannelConfig;
-import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetFramingCodec;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.buffer.DefaultByteBufHolder;
 import io.netty.buffer.Unpooled;
@@ -13,11 +26,10 @@ import io.netty.channel.ChannelMetadata;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoop;
-import io.netty.util.ReferenceCountUtil;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.IllegalReferenceCountException;
-import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.concurrent.SingleThreadEventExecutor;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -28,108 +40,122 @@ import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.function.DoubleConsumer;
-import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 /**
- * Base netty channel for NetherNet connections. Deliberately thin: it moves
- * already framed messages between the pipeline and the underlying WebRTC
- * transport and manages activation state. NetherNet's countdown framing is
- * NOT handled here; pipelines built on this channel must install
- * {@link io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetFramingCodec},
- * which performs fragmentation and reassembly. Messages written to this
- * channel are therefore expected to already carry their framing header and
- * fit within the negotiated maximum message size, and messages fired into
- * the pipeline still carry their header byte. Reliable frames are byte buffers;
- * unreliable frames use {@link NetherNetUnreliableFrame} until the codec decodes
- * them into independent messages. All outbound writes remain reliable.
+ * A NetherNet connection over one engine {@link Peer}: a reliable and an
+ * unreliable data channel, each message carried whole.
+ *
+ * <p><b>Writing.</b> A plain {@link ByteBuf} goes on the reliable channel, a
+ * {@link NetherNetPacket} on the channel it names. The channel splits a message
+ * into segments of the size the remote peer negotiated, each with a countdown
+ * header, at most {@value NetherNetConstants#MAX_SEGMENTS} of them; a longer
+ * message fails its write before anything is sent, and an empty one sends
+ * nothing. A write completes once the engine accepted every segment. While a
+ * data channel's engine queue holds more than
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_SEND_PAUSE_BYTES}
+ * the channel stops handing segments over and turns unwritable; past
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_MAX_QUEUED_BYTES}
+ * waiting in Java as well, the connection ends with
+ * {@link TransportDisconnectReason#QUEUE_TOO_LONG}.
+ *
+ * <p><b>Reading.</b> A reliable message arrives as a {@link ByteBuf}, an
+ * unreliable one as a {@link NetherNetPacket} with {@code reliable} false.
+ * {@code autoRead} and {@code read()} are honored: messages wait in a bounded
+ * queue, and a queue that overflows ends the connection with
+ * {@link TransportDisconnectReason#QUEUE_TOO_LONG}. Broken framing on the
+ * reliable channel ends it with {@link TransportDisconnectReason#BAD_PACKET}, a
+ * message over
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_MAX_REASSEMBLED_BYTES}
+ * with {@link TransportDisconnectReason#SPLIT_QUEUE_TOO_LONG}.
+ *
+ * <p><b>Ending.</b> The channel stays active until it closes, so every close
+ * after activation passes through {@code channelInactive}. When the transport
+ * ends the connection, one {@link TransportDisconnectReason} is fired as a user
+ * event on the event loop just before the close, and only if
+ * {@code channelActive} fired; closing from the application fires nothing.
  */
-public abstract class NetherNetChannel extends AbstractChannel {
+public abstract class NetherNetChannel extends AbstractChannel implements TransportChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetChannel.class);
     protected static final ChannelMetadata METADATA = new ChannelMetadata(false);
 
-    /**
-     * Stop handing messages to the engine once this many bytes sit unsent in
-     * its buffer. The engine's own buffer is finite and overflowing it kills
-     * the connection, so above this mark writes stay queued in netty's
-     * outbound buffer (flipping the channel's writability flag) and the
-     * remote peer's receive rate paces the flow.
-     */
-    private static final long ENGINE_HIGH_WATER_MARK = 2 * 1024 * 1024;
-    /** Resume handing messages to the engine below this many unsent bytes. */
-    private static final long ENGINE_RESUME_LOW_WATER_MARK = 512 * 1024;
-    /**
-     * A peer that cannot drain the engine buffer AND lets this many bytes
-     * accumulate behind it is not experiencing a burst, it is unrecoverably
-     * slow; close deterministically instead of queueing without bound.
-     */
-    private static final long MAX_BACKLOG_BYTES = 8 * 1024 * 1024;
-    // Leave room for two maximum-sized messages, including their fragment headers.
-    private static final int MAX_PENDING_INBOUND_MESSAGES = 2 * NetherNetFramingCodec.MAX_FRAGMENT_COUNT;
-    private static final long MAX_PENDING_INBOUND_BYTES = 2L * NetherNetFramingCodec.MAX_REASSEMBLED_SIZE
-            + MAX_PENDING_INBOUND_MESSAGES;
+    private static final int MAX_PENDING_INBOUND_MESSAGES = 512;
     private static final int MAX_MESSAGES_PER_DRAIN = 64;
+    /** The user-defined writability bit that the transport's send pause turns off. */
+    private static final int SEND_PAUSE_WRITABILITY = 1;
 
     protected DefaultNetherChannelConfig config;
     protected volatile SocketAddress remoteAddress;
     protected volatile SocketAddress localAddress;
 
+    private final Object peerLock = new Object();
+    private Peer peer; // guarded by peerLock
+    private CompletableFuture<Void> retiredPeers = CompletableFuture.completedFuture(null); // guarded by peerLock
+    private final CompletableFuture<Void> termination = new CompletableFuture<>();
+    private volatile DataLink reliableLink;
+    private volatile DataLink unreliableLink;
+    private volatile NetherNetMessageAssembler assembler;
+
     private final AtomicBoolean channelActiveFired = new AtomicBoolean();
+    private final AtomicBoolean failureReported = new AtomicBoolean();
     private final Object inboundLock = new Object();
     private final Runnable inboundDrainTask = this::drainInbound;
     private final Runnable clearReadPendingTask = () -> this.readPending = false;
     private volatile boolean inboundReady;
     private volatile boolean inboundClosed;
     private volatile boolean readPending;
-    private Queue<Object> pendingInbound;
-    private int pendingInboundBytes;
+    private Queue<NetherNetPacket> pendingInbound;
+    private long pendingInboundBytes;
     private boolean inboundDrainScheduled;
     private volatile boolean inboundDrainRejected;
 
-    // Native acceptance completes a write; only buffered-amount notifications
-    // reduce this counter. Failed sends may also be included in those deltas.
-    private final AtomicLong engineOutstanding = new AtomicLong();
-    private final AtomicReference<IOException> writeFailure = new AtomicReference<>();
-    private final AtomicBoolean writeCompletionScheduled = new AtomicBoolean();
-    private final Runnable writeCompletionTask = this::completeWrites;
+    // Why the transport ended the connection; the first ending wins. Set from
+    // any thread, acted on by the event loop through the shared wakeup.
+    private final AtomicReference<Ending> ending = new AtomicReference<>();
+    private final AtomicBoolean wakeUpScheduled = new AtomicBoolean();
+    private final Runnable wakeUpTask = this::onWakeUp;
+    private final Runnable applyPathTask = this::applyPath;
     private final Runnable shutdownHook = () -> {
         if (isOpen() && eventLoop().inEventLoop()) {
-            IOException failure = writeFailure.get();
-            ((NetherNetUnsafe) unsafe()).closeWithSendFailure(failure != null ? failure
+            Ending end = ending.get();
+            ((NetherNetUnsafe) unsafe()).closeWithFailure(end != null ? end.cause()
                     : new IOException("Event loop stopped before NetherNet sends completed"));
         }
     };
-    // Netty retains native-pending writes; keep unsent frames reachable without scanning them.
+    // Netty retains engine-pending writes; keep unsent ones reachable without scanning them.
     private PendingWrite unsubmittedHead;
     private PendingWrite unsubmittedTail;
     private PendingWrite flushedWriteTail;
     private boolean removingCompletedWrites;
-    // Set on the event loop when doWrite pauses on the high water mark; the
-    // engine thread that drains below the low water mark clears it and
-    // schedules the resume flush. The writer rechecks the counter after
-    // setting the flag so a concurrent drain cannot lose the wakeup.
+    // Set on the event loop when a data channel's engine queue is full; the
+    // engine thread that reports the queue low clears it and wakes the loop.
+    // The writer rechecks the queue after setting the flag so a concurrent
+    // drain cannot lose the wakeup.
     private volatile boolean writesPaused;
 
     private volatile boolean transportOpen;
+    private volatile TransportPath latestPath;
 
-    // Latest ICE round trip time in milliseconds, sampled periodically while
-    // the channel is active; negative until the first measurement arrives.
-    // Failed samples keep the last good value.
+    // Latest ICE round trip time in milliseconds, sampled while the channel is
+    // active; negative until the first measurement. Failed samples keep the
+    // last good value.
     private volatile long rttMillis = -1;
     private ScheduledFuture<?> rttSampler;
     protected volatile boolean open = true;
 
     /**
-     * Maximum outbound SCTP message size in bytes, the a=max-message-size the
-     * remote peer advertised. Read live by the framing codec so a value
-     * negotiated after pipeline construction is honored.
+     * Largest segment the remote peer accepts, header included: its
+     * {@code a=max-message-size}, capped at our own outgoing limit.
      */
     private volatile int maxOutboundMessageSize = NetherNetConstants.DEFAULT_SCTP_MESSAGE_SIZE;
 
@@ -139,26 +165,330 @@ public abstract class NetherNetChannel extends AbstractChannel {
         this.localAddress = local;
     }
 
+    /** Why the transport ended a connection, and the failure pending writes get. */
+    private record Ending(TransportDisconnectReason reason, IOException cause) {
+    }
+
+    // ---- Engine state ----
+
+    /** The current peer, or null before it exists and after close. */
+    final Peer peer() {
+        synchronized (peerLock) {
+            return peer;
+        }
+    }
+
     /**
-     * Sets the maximum outbound SCTP message size, in bytes, for this channel.
-     * Should be the {@code a=max-message-size} the remote peer advertised in
-     * its SDP. Zero means unlimited; our local outgoing ceiling still applies.
+     * Makes {@code created} this channel's peer. A channel that closed already
+     * closes it instead.
+     */
+    final void attachPeer(Peer created) {
+        boolean closed;
+        synchronized (peerLock) {
+            closed = !open;
+            if (!closed) {
+                peer = created;
+            }
+        }
+        if (closed) {
+            closeQuietly(created);
+        }
+    }
+
+    /**
+     * Closes the current peer and unbinds its data channels, for a client that
+     * starts another attempt. The channel's termination still waits for the
+     * old peer's teardown.
+     */
+    final void retirePeer() {
+        unbindLinks();
+        synchronized (peerLock) {
+            if (peer != null) {
+                retiredPeers = CompletableFuture.allOf(retiredPeers, closeQuietly(peer));
+                peer = null;
+            }
+        }
+    }
+
+    /** Binds the reliable data channel: the one segments are assembled from and written to by default. */
+    final void bindReliable(DataLink link) {
+        NetherNetMessageAssembler previous = assembler;
+        assembler = new NetherNetMessageAssembler();
+        if (previous != null) {
+            previous.close();
+        }
+        link.lowWatermark(resumeMark());
+        reliableLink = link;
+    }
+
+    final void bindUnreliable(DataLink link) {
+        link.lowWatermark(resumeMark());
+        unreliableLink = link;
+    }
+
+    final DataLink reliableLink() {
+        return reliableLink;
+    }
+
+    private void unbindLinks() {
+        NetherNetMessageAssembler previous = assembler;
+        assembler = null;
+        if (previous != null) {
+            previous.close();
+        }
+        reliableLink = null;
+        unreliableLink = null;
+    }
+
+    private static CompletableFuture<Void> closeQuietly(Peer peer) {
+        try {
+            return peer.close().toCompletableFuture().handle((ignored, failure) -> null);
+        } catch (RuntimeException e) {
+            log.debug("Closing a NetherNet peer failed: {}", e.toString());
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    /**
+     * Completes once this channel is closed and the teardown of every peer it
+     * had finished. Capacity held for the connection is released here, not
+     * when the close future completes.
      *
-     * @param size the negotiated maximum message size
+     * @return the termination stage
+     */
+    public CompletionStage<Void> termination() {
+        return termination.minimalCompletionStage();
+    }
+
+    /**
+     * The engine's events for one peer, handed to the engine at peer creation.
+     * Callbacks run on engine threads; everything they touch is thread safe
+     * or hops onto the event loop. Teardown never runs inside a callback: a
+     * close requested here runs on the event loop.
+     */
+    abstract class PeerEvents implements PeerListener {
+
+        /** Whether this peer's events no longer concern the channel. */
+        boolean stale() {
+            return !isOpen();
+        }
+
+        /** The peer, or its reliable data channel, ended before the channel became active. */
+        abstract void endedBeforeActivation(CloseCause cause, boolean reliableChannel);
+
+        @Override
+        public void onMessage(DataLink link, ByteBuffer message) {
+            if (!stale()) {
+                inbound(link, message);
+            }
+        }
+
+        @Override
+        public void onQueueLow(DataLink link) {
+            if (!stale()) {
+                queueLow(link);
+            }
+        }
+
+        @Override
+        public void onPathSelected(TransportPath path) {
+            if (!stale()) {
+                pathSelected(path);
+            }
+        }
+
+        @Override
+        public void onStateChange(PeerState state) {
+            if (stale()) {
+                return;
+            }
+            NetherChannelMetrics metrics = config.getMetrics();
+            if (metrics != null) {
+                try {
+                    metrics.peerStateChange(state);
+                    TransportPath path = latestPath;
+                    if (state == PeerState.CONNECTED && path != null) {
+                        metrics.pathSelected(path.localType(), path.remoteType());
+                    }
+                } catch (RuntimeException e) {
+                    log.debug("NetherNet metrics failed", e);
+                }
+            }
+        }
+
+        @Override
+        public void onIceStateChange(IceState state) {
+            NetherChannelMetrics metrics = config.getMetrics();
+            if (!stale() && metrics != null) {
+                try {
+                    metrics.iceStateChange(state);
+                } catch (RuntimeException e) {
+                    log.debug("NetherNet metrics failed", e);
+                }
+            }
+        }
+
+        // Only the reliable channel ends the connection: vanilla never sends
+        // on the unreliable one, and the connection carries on without it.
+        @Override
+        public void onChannelClosed(DataLink link, CloseCause cause) {
+            if (!stale() && link == reliableLink) {
+                ended(cause, true);
+            }
+        }
+
+        @Override
+        public void onClosed(CloseCause cause) {
+            if (!stale()) {
+                ended(cause, false);
+            }
+        }
+
+        private void ended(CloseCause cause, boolean reliableChannel) {
+            if (isActive()) {
+                transportEnded(cause, reliableChannel);
+            } else {
+                endedBeforeActivation(cause, reliableChannel);
+            }
+        }
+    }
+
+    /** The peer, or its reliable data channel, ended underneath an active channel. Any thread. */
+    final void transportEnded(CloseCause cause, boolean reliableChannel) {
+        endTransport(disconnectReason(cause, reliableChannel), new IOException("The NetherNet "
+                + (reliableChannel ? "reliable data channel" : "peer") + " ended: " + cause));
+    }
+
+    /**
+     * Maps how the engine says a connection ended to the reason fired.
+     *
+     * <p>On libwebrtc a dead peer shows up only as ICE failure, since dcSCTP
+     * never gives up on retransmissions; that reads as
+     * {@link TransportDisconnectReason#CONNECTION_LOST}.
+     */
+    static TransportDisconnectReason disconnectReason(CloseCause cause, boolean reliableChannel) {
+        return switch (cause) {
+            case REMOTE_CLOSED -> TransportDisconnectReason.CLOSED_BY_REMOTE_PEER;
+            case REMOTE_ABORTED -> TransportDisconnectReason.ABORTED_BY_REMOTE_PEER;
+            case ICE_FAILED -> TransportDisconnectReason.CONNECTION_LOST;
+            case TRANSPORT_FAILED, NEGOTIATION_FAILED -> TransportDisconnectReason.TRANSPORT_FAILED;
+            // A data channel that closed while its peer did not fail was closed
+            // by the remote; a peer that ended without saying why failed.
+            case UNKNOWN -> reliableChannel ? TransportDisconnectReason.CLOSED_BY_REMOTE_PEER
+                    : TransportDisconnectReason.TRANSPORT_FAILED;
+        };
+    }
+
+    /** Reports that this attempt ended before it carried traffic, at most once per attempt. */
+    final void connectionFailed(NetherConnectionFailure reason) {
+        NetherChannelMetrics metrics = config.getMetrics();
+        if (metrics != null && failureReported.compareAndSet(false, true)) {
+            try {
+                metrics.connectionFailed(reason);
+            } catch (RuntimeException e) {
+                log.debug("NetherNet metrics failed", e);
+            }
+        }
+    }
+
+    /** Starts a new attempt, so its failure is reportable again. */
+    final void clearFailureReported() {
+        failureReported.set(false);
+    }
+
+    static NetherConnectionFailure failureOf(CloseCause cause) {
+        return switch (cause) {
+            case NEGOTIATION_FAILED -> NetherConnectionFailure.NEGOTIATION_FAILED;
+            case REMOTE_CLOSED, REMOTE_ABORTED -> NetherConnectionFailure.PEER_CLOSED;
+            case ICE_FAILED, TRANSPORT_FAILED, UNKNOWN -> NetherConnectionFailure.PEER_FAILED;
+        };
+    }
+
+    /**
+     * The ICE servers a peer uses: the configured ones, then the ones the
+     * signaling handed out. Entries without URLs are skipped.
+     */
+    static List<IceServer> iceServers(List<IceServer> configured,
+                                      List<NetherNetSignaling.IceServerInfo> signaled) {
+        List<IceServer> servers = new ArrayList<>(configured);
+        if (signaled != null) {
+            for (NetherNetSignaling.IceServerInfo info : signaled) {
+                if (info.urls() == null || info.urls().isEmpty()) {
+                    continue;
+                }
+                servers.add(new IceServer(info.urls(), blankToNull(info.username()), blankToNull(info.password())));
+            }
+        }
+        return servers;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    // ---- Remote address ----
+
+    /** Engine thread: ICE selected a pair. Applied on the event loop, in step with the pipeline. */
+    final void pathSelected(TransportPath path) {
+        latestPath = path;
+        try {
+            eventLoop().execute(applyPathTask);
+        } catch (RejectedExecutionException | IllegalStateException closing) {
+            // The loop is gone or the channel never registered; nobody reads the address anymore.
+        }
+    }
+
+    /**
+     * Moves {@link #remoteAddress()} to the newest selected pair's remote side.
+     * For a relayed pair that is the TURN relay, the transport peer actually
+     * connected to us, never the address the client declared behind it. A
+     * client that dialed a network ID keeps that as its remote address.
+     */
+    private void applyPath() {
+        EventLoop loop = eventLoop();
+        if (!loop.inEventLoop()) {
+            pathSelected(latestPath);
+            return;
+        }
+        TransportPath path = latestPath;
+        InetSocketAddress remote = path == null ? null : path.remote();
+        if (!isOpen() || remote == null || remote.isUnresolved()
+                || !(remoteAddress instanceof InetSocketAddress) || remote.equals(remoteAddress)) {
+            return;
+        }
+        // The addressing merge adds the address's source and a change event here.
+        remoteAddress = remote;
+    }
+
+    // ---- Message size ----
+
+    /**
+     * Sets the largest outbound segment, header included: the
+     * {@code a=max-message-size} the remote peer advertised. Zero means
+     * unlimited; our own outgoing limit still applies.
+     *
      * @throws IllegalArgumentException if negative or too small for a header and payload
      */
-    public void setMaxOutboundMessageSize(int size) {
+    void setMaxOutboundMessageSize(int size) {
         this.maxOutboundMessageSize = NetherNetConstants.outboundMessageSize(size);
     }
 
+    /** The largest outbound segment, header included. */
     public int getMaxOutboundMessageSize() {
         return maxOutboundMessageSize;
     }
 
+    @Override
+    public int maxMessageSize() {
+        return NetherNetConstants.MAX_SEGMENTS * (maxOutboundMessageSize - 1);
+    }
+
+    // ---- Activation ----
+
     /**
-     * Signals that the underlying transport can carry traffic. Safe to call
-     * from any thread; fires channelActive on the event loop once the channel
-     * is also registered.
+     * Signals that the transport can carry traffic. Safe to call from any
+     * thread; fires channelActive on the event loop once the channel is also
+     * registered.
      */
     protected void markTransportOpen() {
         transportOpen = true;
@@ -167,76 +497,151 @@ public abstract class NetherNetChannel extends AbstractChannel {
         }
     }
 
-    protected void markTransportClosed() {
-        transportOpen = false;
-    }
-
-    /**
-     * Delivers one raw framed message from the transport into the pipeline.
-     * Safe to call from engine threads: the callback scoped buffer is copied
-     * exactly once here, then handed to the event loop in arrival order.
-     */
-    protected void deliverInbound(ByteBuffer data) {
-        deliverInbound(data, true);
-    }
-
-    /**
-     * Copies a callback-scoped frame, preserving its data channel until decoding.
-     * Both channels share read demand and the same inbound queue budget.
-     */
-    protected void deliverInbound(ByteBuffer data, boolean reliable) {
-        if (!open || inboundClosed || !data.hasRemaining()) {
+    protected void fireChannelActiveIfReady() {
+        if (!isRegistered() || !isActive()) {
             return;
         }
-        boolean overflow = false;
-        synchronized (inboundLock) {
-            if (!isOpen() || inboundClosed) {
+
+        // Activation state and the sampler are owned by the event loop.
+        EventLoop loop = eventLoop();
+        if (!loop.inEventLoop()) {
+            loop.execute(this::fireChannelActiveIfReady);
+            return;
+        }
+
+        if (channelActiveFired.compareAndSet(false, true)) {
+            // Started before firing active: a handler that closes the channel
+            // synchronously from channelActive runs doClose first otherwise,
+            // and the sampler created afterwards would never be cancelled.
+            startRttSampler();
+            pipeline().fireChannelActive();
+        }
+        requestInboundDrain();
+    }
+
+    // ---- Inbound ----
+
+    /**
+     * Engine thread: a segment arrived. The callback-scoped buffer is copied
+     * once; whole messages wait for the event loop in arrival order.
+     */
+    final void inbound(DataLink link, ByteBuffer message) {
+        if (!open || inboundClosed) {
+            return;
+        }
+        NetherChannelMetrics metrics = config.getMetrics();
+        NetherNetPacket packet;
+        if (link == reliableLink) {
+            NetherNetMessageAssembler current = assembler;
+            if (current == null) {
                 return;
             }
-            int bytes = data.remaining();
-            if (bytes <= MAX_PENDING_INBOUND_BYTES - pendingInboundBytes
-                    && (pendingInbound == null || pendingInbound.size() < MAX_PENDING_INBOUND_MESSAGES)) {
-                ByteBuf copy = config.getAllocator().buffer(bytes);
-                try {
-                    copy.writeBytes(data);
-                } catch (Throwable cause) {
-                    copy.release();
-                    throw cause;
-                }
-                if (pendingInbound == null) {
-                    pendingInbound = new ArrayDeque<>();
-                }
-                pendingInbound.add(reliable ? copy : new NetherNetUnreliableFrame(copy));
-                pendingInboundBytes += bytes;
-            } else {
-                inboundClosed = true;
-                overflow = true;
+            ByteBuf whole;
+            try {
+                whole = current.decode(message, config.getAllocator(), config.getMaxReassembledBytes(), metrics);
+            } catch (NetherNetFramingException broken) {
+                log.debug("Closing {}: {}", this, broken.getMessage());
+                endTransport(broken.reason(), new IOException(broken.getMessage()));
+                return;
             }
+            if (whole == null) {
+                return;
+            }
+            packet = new NetherNetPacket(whole, true);
+        } else if (link == unreliableLink) {
+            ByteBuf whole = unreliableMessage(message, metrics);
+            if (whole == null) {
+                return;
+            }
+            packet = new NetherNetPacket(whole, false);
+        } else {
+            return;
+        }
+        if (metrics != null) {
+            try {
+                metrics.messagesIn(1);
+                metrics.bytesIn(packet.content().readableBytes());
+            } catch (RuntimeException e) {
+                log.debug("NetherNet metrics failed", e);
+            }
+        }
+        enqueueInbound(packet);
+    }
+
+    /**
+     * Decodes an unreliable message. The onboarding guide says the unreliable
+     * channel does not reassemble: its header must be 0. Anything else is
+     * dropped without touching the reliable stream; vanilla never sends here.
+     */
+    private ByteBuf unreliableMessage(ByteBuffer message, NetherChannelMetrics metrics) {
+        int payload = message.remaining() - 1;
+        if (payload < 1 || message.get(message.position()) != 0 || payload > config.getMaxReassembledBytes()) {
+            if (metrics != null) {
+                try {
+                    metrics.decodeFail(1);
+                } catch (RuntimeException e) {
+                    log.debug("NetherNet metrics failed", e);
+                }
+            }
+            return null;
+        }
+        ByteBuf copy = config.getAllocator().buffer(payload, payload);
+        try {
+            copy.writeBytes(message.duplicate().position(message.position() + 1));
+            return copy;
+        } catch (RuntimeException | Error e) {
+            copy.release();
+            throw e;
+        }
+    }
+
+    private void enqueueInbound(NetherNetPacket packet) {
+        boolean accepted = false;
+        boolean overflow = false;
+        synchronized (inboundLock) {
+            if (open && !inboundClosed) {
+                int bytes = packet.content().readableBytes();
+                long maxBytes = 2L * config.getMaxReassembledBytes();
+                if (bytes <= maxBytes - pendingInboundBytes
+                        && (pendingInbound == null || pendingInbound.size() < MAX_PENDING_INBOUND_MESSAGES)) {
+                    if (pendingInbound == null) {
+                        pendingInbound = new ArrayDeque<>();
+                    }
+                    pendingInbound.add(packet);
+                    pendingInboundBytes += bytes;
+                    accepted = true;
+                } else {
+                    inboundClosed = true;
+                    overflow = true;
+                }
+            }
+        }
+        if (!accepted) {
+            packet.release();
         }
         if (overflow) {
             discardPendingInbound();
-            log.warn("Closing {}: inbound backlog exceeded {} frames or {} bytes",
-                    remoteAddress, MAX_PENDING_INBOUND_MESSAGES, MAX_PENDING_INBOUND_BYTES);
-            // A direct close task can be rejected by the same full executor queue.
-            writeFailure.compareAndSet(null, new IOException("NetherNet inbound backlog exceeded its limit"));
-            requestWriteCompletion();
-        } else {
+            log.warn("Closing {}: inbound backlog exceeded {} messages or {} bytes",
+                    remoteAddress, MAX_PENDING_INBOUND_MESSAGES, 2L * config.getMaxReassembledBytes());
+            endTransport(TransportDisconnectReason.QUEUE_TOO_LONG,
+                    new IOException("NetherNet inbound backlog exceeded its limit"));
+        } else if (accepted) {
             requestInboundDrain();
         }
     }
 
-    /** Drops frames belonging to an abandoned transport attempt. */
+    /** Drops messages belonging to an abandoned transport attempt. */
     protected final void discardPendingInbound() {
-        Queue<Object> pending;
+        Queue<NetherNetPacket> pending;
         synchronized (inboundLock) {
             pending = pendingInbound;
             pendingInbound = null;
             pendingInboundBytes = 0;
         }
         if (pending != null) {
-            Object frame;
-            while ((frame = pending.poll()) != null) {
-                ReferenceCountUtil.release(frame);
+            NetherNetPacket packet;
+            while ((packet = pending.poll()) != null) {
+                packet.release();
             }
         }
     }
@@ -271,7 +676,7 @@ public abstract class NetherNetChannel extends AbstractChannel {
                 discardPendingInbound();
             } else {
                 // Share the recovery wakeup, without making new reads wait for it.
-                requestWriteCompletion();
+                wakeUp();
             }
         }
     }
@@ -287,18 +692,16 @@ public abstract class NetherNetChannel extends AbstractChannel {
         try {
             fireChannelActiveIfReady();
             while (messages < MAX_MESSAGES_PER_DRAIN && canReadInbound()) {
-                Object frame;
+                NetherNetPacket packet;
                 synchronized (inboundLock) {
-                    frame = pendingInbound == null ? null : pendingInbound.poll();
-                    if (frame == null) {
+                    packet = pendingInbound == null ? null : pendingInbound.poll();
+                    if (packet == null) {
                         break;
                     }
-                    ByteBuf content = frame instanceof ByteBuf buffer ? buffer
-                            : ((NetherNetUnreliableFrame) frame).content();
-                    pendingInboundBytes -= content.readableBytes();
+                    pendingInboundBytes -= packet.content().readableBytes();
                 }
                 readPending = false;
-                pipeline().fireChannelRead(frame);
+                pipeline().fireChannelRead(packet.reliable() ? packet.content() : packet);
                 messages++;
                 if (!config.isAutoRead()) {
                     break;
@@ -315,34 +718,34 @@ public abstract class NetherNetChannel extends AbstractChannel {
         }
     }
 
-    protected void fireChannelActiveIfReady() {
-        if (!isRegistered() || !isActive()) {
-            return;
-        }
-
-        // Activation state and the sampler are owned by the event loop.
-        EventLoop loop = eventLoop();
-        if (!loop.inEventLoop()) {
-            loop.execute(this::fireChannelActiveIfReady);
-            return;
-        }
-
-        if (channelActiveFired.compareAndSet(false, true)) {
-            // Started before firing active: a handler that closes the channel
-            // synchronously from channelActive runs doClose first otherwise,
-            // and the sampler created afterwards would never be cancelled.
-            startRttSampler();
-            pipeline().fireChannelActive();
-        }
-        requestInboundDrain();
-    }
+    // ---- Outbound ----
 
     @Override
     protected Object filterOutboundMessage(Object msg) {
-        if (!(msg instanceof ByteBuf buffer)) {
-            throw new UnsupportedOperationException("NetherNet writes require a ByteBuf");
+        ByteBuf content;
+        boolean reliable;
+        if (msg instanceof NetherNetPacket packet) {
+            content = packet.content();
+            reliable = packet.reliable();
+        } else if (msg instanceof ByteBuf buffer) {
+            content = buffer;
+            reliable = true;
+        } else {
+            throw new UnsupportedOperationException("NetherNet writes take a ByteBuf or a NetherNetPacket");
         }
-        PendingWrite write = new PendingWrite(this, buffer);
+        // Refused before it is queued, so the write fails and nothing is sent.
+        int maxPayload = maxOutboundMessageSize - 1;
+        int length = content.readableBytes();
+        int segments;
+        if (reliable) {
+            segments = NetherNetConstants.segmentCount(length, maxPayload);
+        } else if (length > maxPayload) {
+            throw new IllegalArgumentException("An unreliable message of " + length
+                    + " bytes is more than the one segment of " + maxPayload + " it may take");
+        } else {
+            segments = length == 0 ? 0 : 1;
+        }
+        PendingWrite write = new PendingWrite(this, content, reliable, segments, maxPayload);
         write.previous = unsubmittedTail;
         if (unsubmittedTail == null) {
             unsubmittedHead = write;
@@ -381,117 +784,153 @@ public abstract class NetherNetChannel extends AbstractChannel {
             return;
         }
         removeCompletedWrites(in);
-        if (!isOpen()) {
+        if (!isOpen() || closeIfEnded()) {
             return;
         }
-        IOException failure = writeFailure.get();
-        if (failure != null) {
-            ((NetherNetUnsafe) unsafe()).closeWithSendFailure(failure);
-            return;
-        }
-        // Native acceptance and a queued recovery task must not gate an explicit flush.
+        // Engine acceptance and a queued recovery task must not gate an explicit flush.
         while (flushedWriteTail != null && isOpen()) {
-            if (engineSaturated(in)) {
+            PendingWrite write = unsubmittedHead;
+            DataLink link = write.reliable ? reliableLink : unreliableLink;
+            if (link == null) {
+                write.accept(new IllegalStateException("The NetherNet "
+                        + (write.reliable ? "reliable" : "unreliable") + " data channel is unavailable"));
+                closeIfEnded();
                 return;
             }
-            PendingWrite write = unsubmittedHead;
-            removeUnsubmitted(write);
-            // A drain notification can beat sendFramed's return.
-            engineOutstanding.addAndGet(write.content().readableBytes());
-            try {
-                sendFramed(write.content(), write);
-                write.releaseContent();
-            } catch (Throwable cause) {
-                write.accept(cause);
+            // Paced per segment: one message can be far larger than the engine queue.
+            while (write.hasNextSegment()) {
+                if (sendPaused(link, in)) {
+                    return;
+                }
+                write.sendNextSegment(link, alloc());
+                if (closeIfEnded()) {
+                    return;
+                }
             }
-            IOException sendFailure = writeFailure.get();
-            if (sendFailure != null) {
-                ((NetherNetUnsafe) unsafe()).closeWithSendFailure(sendFailure);
+            removeUnsubmitted(write);
+            countSent(write);
+            write.submitted();
+            if (closeIfEnded()) {
                 return;
             }
         }
     }
 
+    private void countSent(PendingWrite write) {
+        NetherChannelMetrics metrics = config.getMetrics();
+        if (metrics == null || write.segments == 0) {
+            return;
+        }
+        try {
+            metrics.messagesOut(1);
+            metrics.bytesOut(write.content.readableBytes());
+            if (write.segments > 1) {
+                metrics.fragmentsOut(write.segments - 1);
+            }
+        } catch (RuntimeException e) {
+            log.debug("NetherNet metrics failed", e);
+        }
+    }
+
+    /** The engine queue level below which a paused channel resumes: a quarter of the pause level. */
+    private int resumeMark() {
+        return config.getSendPauseBytes() / 4;
+    }
+
     /**
-     * True while the engine's send buffer holds too much unsent data to
-     * accept more. Leaves the remaining messages in netty's outbound
-     * buffer; {@link #onEngineBytesSent}
-     * resumes the flush once the buffer drains. A peer whose backlog also
-     * exceeds the hard cap is closed instead.
+     * True while the data channel's engine queue holds too much to take
+     * another segment. The rest stays in Netty's outbound buffer until the
+     * engine reports the queue low. A remote peer that drains nothing while
+     * the Java backlog also passes its cap ends the connection.
      */
-    private boolean engineSaturated(ChannelOutboundBuffer in) {
-        if (engineOutstanding.get() < ENGINE_HIGH_WATER_MARK) {
+    private boolean sendPaused(DataLink link, ChannelOutboundBuffer in) {
+        if (link.queuedBytes() < config.getSendPauseBytes()) {
             return false;
         }
         writesPaused = true;
-        if (engineOutstanding.get() <= ENGINE_RESUME_LOW_WATER_MARK) {
+        if (link.queuedBytes() <= resumeMark()) {
             writesPaused = false;
             return false;
         }
-        if (in.totalPendingWriteBytes() > MAX_BACKLOG_BYTES) {
-            log.warn("Closing {}: peer cannot keep up ({} bytes unsent in the engine, {} bytes backlogged)",
-                remoteAddress, engineOutstanding.get(), in.totalPendingWriteBytes());
-            close();
+        in.setUserDefinedWritability(SEND_PAUSE_WRITABILITY, false);
+        if (in.totalPendingWriteBytes() > config.getMaxQueuedBytes()) {
+            log.warn("Closing {}: peer cannot keep up ({} bytes in the engine queue, {} bytes waiting)",
+                    remoteAddress, link.queuedBytes(), in.totalPendingWriteBytes());
+            endTransport(TransportDisconnectReason.QUEUE_TOO_LONG, new IOException(
+                    "More than " + config.getMaxQueuedBytes() + " bytes waited to be sent"));
+            closeIfEnded();
         }
         return true;
     }
 
-    /**
-     * Reports a decrease in the engine's buffered amount, not peer delivery.
-     * Called from engine threads via the session listener; resumes a paused
-     * write path once the buffer is below the low water mark.
-     */
-    protected void onEngineBytesSent(long bytes) {
-        if (!isOpen() || bytes <= 0) {
-            return;
-        }
-        long outstanding = engineOutstanding.addAndGet(-bytes);
-        if (outstanding < 0) {
-            // Sends dropped by the engine or counter reset races; clamp.
-            engineOutstanding.compareAndSet(outstanding, 0);
-            outstanding = 0;
-        }
-        if (writesPaused && outstanding <= ENGINE_RESUME_LOW_WATER_MARK) {
+    /** Engine thread: a data channel's engine queue fell to its low watermark. */
+    final void queueLow(DataLink link) {
+        if (writesPaused && link.queuedBytes() <= resumeMark()) {
             writesPaused = false;
-            requestWriteCompletion();
+            wakeUp();
         }
     }
 
-    private void requestWriteCompletion() {
-        if (isOpen() && writeCompletionScheduled.compareAndSet(false, true)) {
-            scheduleWriteCompletion();
+    /**
+     * Ends the connection for a reason the transport found. Safe from any
+     * thread: the close runs on the event loop through the shared wakeup,
+     * which also recovers from a rejected task. The first ending wins.
+     */
+    final void endTransport(TransportDisconnectReason reason, IOException cause) {
+        if (ending.compareAndSet(null, new Ending(reason, cause))) {
+            wakeUp();
         }
     }
 
-    private void scheduleWriteCompletion() {
+    /** Event loop only: closes for the recorded ending, if any. */
+    private boolean closeIfEnded() {
+        Ending end = ending.get();
+        if (end == null || !isOpen()) {
+            return false;
+        }
+        ((NetherNetUnsafe) unsafe()).closeForEnding(end);
+        return true;
+    }
+
+    /**
+     * Wakes the event loop to complete accepted writes, resume paused ones,
+     * recover a rejected inbound drain and close for an ending.
+     */
+    private void wakeUp() {
+        if (isOpen() && wakeUpScheduled.compareAndSet(false, true)) {
+            scheduleWakeUp();
+        }
+    }
+
+    private void scheduleWakeUp() {
         EventLoop loop = eventLoop();
         try {
-            loop.execute(writeCompletionTask);
+            loop.execute(wakeUpTask);
         } catch (RejectedExecutionException cause) {
             if (loop != eventLoop()) {
-                scheduleWriteCompletion();
+                scheduleWakeUp();
             } else if (!loop.isShuttingDown()) {
                 // Recover even if a quiet connection produces no further events.
                 // Explicit flushes can submit writes while this retry is pending.
                 GlobalEventExecutor.INSTANCE.schedule(() -> {
                     if (isOpen()) {
-                        scheduleWriteCompletion();
+                        scheduleWakeUp();
                     }
                 }, 10, TimeUnit.MILLISECONDS);
             } else {
                 // The shutdown hook closes on the owner thread, never here on
-                // a native callback thread or after that owner has terminated.
-                writeCompletionScheduled.set(false);
+                // an engine thread or after that owner has terminated.
+                wakeUpScheduled.set(false);
             }
         }
     }
 
-    private void completeWrites() {
+    private void onWakeUp() {
         if (!eventLoop().inEventLoop()) {
-            scheduleWriteCompletion();
+            scheduleWakeUp();
             return;
         }
-        writeCompletionScheduled.set(false);
+        wakeUpScheduled.set(false);
         if (!isOpen()) {
             return;
         }
@@ -503,12 +942,15 @@ public abstract class NetherNetChannel extends AbstractChannel {
             return;
         }
         removeCompletedWrites(in);
-        IOException failure = writeFailure.get();
-        if (failure != null && isOpen()) {
-            // Retrying a rejected fragment after later frames were submitted
-            // could corrupt the reliable stream. Fail the connection instead.
-            ((NetherNetUnsafe) unsafe()).closeWithSendFailure(failure);
-        } else if (isOpen() && flushedWriteTail != null) {
+        // Retrying a refused segment after later ones were submitted could
+        // corrupt the reliable stream, so a failure ends the connection.
+        if (closeIfEnded()) {
+            return;
+        }
+        if (!writesPaused) {
+            in.setUserDefinedWritability(SEND_PAUSE_WRITABILITY, true);
+        }
+        if (isOpen() && flushedWriteTail != null) {
             ((NetherNetUnsafe) unsafe()).flushPendingWrites();
         }
     }
@@ -518,10 +960,8 @@ public abstract class NetherNetChannel extends AbstractChannel {
         try {
             Object msg;
             while (isOpen() && (msg = in.current()) != null) {
-                if (msg instanceof PendingWrite write) {
-                    if (write.result != PendingWrite.SUCCESS) {
-                        break;
-                    }
+                if (msg instanceof PendingWrite write && write.result != PendingWrite.SUCCESS) {
+                    break;
                 }
                 // Netty replaces cancelled entries with an empty ByteBuf.
                 in.remove();
@@ -547,26 +987,93 @@ public abstract class NetherNetChannel extends AbstractChannel {
             super.flush0();
         }
 
-        private void closeWithSendFailure(IOException failure) {
+        /**
+         * Fires the reason first: a write on a void promise reports its
+         * failure as an exception, and a handler that closes on it would
+         * otherwise never learn why the connection ended.
+         */
+        private void closeForEnding(Ending end) {
+            if (channelActiveFired.get()) {
+                pipeline().fireUserEventTriggered(end.reason());
+            }
+            closeWithFailure(end.cause());
+        }
+
+        private void closeWithFailure(IOException failure) {
+            if (!isOpen()) {
+                return;
+            }
             ClosedChannelException closed = new ClosedChannelException();
             closed.initCause(failure);
             close(voidPromise(), failure, closed);
         }
     }
 
-    private static final class PendingWrite extends AbstractReferenceCounted implements ByteBufHolder, Consumer<Throwable> {
+    /**
+     * One message in Netty's outbound buffer. Its segments go to the engine
+     * one by one, and the write completes once the engine accepted every
+     * segment. Results may arrive on any thread.
+     */
+    private static final class PendingWrite extends AbstractReferenceCounted
+            implements ByteBufHolder, java.util.function.Consumer<Throwable> {
         private static final Object SUCCESS = new Object();
         private static final AtomicReferenceFieldUpdater<PendingWrite, Object> RESULT =
                 AtomicReferenceFieldUpdater.newUpdater(PendingWrite.class, Object.class, "result");
+        private static final AtomicReferenceFieldUpdater<PendingWrite, IOException> FAILURE =
+                AtomicReferenceFieldUpdater.newUpdater(PendingWrite.class, IOException.class, "failure");
         private final NetherNetChannel channel;
+        private final boolean reliable;
+        private final int segments;
+        private final int maxPayload;
         private ByteBuf content;
+        private int nextSegment;
+        // One for each segment handed over and not yet settled, plus one for
+        // the submission itself, dropped once every segment was handed over.
+        private final AtomicInteger unsettled = new AtomicInteger(1);
+        private volatile IOException failure;
         private volatile Object result;
         private PendingWrite previous;
         private PendingWrite next;
 
-        private PendingWrite(NetherNetChannel channel, ByteBuf content) {
+        private PendingWrite(NetherNetChannel channel, ByteBuf content, boolean reliable, int segments, int maxPayload) {
             this.channel = channel;
             this.content = content;
+            this.reliable = reliable;
+            this.segments = segments;
+            this.maxPayload = maxPayload;
+        }
+
+        private boolean hasNextSegment() {
+            return nextSegment < segments;
+        }
+
+        /** Hands the next segment, with its countdown header, to the engine. Event loop only. */
+        private void sendNextSegment(DataLink link, ByteBufAllocator allocator) {
+            int offset = nextSegment * maxPayload;
+            int chunk = Math.min(maxPayload, content.readableBytes() - offset);
+            int countdown = segments - 1 - nextSegment;
+            nextSegment++;
+            unsettled.incrementAndGet();
+            ByteBuf segment = null;
+            try {
+                segment = allocator.directBuffer(1 + chunk, 1 + chunk);
+                segment.writeByte(countdown);
+                segment.writeBytes(content, content.readerIndex() + offset, chunk);
+                // The engine copies the segment before send returns.
+                link.send(segment.nioBuffer(), this);
+            } catch (Throwable cause) {
+                accept(cause);
+            } finally {
+                if (segment != null) {
+                    segment.release();
+                }
+            }
+        }
+
+        /** Every segment was handed over; the engine holds its own copies. */
+        private void submitted() {
+            releaseContent();
+            settle(null);
         }
 
         @Override
@@ -578,8 +1085,6 @@ public abstract class NetherNetChannel extends AbstractChannel {
         }
 
         private void releaseContent() {
-            // The binding copied the payload before returning. Only the result
-            // state needs to wait in Netty's outbound buffer for the callback.
             ByteBuf buffer = content;
             content = Unpooled.EMPTY_BUFFER;
             buffer.release();
@@ -600,39 +1105,35 @@ public abstract class NetherNetChannel extends AbstractChannel {
         @Override public PendingWrite touch() { content().touch(); return this; }
         @Override public PendingWrite touch(Object hint) { content().touch(hint); return this; }
 
+        /** A segment's result from the engine: null when accepted, else why not. Any thread. */
         @Override
         public void accept(Throwable cause) {
+            settle(cause);
+        }
+
+        private void settle(Throwable cause) {
             if (!channel.isOpen()) {
+                // The close already failed this write.
                 return;
             }
-            IOException failure = cause == null ? null : cause instanceof IOException io ? io
-                    : new IOException("Failed to send NetherNet message", cause);
-            if (!RESULT.compareAndSet(this, null, failure == null ? SUCCESS : failure)) {
+            if (cause != null && result == null) {
+                IOException io = cause instanceof IOException e ? e
+                        : new IOException("Failed to send NetherNet message", cause);
+                if (FAILURE.compareAndSet(this, null, io)) {
+                    channel.endTransport(TransportDisconnectReason.TRANSPORT_FAILED, io);
+                }
+            }
+            if (unsettled.decrementAndGet() != 0) {
                 return;
             }
-            if (failure != null) {
-                channel.writeFailure.compareAndSet(null, failure);
+            IOException failed = failure;
+            if (RESULT.compareAndSet(this, null, failed == null ? SUCCESS : failed)) {
+                channel.wakeUp();
             }
-            channel.requestWriteCompletion();
         }
     }
 
-    /**
-     * Ships one already framed message (header byte included, at most the
-     * negotiated maximum message size) to the transport. Must not take
-     * ownership of the buffer; the caller releases it. Runs on the event
-     * loop. Completion reports native acceptance (null) or failure and may run
-     * on another thread. It must be invoked once unless preparation throws.
-     */
-    protected abstract void sendFramed(ByteBuf framed, Consumer<Throwable> completion);
-
-    /**
-     * Converts a framed buffer into a NIO buffer suitable for the WebRTC
-     * send path. The binding copies heap and direct windows before returning.
-     */
-    protected static ByteBuffer toNioBuffer(ByteBuf framed) {
-        return framed.nioBuffer();
-    }
+    // ---- Registration, close, round trip time ----
 
     @Override
     protected void doRegister(ChannelPromise promise) {
@@ -681,21 +1182,10 @@ public abstract class NetherNetChannel extends AbstractChannel {
         doClose();
     }
 
-    /**
-     * @return the latest sampled transport round trip time in milliseconds,
-     *         or a negative value while no measurement is available yet
-     */
-    public long rttMillis() {
-        return rttMillis;
-    }
-
-    /**
-     * Requests one transport RTT measurement; the callback receives
-     * milliseconds or a negative value when unavailable. Subclasses with an
-     * RTT source override this.
-     */
-    protected void requestRttSample(DoubleConsumer callback) {
-        callback.accept(-1);
+    /** The ICE round trip time in milliseconds, sampled every 3 s, or 0 while unknown. */
+    @Override
+    public long getPing() {
+        return Math.max(rttMillis, 0);
     }
 
     // Runs on the event loop, once, when the channel goes active.
@@ -703,21 +1193,32 @@ public abstract class NetherNetChannel extends AbstractChannel {
         if (rttSampler != null || !isOpen()) {
             return;
         }
-        rttSampler = eventLoop().scheduleAtFixedRate(
-                () -> requestRttSample(ms -> {
-                    if (ms >= 0) {
-                        rttMillis = Math.round(ms);
-                    }
-                }),
-                1, 3, TimeUnit.SECONDS);
+        rttSampler = eventLoop().scheduleAtFixedRate(this::sampleRtt, 1, 3, TimeUnit.SECONDS);
+    }
+
+    private void sampleRtt() {
+        Peer current = peer();
+        if (current == null) {
+            return;
+        }
+        current.metrics().whenComplete((metrics, failure) -> {
+            if (metrics != null) {
+                metrics.iceRoundTripTime().ifPresent(rtt -> rttMillis = Math.round(rtt.toNanos() / 1_000_000.0));
+            }
+        });
     }
 
     @Override
     protected void doClose() throws Exception {
-        this.open = false;
-        this.transportOpen = false;
+        Peer current;
+        CompletableFuture<Void> retired;
+        synchronized (peerLock) {
+            this.open = false;
+            current = peer;
+            peer = null;
+            retired = retiredPeers;
+        }
         this.writesPaused = false;
-        this.engineOutstanding.set(0);
         while (unsubmittedHead != null) {
             removeUnsubmitted(unsubmittedHead);
         }
@@ -725,11 +1226,15 @@ public abstract class NetherNetChannel extends AbstractChannel {
         inboundClosed = true;
         readPending = false;
         discardPendingInbound();
+        unbindLinks();
 
         if (rttSampler != null) {
             rttSampler.cancel(false);
             rttSampler = null;
         }
+        CompletableFuture<Void> closing = current == null ? CompletableFuture.completedFuture(null)
+                : closeQuietly(current);
+        CompletableFuture.allOf(closing, retired).whenComplete((ignored, failure) -> termination.complete(null));
     }
 
     @Override
@@ -767,9 +1272,15 @@ public abstract class NetherNetChannel extends AbstractChannel {
         return this.remoteAddress;
     }
 
+    /**
+     * Where the peer is. Before ICE selects a pair, the address signaling saw,
+     * or a unique placeholder when it saw none. From then on the remote side
+     * of the newest selected pair, which for a relayed connection is the TURN
+     * relay. A client that dialed a network ID keeps it.
+     */
     @Override
     public SocketAddress remoteAddress() {
-        // ICE nomination can replace an address already observed by a handler.
+        // AbstractChannel caches the first read, which an initializer makes before ICE connects.
         return this.remoteAddress;
     }
 
