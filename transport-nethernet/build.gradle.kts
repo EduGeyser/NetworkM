@@ -8,6 +8,7 @@ val webrtcNativePlatform = providers.gradleProperty("webrtcNativePlatform")
 
 dependencies {
     api(platform(libs.netty.bom))
+    api(project(":transport-common"))
     api(libs.bundles.netty)
     api(libs.netty.codec.http)
     api(libs.webrtc.java)
