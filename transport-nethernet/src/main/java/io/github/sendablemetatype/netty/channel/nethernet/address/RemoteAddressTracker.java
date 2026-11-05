@@ -88,7 +88,11 @@ public final class RemoteAddressTracker {
     }
 
     static SourcedAddress reported(SourcedAddress signaled, SourcedAddress media, boolean preferProxied) {
-        if (media == null || (preferProxied && signaled.proxied())) {
+        if (media == null) {
+            return signaled;
+        }
+        // A relayed connection always reports the TURN relay, the peer actually connected to us.
+        if (media.source() != AddressSource.TURN && preferProxied && signaled.proxied()) {
             return signaled;
         }
         return media;

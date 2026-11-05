@@ -91,19 +91,15 @@ class RemoteAddressTrackerTest {
     void aTurnPairReportsTheRelayWhateverSignalingSaid() {
         SourcedAddress turn = new SourcedAddress(TURN, AddressSource.TURN, null);
         for (AddressSource source : AddressSource.values()) {
-            if (source == AddressSource.SIGNALING_PROXY_PROTOCOL || source == AddressSource.SIGNALING_FORWARDED_FOR) {
-                continue;
-            }
             SourcedAddress signaled = new SourcedAddress(SIGNALED, source, null);
             assertEquals(turn, RemoteAddressTracker.reported(signaled, turn, true), source.name());
         }
     }
 
     @Test
-    void aProxiedAddressWinsOverAnyPairWhenTold() {
+    void aProxiedAddressWinsOverADirectPairWhenTold() {
         List<SourcedAddress> pairs = List.of(ice(PLAYER),
-                new SourcedAddress(PLAYER, AddressSource.ICE_PROXY_PROTOCOL, TURN),
-                new SourcedAddress(TURN, AddressSource.TURN, null));
+                new SourcedAddress(PLAYER, AddressSource.ICE_PROXY_PROTOCOL, TURN));
         for (AddressSource source : List.of(AddressSource.SIGNALING_PROXY_PROTOCOL,
                 AddressSource.SIGNALING_FORWARDED_FOR)) {
             SourcedAddress signaled = new SourcedAddress(SIGNALED, source, null);
