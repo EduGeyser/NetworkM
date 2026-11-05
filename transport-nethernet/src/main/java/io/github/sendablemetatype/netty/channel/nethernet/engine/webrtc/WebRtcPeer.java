@@ -1,0 +1,769 @@
+package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
+
+import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig.Role;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
+import io.github.sendablemetatype.webrtc.AddIceCandidateObserver;
+import io.github.sendablemetatype.webrtc.CreateSessionDescriptionObserver;
+import io.github.sendablemetatype.webrtc.PeerConnectionObserver;
+import io.github.sendablemetatype.webrtc.RTCCandidatePairChangeEvent;
+import io.github.sendablemetatype.webrtc.RTCDataChannel;
+import io.github.sendablemetatype.webrtc.RTCErrorDetailType;
+import io.github.sendablemetatype.webrtc.RTCErrorType;
+import io.github.sendablemetatype.webrtc.RTCIceCandidate;
+import io.github.sendablemetatype.webrtc.RTCIceConnectionState;
+import io.github.sendablemetatype.webrtc.RTCIceGatheringState;
+import io.github.sendablemetatype.webrtc.RTCPeerConnectionState;
+import io.github.sendablemetatype.webrtc.RTCSdpType;
+import io.github.sendablemetatype.webrtc.RTCSessionDescription;
+import io.github.sendablemetatype.webrtc.RTCSctpMetrics;
+import io.github.sendablemetatype.webrtc.RTCTransportMetrics;
+import io.github.sendablemetatype.webrtc.SetSessionDescriptionObserver;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+/**
+ * A peer on a webrtc-java peer connection.
+ *
+ * <p>Threads: every call that may wait for libwebrtc (creating the
+ * connection, description steps, candidates, metrics, teardown) runs on the
+ * control thread of the peer's factory. libwebrtc delivers the connection's
+ * events, the results of description steps and the data channel events on the
+ * factory's signaling thread, which serializes them per peer; send results
+ * arrive on webrtc-java's callback thread.
+ */
+final class WebRtcPeer implements Peer {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(WebRtcPeer.class);
+
+    /** SCTP's "User Initiated Abort" (RFC 9260, 3.3.10.12): dcSCTP reports a peer's ABORT with it. */
+    private static final int SCTP_USER_INITIATED_ABORT = 12;
+
+    /**
+     * How long teardown waits for send results before it releases the data
+     * channels anyway. libwebrtc settles every send when the connection
+     * closes, so this only bounds a lost result.
+     */
+    private static final long SEND_SETTLE_TIMEOUT_SECONDS = 10;
+
+    private final Role role;
+    private final PeerListener listener;
+    private final Executor control;
+    private final IceCredentials localCredentials;
+
+    private final AtomicBoolean closeRequested = new AtomicBoolean();
+    private volatile boolean listening = true;
+    private final CompletableFuture<Void> terminated = new CompletableFuture<>();
+    private final CompletionStage<Void> closeStage = terminated.minimalCompletionStage();
+    private final CompletableFuture<String> gathered = new CompletableFuture<>();
+
+    // Written once on the control thread, read there and by teardown.
+    private volatile NativePeer connection;
+    private volatile Throwable failure;
+    private final AtomicBoolean closeReported = new AtomicBoolean();
+    private volatile IceState iceState = IceState.NEW;
+    private volatile CloseCause peerFailure;
+
+    private final Object lock = new Object();
+    // Guarded by lock.
+    private boolean descriptionStarted;
+    private boolean answerStarted;
+    private boolean remoteDescriptionIssued;
+    private List<RemoteCandidate> heldRemote = new ArrayList<>();
+    private boolean localDescriptionReturned;
+    private List<LocalEvent> heldLocal = new ArrayList<>();
+    private final List<CompletableFuture<?>> openStages = new ArrayList<>();
+    private final List<WebRtcLink> links = new ArrayList<>();
+
+    WebRtcPeer(Role role, PeerListener listener, Executor control, IceCredentials localCredentials) {
+        this.role = Objects.requireNonNull(role, "role");
+        this.listener = Objects.requireNonNull(listener, "listener");
+        this.control = Objects.requireNonNull(control, "control");
+        this.localCredentials = localCredentials;
+    }
+
+    /**
+     * Creates the native connection on the control thread.
+     *
+     * @param creator creates it with the observer that feeds this peer
+     */
+    void start(Function<PeerConnectionObserver, NativePeer> creator) {
+        execute(() -> {
+            if (closeRequested.get()) {
+                return;
+            }
+            try {
+                connection = creator.apply(new Events());
+            } catch (RuntimeException | LinkageError e) {
+                log.warn("Creating a WebRTC peer connection failed", e);
+                negotiationFailed("CreatePeerConnection", e.toString());
+            }
+        });
+    }
+
+    @Override
+    public CompletionStage<String> answer(String offer) {
+        Objects.requireNonNull(offer, "offer");
+        requireRole(Role.ANSWERER, "answer");
+        CompletableFuture<String> stage = openStage(true);
+        String stripped = SdpEdits.withoutIdentity(offer);
+        execute(() -> {
+            if (proceed(stage) && step("SetRemoteDescription", () -> connection.setRemoteDescription(
+                    new RTCSessionDescription(RTCSdpType.OFFER, stripped),
+                    new SetObserver("SetRemoteDescription", () -> execute(() -> createAnswer(stage)))))) {
+                remoteDescriptionIssued();
+            }
+        });
+        return stage.minimalCompletionStage();
+    }
+
+    private void createAnswer(CompletableFuture<String> stage) {
+        if (proceed(stage)) {
+            step("CreateAnswer", () -> connection.createAnswer(
+                    new DescriptionObserver("CreateAnswer", description -> execute(() -> applyLocal(description, stage)))));
+        }
+    }
+
+    @Override
+    public CompletionStage<String> offer() {
+        requireRole(Role.OFFERER, "offer");
+        CompletableFuture<String> stage = openStage(true);
+        execute(() -> {
+            if (proceed(stage)) {
+                step("CreateOffer", () -> connection.createOffer(
+                        new DescriptionObserver("CreateOffer", description -> execute(() -> applyLocal(description, stage)))));
+            }
+        });
+        return stage.minimalCompletionStage();
+    }
+
+    private void applyLocal(RTCSessionDescription created, CompletableFuture<String> stage) {
+        if (!proceed(stage)) {
+            return;
+        }
+        String sdp = localCredentials == null ? created.sdp : SdpEdits.withCredentials(created.sdp, localCredentials);
+        step("SetLocalDescription", () -> connection.setLocalDescription(new RTCSessionDescription(created.sdpType, sdp),
+                new SetObserver("SetLocalDescription", () -> localDescriptionApplied(sdp, stage))));
+    }
+
+    /** On the signaling thread, which also delivers the local candidates held meanwhile. */
+    private void localDescriptionApplied(String sdp, CompletableFuture<String> stage) {
+        if (!listening) {
+            return;
+        }
+        // Dependents attached to the stage run here, before any held candidate.
+        stage.complete(sdp);
+        List<LocalEvent> held;
+        synchronized (lock) {
+            localDescriptionReturned = true;
+            held = heldLocal;
+            heldLocal = List.of();
+        }
+        held.forEach(this::deliverLocal);
+    }
+
+    @Override
+    public CompletionStage<Void> applyAnswer(String answer) {
+        Objects.requireNonNull(answer, "answer");
+        requireRole(Role.OFFERER, "applyAnswer");
+        CompletableFuture<Void> stage;
+        synchronized (lock) {
+            if (!descriptionStarted) {
+                throw new IllegalStateException("offer() comes before applyAnswer()");
+            }
+            if (answerStarted) {
+                throw new IllegalStateException("applyAnswer() was called before");
+            }
+            answerStarted = true;
+            stage = openStage(false);
+        }
+        String stripped = SdpEdits.withoutIdentity(answer);
+        execute(() -> {
+            if (proceed(stage) && step("SetRemoteDescription", () -> connection.setRemoteDescription(
+                    new RTCSessionDescription(RTCSdpType.ANSWER, stripped),
+                    new SetObserver("SetRemoteDescription", () -> stage.complete(null))))) {
+                remoteDescriptionIssued();
+            }
+        });
+        return stage.minimalCompletionStage();
+    }
+
+    @Override
+    public void addRemoteCandidate(String candidate, String mid) {
+        RemoteCandidate remote = new RemoteCandidate(SdpEdits.candidateAttribute(candidate), Objects.requireNonNull(mid, "mid"));
+        synchronized (lock) {
+            if (closeRequested.get()) {
+                return;
+            }
+            if (!remoteDescriptionIssued) {
+                heldRemote.add(remote);
+                return;
+            }
+        }
+        execute(() -> applyRemote(remote));
+    }
+
+    /**
+     * On the control thread, right after the remote description was handed to
+     * libwebrtc. Candidates are chained behind it there, so they need not wait
+     * for its result; later candidates queue behind this task.
+     */
+    private void remoteDescriptionIssued() {
+        List<RemoteCandidate> held;
+        synchronized (lock) {
+            remoteDescriptionIssued = true;
+            held = heldRemote;
+            heldRemote = List.of();
+        }
+        held.forEach(this::applyRemote);
+    }
+
+    private void applyRemote(RemoteCandidate remote) {
+        NativePeer current = connection;
+        if (current == null || closeRequested.get() || failure != null) {
+            return;
+        }
+        try {
+            current.addIceCandidate(new RTCIceCandidate(remote.mid(), 0, remote.attribute()), new AddIceCandidateObserver() {
+                @Override
+                public void onSuccess() {
+                }
+
+                @Override
+                public void onFailure(String error) {
+                    log.debug("Remote candidate refused ({}): {}", error, remote.attribute());
+                }
+            });
+        } catch (RuntimeException e) {
+            log.debug("Remote candidate refused ({}): {}", e.toString(), remote.attribute());
+        }
+    }
+
+    @Override
+    public CompletionStage<String> gatheredLocalDescription() {
+        return gathered.minimalCompletionStage();
+    }
+
+    @Override
+    public DataLink openChannel(ChannelParameters parameters) {
+        Objects.requireNonNull(parameters, "parameters");
+        requireRole(Role.OFFERER, "openChannel");
+        WebRtcLink link = new WebRtcLink(this, parameters, null);
+        synchronized (lock) {
+            if (descriptionStarted) {
+                throw new IllegalStateException("Data links are opened before offer()");
+            }
+            if (!closeRequested.get()) {
+                links.add(link);
+            }
+        }
+        execute(() -> {
+            NativePeer current = connection;
+            if (current == null || closeRequested.get() || failure != null) {
+                return;
+            }
+            try {
+                link.bind(current.createDataChannel(parameters));
+            } catch (RuntimeException e) {
+                negotiationFailed("CreateDataChannel", e.toString());
+            }
+        });
+        return link;
+    }
+
+    @Override
+    public CompletionStage<TransportMetrics> metrics() {
+        CompletableFuture<TransportMetrics> result = new CompletableFuture<>();
+        if (closeRequested.get() || !execute(() -> result.complete(readMetrics()))) {
+            result.complete(TransportMetrics.NONE);
+        }
+        return result.minimalCompletionStage();
+    }
+
+    private TransportMetrics readMetrics() {
+        NativePeer current = connection;
+        if (current == null || closeRequested.get()) {
+            return TransportMetrics.NONE;
+        }
+        try {
+            return metricsOf(current.transportMetrics());
+        } catch (RuntimeException e) {
+            log.debug("Reading transport metrics failed: {}", e.toString());
+            return TransportMetrics.NONE;
+        }
+    }
+
+    static TransportMetrics metricsOf(RTCTransportMetrics metrics) {
+        if (metrics == null) {
+            return TransportMetrics.NONE;
+        }
+        RTCSctpMetrics sctp = metrics.sctp();
+        return new TransportMetrics(Optional.ofNullable(metrics.iceRoundTripTime()), Optional.ofNullable(sctp)
+                .map(m -> new TransportMetrics.Sctp(m.smoothedRoundTripTime(), m.congestionWindowBytes(),
+                        m.unackedDataCount(), m.peerReceiveWindowBytes(), m.packetsSent(), m.messagesSent(),
+                        m.packetsRetransmitted(), m.bytesRetransmitted(), m.packetsReceived(), m.messagesReceived())));
+    }
+
+    @Override
+    public CompletionStage<Void> close() {
+        if (closeRequested.compareAndSet(false, true)) {
+            listening = false;
+            // The control thread lives until every peer of the engine has
+            // terminated, so a refusal means there is nothing left to release.
+            if (!execute(this::terminate)) {
+                terminated.complete(null);
+            }
+        }
+        return closeStage;
+    }
+
+    /**
+     * The termination, on the control thread and never inside an engine
+     * callback: observers off, data channels and connection closed, send
+     * results settled, data channels released.
+     */
+    private void terminate() {
+        List<CompletableFuture<?>> stages;
+        List<WebRtcLink> current;
+        synchronized (lock) {
+            stages = List.copyOf(openStages);
+            current = List.copyOf(links);
+            heldRemote = List.of();
+            heldLocal = List.of();
+        }
+        IllegalStateException closed = new IllegalStateException("Peer closed");
+        stages.forEach(stage -> stage.completeExceptionally(closed));
+        gathered.completeExceptionally(closed);
+
+        List<CompletableFuture<Void>> settled = new ArrayList<>(current.size());
+        for (WebRtcLink link : current) {
+            settled.add(link.stopSending());
+            NativeLink channel = link.channel();
+            if (channel != null) {
+                quietly("unregistering a data channel observer", channel::unregisterObserver);
+                quietly("closing a data channel", channel::close);
+            }
+        }
+        NativePeer peer = connection;
+        if (peer != null) {
+            quietly("closing a peer connection", peer::close);
+        }
+        // libwebrtc settles every pending send once the connection is closed;
+        // the data channels are released after that, so no send result
+        // follows the close stage.
+        CompletableFuture.allOf(settled.toArray(CompletableFuture[]::new))
+                .completeOnTimeout(null, SEND_SETTLE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .whenComplete((ignored, error) -> {
+                    if (!execute(() -> release(current))) {
+                        release(current);
+                    }
+                });
+    }
+
+    private void release(List<WebRtcLink> current) {
+        for (WebRtcLink link : current) {
+            NativeLink channel = link.channel();
+            if (channel != null) {
+                quietly("releasing a data channel", channel::dispose);
+            }
+        }
+        terminated.complete(null);
+    }
+
+    /** Completes after the peer's termination; the same stage as {@link #close()} returns. */
+    CompletionStage<Void> closeStage() {
+        return closeStage;
+    }
+
+    void dispatch(Consumer<PeerListener> event) {
+        if (!listening) {
+            return;
+        }
+        try {
+            event.accept(listener);
+        } catch (RuntimeException e) {
+            log.warn("A NetherNet peer listener failed", e);
+        }
+    }
+
+    /** The message path, kept free of allocations. */
+    void deliver(WebRtcLink link, ByteBuffer message) {
+        if (!listening) {
+            return;
+        }
+        try {
+            listener.onMessage(link, message);
+        } catch (RuntimeException e) {
+            log.warn("A NetherNet peer listener failed", e);
+        }
+    }
+
+    /** Why a data channel that libwebrtc reports CLOSED ended; a local close never reaches here. */
+    CloseCause linkCloseCause(NativeLink.LinkError error) {
+        if (error == null || error.type() == RTCErrorType.NONE) {
+            return CloseCause.REMOTE_CLOSED;
+        }
+        log.debug("Data channel closed with {}", error);
+        if (error.detail() == RTCErrorDetailType.SCTP_FAILURE
+                && Objects.equals(error.sctpCauseCode(), SCTP_USER_INITIATED_ABORT)) {
+            return CloseCause.REMOTE_ABORTED;
+        }
+        CloseCause failed = peerFailure;
+        if (failed != null) {
+            return failed;
+        }
+        return iceState == IceState.FAILED ? CloseCause.ICE_FAILED : CloseCause.TRANSPORT_FAILED;
+    }
+
+    void onLocalCandidate(String candidate, String mid) {
+        holdOrDeliver(new LocalEvent.Candidate(candidate, mid));
+    }
+
+    void onGatheringState(RTCIceGatheringState state) {
+        if (state == RTCIceGatheringState.COMPLETE) {
+            holdOrDeliver(new LocalEvent.GatheringComplete());
+        }
+    }
+
+    /**
+     * Local events wait until the description they belong to has been
+     * returned. libwebrtc may gather a candidate before it reports that the
+     * local description applied; both arrive on the signaling thread, so
+     * holding them here keeps their order.
+     */
+    private void holdOrDeliver(LocalEvent event) {
+        synchronized (lock) {
+            if (!localDescriptionReturned) {
+                heldLocal.add(event);
+                return;
+            }
+        }
+        deliverLocal(event);
+    }
+
+    private void deliverLocal(LocalEvent event) {
+        switch (event) {
+            case LocalEvent.Candidate candidate ->
+                    dispatch(l -> l.onLocalCandidate(candidate.candidate(), candidate.mid()));
+            case LocalEvent.GatheringComplete ignored -> {
+                dispatch(PeerListener::onGatheringComplete);
+                execute(this::completeGathered);
+            }
+        }
+    }
+
+    private void completeGathered() {
+        NativePeer current = connection;
+        if (current == null || closeRequested.get() || failure != null) {
+            return;
+        }
+        String sdp;
+        try {
+            sdp = current.localDescription();
+        } catch (RuntimeException e) {
+            negotiationFailed("GetLocalDescription", e.toString());
+            return;
+        }
+        if (sdp == null) {
+            negotiationFailed("GetLocalDescription", "no local description after gathering completed");
+            return;
+        }
+        gathered.complete(SdpEdits.withEndOfCandidates(sdp));
+    }
+
+    void onIceConnectionState(RTCIceConnectionState state) {
+        IceState mapped = switch (state) {
+            case NEW -> IceState.NEW;
+            case CHECKING -> IceState.CHECKING;
+            case CONNECTED -> IceState.CONNECTED;
+            case COMPLETED -> IceState.COMPLETED;
+            case DISCONNECTED -> IceState.DISCONNECTED;
+            case FAILED -> IceState.FAILED;
+            case CLOSED -> IceState.CLOSED;
+        };
+        iceState = mapped;
+        dispatch(l -> l.onIceStateChange(mapped));
+    }
+
+    /**
+     * libwebrtc reports the ICE state before the connection state it feeds
+     * (JsepTransportController updates them in that order), so a FAILED
+     * connection already knows whether ICE failed.
+     */
+    void onConnectionState(RTCPeerConnectionState state) {
+        PeerState mapped = switch (state) {
+            case NEW -> PeerState.NEW;
+            case CONNECTING -> PeerState.CONNECTING;
+            case CONNECTED -> PeerState.CONNECTED;
+            case DISCONNECTED -> PeerState.DISCONNECTED;
+            case FAILED -> PeerState.FAILED;
+            case CLOSED -> PeerState.CLOSED;
+        };
+        dispatch(l -> l.onStateChange(mapped));
+        switch (state) {
+            case FAILED -> {
+                CloseCause cause = iceState == IceState.FAILED ? CloseCause.ICE_FAILED : CloseCause.TRANSPORT_FAILED;
+                peerFailure = cause;
+                reportClosed(cause);
+            }
+            // Only a local close closes a connection, and that stops the events first.
+            case CLOSED -> reportClosed(CloseCause.UNKNOWN);
+            default -> {
+            }
+        }
+    }
+
+    void onSelectedPair(String localCandidate, String remoteCandidate) {
+        dispatch(l -> l.onPathSelected(CandidateLines.path(localCandidate, remoteCandidate)));
+    }
+
+    /** A data channel the remote peer opened, on the signaling thread. */
+    void onRemoteChannel(NativeLink channel) {
+        if (!listening) {
+            execute(() -> discard(channel));
+            return;
+        }
+        WebRtcLink link;
+        try {
+            link = new WebRtcLink(this, channel.parameters(), channel);
+        } catch (RuntimeException e) {
+            log.debug("Reading a remote data channel failed: {}", e.toString());
+            execute(() -> discard(channel));
+            return;
+        }
+        boolean keep;
+        try {
+            keep = listener.onRemoteChannel(link);
+        } catch (RuntimeException e) {
+            log.warn("A NetherNet peer listener failed", e);
+            keep = false;
+        }
+        synchronized (lock) {
+            keep &= !closeRequested.get();
+            if (keep) {
+                links.add(link);
+            }
+        }
+        if (keep) {
+            link.attachRemote();
+        } else {
+            execute(() -> discard(channel));
+        }
+    }
+
+    private static void discard(NativeLink channel) {
+        quietly("closing a refused data channel", channel::close);
+        quietly("releasing a refused data channel", channel::dispose);
+    }
+
+    private void negotiationFailed(String operation, String error) {
+        if (closeRequested.get()) {
+            // Teardown fails the open stages; libwebrtc discards pending steps then.
+            return;
+        }
+        IllegalStateException cause = new IllegalStateException(operation + " failed: " + error);
+        List<CompletableFuture<?>> stages;
+        synchronized (lock) {
+            if (failure != null) {
+                return;
+            }
+            failure = cause;
+            stages = List.copyOf(openStages);
+        }
+        // A remote description is the remote side's input; the other steps are ours.
+        if (operation.equals("SetRemoteDescription")) {
+            log.debug("{} failed: {}", operation, error);
+        } else {
+            log.warn("{} failed: {}", operation, error);
+        }
+        stages.forEach(stage -> stage.completeExceptionally(cause));
+        gathered.completeExceptionally(cause);
+        reportClosed(CloseCause.NEGOTIATION_FAILED);
+    }
+
+    private void reportClosed(CloseCause cause) {
+        if (listening && closeReported.compareAndSet(false, true)) {
+            dispatch(l -> l.onClosed(cause));
+        }
+    }
+
+    private <T> CompletableFuture<T> openStage(boolean description) {
+        CompletableFuture<T> stage = new CompletableFuture<>();
+        synchronized (lock) {
+            if (description) {
+                if (descriptionStarted) {
+                    throw new IllegalStateException(role == Role.ANSWERER ? "answer() was called before" : "offer() was called before");
+                }
+                descriptionStarted = true;
+            }
+            openStages.add(stage);
+        }
+        stage.whenComplete((value, error) -> {
+            synchronized (lock) {
+                openStages.remove(stage);
+            }
+        });
+        return stage;
+    }
+
+    /** Whether the next step of a negotiation may run; fails the stage if not. */
+    private boolean proceed(CompletableFuture<?> stage) {
+        if (closeRequested.get()) {
+            stage.completeExceptionally(new IllegalStateException("Peer closed"));
+            return false;
+        }
+        Throwable failed = failure;
+        if (failed != null) {
+            stage.completeExceptionally(failed);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean step(String operation, Runnable call) {
+        try {
+            call.run();
+            return true;
+        } catch (RuntimeException e) {
+            negotiationFailed(operation, e.toString());
+            return false;
+        }
+    }
+
+    private void requireRole(Role required, String method) {
+        if (role != required) {
+            throw new IllegalStateException(method + "() is for an " + required.name().toLowerCase() + " peer");
+        }
+    }
+
+    /** Runs on the control thread; false if the engine has stopped it. */
+    private boolean execute(Runnable task) {
+        try {
+            control.execute(task);
+            return true;
+        } catch (RejectedExecutionException e) {
+            log.debug("The WebRTC engine is closed; dropping a peer task");
+            return false;
+        }
+    }
+
+    private static void quietly(String what, Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException e) {
+            log.debug("Error {}: {}", what, e.toString());
+        } catch (Error e) {
+            // webrtc-java reports a native reference left behind with a plain
+            // Error; the object is freed once its last holder lets go.
+            if (e.getClass() != Error.class) {
+                throw e;
+            }
+            log.warn("Error {}: {}", what, e.getMessage());
+        }
+    }
+
+    private record RemoteCandidate(String attribute, String mid) {
+    }
+
+    private sealed interface LocalEvent {
+        record Candidate(String candidate, String mid) implements LocalEvent {
+        }
+
+        record GatheringComplete() implements LocalEvent {
+        }
+    }
+
+    private final class SetObserver implements SetSessionDescriptionObserver {
+        private final String operation;
+        private final Runnable next;
+
+        SetObserver(String operation, Runnable next) {
+            this.operation = operation;
+            this.next = next;
+        }
+
+        @Override
+        public void onSuccess() {
+            next.run();
+        }
+
+        @Override
+        public void onFailure(String error) {
+            negotiationFailed(operation, error);
+        }
+    }
+
+    private final class DescriptionObserver implements CreateSessionDescriptionObserver {
+        private final String operation;
+        private final Consumer<RTCSessionDescription> next;
+
+        DescriptionObserver(String operation, Consumer<RTCSessionDescription> next) {
+            this.operation = operation;
+            this.next = next;
+        }
+
+        @Override
+        public void onSuccess(RTCSessionDescription description) {
+            next.accept(description);
+        }
+
+        @Override
+        public void onFailure(String error) {
+            negotiationFailed(operation, error);
+        }
+    }
+
+    /** Turns webrtc-java's observer calls into this peer's events. */
+    private final class Events implements PeerConnectionObserver {
+
+        @Override
+        public void onIceCandidate(RTCIceCandidate candidate) {
+            onLocalCandidate(candidate.sdp, candidate.sdpMid);
+        }
+
+        @Override
+        public void onIceGatheringChange(RTCIceGatheringState state) {
+            onGatheringState(state);
+        }
+
+        @Override
+        public void onIceConnectionChange(RTCIceConnectionState state) {
+            onIceConnectionState(state);
+        }
+
+        @Override
+        public void onConnectionChange(RTCPeerConnectionState state) {
+            onConnectionState(state);
+        }
+
+        @Override
+        public void onSelectedCandidatePairChanged(RTCCandidatePairChangeEvent event) {
+            onSelectedPair(event.getLocal().sdp, event.getRemote().sdp);
+        }
+
+        @Override
+        public void onDataChannel(RTCDataChannel dataChannel) {
+            onRemoteChannel(new NativeLink.RtcLink(dataChannel));
+        }
+    }
+}
