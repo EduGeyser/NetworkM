@@ -7,7 +7,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSessionL
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherServerChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.github.sendablemetatype.webrtc.PeerConnectionFactory;
 import io.netty.channel.AbstractServerChannel;
@@ -211,8 +211,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * same loop, so everything here is single threaded and ordered.
      */
     private void establishConnection(PendingConnection pending, long connectionId, String offerSdp, String remoteNetworkId) {
-        // Capture identity before checking liveness: cancellation can remove the HTTP exchange.
-        ClientIdentity identity = signaling.clientIdentityOf(connectionId);
+        // Capture the check before checking liveness: cancellation can remove the HTTP exchange.
+        OfferCheckResult offerCheck = signaling.offerCheckOf(connectionId);
         // Offers racing a failed doBind: signaling briefly accepted
         // connections but the backend never materialized.
         if (!isOpen() || backend == null || !signaling.isConnectionPending(connectionId)) {
@@ -228,7 +228,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             NetherNetChildChannel child = new NetherNetChildChannel(this,
                     signaledAddress != null ? signaledAddress : generatePlaceholderAddress(), localAddress);
             pending.child = child;
-            child.setClientIdentity(identity);
+            child.setOfferCheck(offerCheck);
             children.add(child);
             child.setMaxOutboundMessageSize(maxMessageSize);
 

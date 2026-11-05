@@ -2,10 +2,10 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetOfferValidator;
-import io.github.sendablemetatype.netty.util.nethernet.ClientAssertionValidator;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
-import io.github.sendablemetatype.netty.util.nethernet.TrustSourceUnavailableException;
+import io.github.sendablemetatype.netty.util.nethernet.IdentityRefusal;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -43,7 +43,6 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -56,13 +55,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -123,7 +121,8 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     // Racing a duplicate first warn is harmless; this only bounds the spam.
     private volatile boolean statusSupplierWarned;
     private volatile NewConnectionHandler newConnectionHandler;
-    private volatile NetherNetOfferValidator offerValidator = new ClientAssertionValidator();
+    private volatile OfferCheck offerCheck = OfferCheck.minecraft();
+    private volatile OfferPolicy offerPolicy = OfferPolicy.REQUIRE_KEY_PROVEN;
     private ExecutorService validationExecutor;
     private volatile Channel serverChannel;
     // The TCP accept loop. Owned: bind() is called from the NetherNet server
@@ -157,7 +156,7 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
 
     NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
                           Supplier<? extends EventLoopGroup> acceptGroupFactory) {
-        this(sslContextSupplier, workerGroup, acceptGroupFactory, NetherNetHttpSignaling::newValidationExecutor);
+        this(sslContextSupplier, workerGroup, acceptGroupFactory, OfferCheck::newExecutor);
     }
 
     NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
@@ -170,21 +169,22 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     }
 
     /**
-     * Configures offer validation and optional application authorization. The default
-     * verifies Minecraft-issued tokens and their SDP fingerprint signatures. Set null
-     * to explicitly opt out. Changes apply to subsequent offers; validators run outside
-     * I/O loops and must not log bearer tokens or include them in exception messages.
+     * Sets the offer identity check, which runs outside I/O loops before any peer is created. The
+     * default attests retail tokens against Minecraft's authorization service. Changes apply to
+     * subsequent offers.
      */
-    public void setOfferValidator(NetherNetOfferValidator validator) {
-        this.offerValidator = validator;
+    public void setOfferCheck(OfferCheck check) {
+        this.offerCheck = Objects.requireNonNull(check, "check");
     }
 
-    private static ExecutorService newValidationExecutor() {
-        int threads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS,
-                new ArrayBlockingQueue<>(64), new DefaultThreadFactory("nethernet-identity", true));
-        executor.allowCoreThreadTimeOut(true);
-        return executor;
+    /** Sets which check results are admitted; the default is {@link OfferPolicy#REQUIRE_KEY_PROVEN}. */
+    public void setOfferPolicy(OfferPolicy policy) {
+        this.offerPolicy = Objects.requireNonNull(policy, "policy");
+    }
+
+    /** Admits offers unchecked, for test fixtures that carry unsigned SDP. */
+    void disableOfferCheck() {
+        this.offerCheck = null;
     }
 
     private ExecutorService validationExecutor() {
@@ -406,9 +406,9 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     }
 
     @Override
-    public ClientIdentity clientIdentityOf(long connectionId) {
+    public OfferCheckResult offerCheckOf(long connectionId) {
         PendingExchange exchange = pendingExchanges.get(connectionId);
-        return exchange != null ? exchange.identity : null;
+        return exchange != null ? exchange.offerCheck : null;
     }
 
     @Override
@@ -467,7 +467,7 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
         final InetSocketAddress remoteAddress;
         private ScheduledFuture<?> timeout;
         private Future<?> validationTask;
-        private volatile ClientIdentity identity;
+        private volatile OfferCheckResult offerCheck;
         private boolean completed;
 
         PendingExchange(ChannelHandlerContext ctx, InetSocketAddress remoteAddress) {
@@ -590,63 +590,66 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
                 }
             });
 
-            NetherNetOfferValidator validator = offerValidator;
-            if (validator == null) {
-                dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, null, null);
+            OfferCheck check = offerCheck;
+            OfferPolicy policy = offerPolicy;
+            if (check == null) {
+                dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, null);
                 return;
             }
-            FutureTask<Void> task = new FutureTask<>(() -> {
-                ClientIdentity identity = null;
-                Exception failure = null;
-                try {
-                    identity = Objects.requireNonNull(validator.validate(offerSdp), "Validator returned no identity");
-                } catch (Exception e) {
-                    failure = e;
-                }
-                ClientIdentity verified = identity;
-                Exception error = failure;
-                try {
-                    ctx.executor().execute(() -> dispatchOffer(connectionId, exchange, networkId, offerSdp,
-                            handler, verified, error));
-                } catch (RejectedExecutionException e) {
-                    // The existing negotiation deadline still reaps the exchange if the loop recovers.
-                    log.debug("Identity completion could not reach the HTTP event loop for {}",
-                            Long.toUnsignedString(connectionId));
-                }
-                return null;
-            });
-            exchange.setValidationTask(task);
+            ExecutorService executor;
             try {
-                if (!task.isCancelled()) validationExecutor().execute(task);
+                executor = validationExecutor();
             } catch (RejectedExecutionException e) {
                 if (pendingExchanges.remove(connectionId, exchange)) {
                     exchange.cancelTimeout();
                     respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Identity validation unavailable");
                 }
+                return;
             }
+            CompletableFuture<OfferCheckResult> stage = check.checkAsync(offerSdp, executor);
+            exchange.setValidationTask(stage);
+            stage.whenComplete((result, failure) -> {
+                try {
+                    ctx.executor().execute(() -> checkCompleted(connectionId, exchange, networkId, offerSdp,
+                            handler, policy, result, failure));
+                } catch (RejectedExecutionException e) {
+                    // The existing negotiation deadline still reaps the exchange if the loop recovers.
+                    log.debug("Identity completion could not reach the HTTP event loop for {}",
+                            Long.toUnsignedString(connectionId));
+                }
+            });
         }
 
-        private void dispatchOffer(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
-                                   NewConnectionHandler handler, ClientIdentity identity, Exception failure) {
+        private void checkCompleted(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
+                                    NewConnectionHandler handler, OfferPolicy policy, OfferCheckResult result,
+                                    Throwable failure) {
             if (closed || !exchange.ctx.channel().isActive() || pendingExchanges.get(connectionId) != exchange) return;
-            if (failure != null) {
+            Optional<IdentityRefusal> refusal = failure == null ? policy.refusal(result) : Optional.empty();
+            if (failure != null || refusal.isPresent()) {
                 if (pendingExchanges.remove(connectionId, exchange)) {
                     exchange.cancelTimeout();
-                    // Validator messages never carry the bearer token, so they can be logged.
-                    if (failure instanceof TrustSourceUnavailableException) {
-                        log.warn("Offer {} from {} not validated, trust source unreachable: {}",
-                                Long.toUnsignedString(connectionId), exchange.remoteAddress, failure.getMessage());
+                    if (failure != null) {
+                        // A full check queue, not a judgment on the offer.
                         respond(exchange.ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain",
-                                "Identity trust source unavailable");
+                                "Identity validation unavailable");
                     } else {
-                        log.info("Rejected offer {} from {}: {}",
-                                Long.toUnsignedString(connectionId), exchange.remoteAddress, failure.getMessage());
-                        respond(exchange.ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Client assertion rejected");
+                        // Diagnostics hold no token, and their text is sanitized for logs.
+                        log.info("Refused offer {} from {}: {} ({}, {})", Long.toUnsignedString(connectionId),
+                                exchange.remoteAddress, refusal.get(), result.reason(), result.diagnostics());
+                        // Statuses from the initial table of ruling E-7.
+                        respond(exchange.ctx, refusal.get() == IdentityRefusal.TRUST_SOURCE_UNREACHABLE
+                                        ? HttpResponseStatus.INTERNAL_SERVER_ERROR : HttpResponseStatus.UNAUTHORIZED,
+                                "text/plain", "Client assertion rejected");
                     }
                 }
                 return;
             }
-            exchange.identity = identity;
+            dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, result);
+        }
+
+        private void dispatchOffer(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
+                                   NewConnectionHandler handler, OfferCheckResult result) {
+            exchange.offerCheck = result;
             log.debug("Offer for {} from network {} via HTTP", Long.toUnsignedString(connectionId), networkId);
             try {
                 handler.onConnect(connectionId, networkId, offerSdp);

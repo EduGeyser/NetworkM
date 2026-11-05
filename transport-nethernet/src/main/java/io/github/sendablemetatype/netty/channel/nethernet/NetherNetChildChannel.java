@@ -2,7 +2,8 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherChannelConfig;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelPromise;
@@ -11,7 +12,6 @@ import io.netty.util.AttributeKey;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.security.PublicKey;
 import java.util.Objects;
 import java.util.function.DoubleConsumer;
 import java.util.function.Consumer;
@@ -23,9 +23,9 @@ import java.util.function.Consumer;
  * into this channel.
  */
 public class NetherNetChildChannel extends NetherNetChannel {
-    /** Validated offer identity, also accessible through channel wrappers that delegate attributes. */
-    public static final AttributeKey<ClientIdentity> CLIENT_IDENTITY =
-            AttributeKey.valueOf(NetherNetChildChannel.class, "clientIdentity");
+    /** The offer check result, also accessible through channel wrappers that delegate attributes. */
+    public static final AttributeKey<OfferCheckResult> OFFER_CHECK =
+            AttributeKey.valueOf(NetherNetChildChannel.class, "offerCheck");
 
     private volatile WebRtcSession session;
 
@@ -34,26 +34,17 @@ public class NetherNetChildChannel extends NetherNetChannel {
         this.config = new DefaultNetherChannelConfig(this);
     }
 
-    /** Returns the validated offer identity, or null when validation was disabled or unsupported by the signaling path. */
-    public ClientIdentity getClientIdentity() { return attr(CLIENT_IDENTITY).get(); }
+    /** Returns the offer check result, or null when the signaling path ran no check. */
+    public OfferCheckResult getOfferCheck() { return attr(OFFER_CHECK).get(); }
 
     /**
-     * Checks a Bedrock Login chain key against the identity that opened the given channel,
-     * including wrappers that delegate attributes to the accepted child.
-     *
-     * @return null when the login key matches the verified transport key, otherwise the reason it does not,
-     *         including when the channel carries no validated identity
+     * Records the offer check and installs the login binding it earns: bound to the proven key,
+     * or unbound when no key was proven or no check ran.
      */
-    public static String loginKeyMismatch(Channel channel, PublicKey loginKey) {
-        ClientIdentity identity = channel == null ? null : channel.attr(CLIENT_IDENTITY).get();
-        if (identity == null) {
-            return "the transport carries no validated identity to bind the login chain to";
-        }
-        return identity.loginKeyMismatch(loginKey);
-    }
-
-    void setClientIdentity(ClientIdentity identity) {
-        if (identity != null) attr(CLIENT_IDENTITY).set(identity);
+    void setOfferCheck(OfferCheckResult result) {
+        if (result != null) attr(OFFER_CHECK).set(result);
+        TransportIdentityBinding.install(this, result != null
+                ? TransportIdentityBinding.forOffer(result) : TransportIdentityBinding.unbound());
     }
 
     /**

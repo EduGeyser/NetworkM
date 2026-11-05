@@ -1,7 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -76,8 +76,8 @@ public interface NetherNetServerSignaling extends NetherNetSignaling {
         return null;
     }
 
-    /** Returns the validated offer identity, or null when this signaling path did not validate one. */
-    default ClientIdentity clientIdentityOf(long connectionId) { return null; }
+    /** Returns the offer's identity check result, or null when this signaling path did not check it. */
+    default OfferCheckResult offerCheckOf(long connectionId) { return null; }
 
     /** Whether a request/response exchange is still awaiting negotiation; message-based signaling defaults to true. */
     default boolean isConnectionPending(long connectionId) { return true; }

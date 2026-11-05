@@ -2,8 +2,9 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChildChannel;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
-import io.github.sendablemetatype.netty.util.nethernet.ClientAssertionFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
 import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcServerBackend;
 import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
@@ -25,15 +26,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
@@ -44,7 +44,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  */
 class NetherNetHttpSignalingTest {
 
-    private static final String CANNED_ANSWER = "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\na=candidate:1 1 udp 2122260223 127.0.0.1 55555 typ host\r\n";
+    // The built-in server identity signs the fingerprint, as every answer must carry one.
+    private static final String CANNED_ANSWER = "v=0\r\no=- 0 2 IN IP4 127.0.0.1\r\na=candidate:1 1 udp 2122260223 127.0.0.1 55555 typ host\r\n"
+            + "a=fingerprint:sha-256 " + "AB:".repeat(31) + "AB\r\n";
 
     private static MultiThreadIoEventLoopGroup group;
     private static NetherNetHttpSignaling signaling;
@@ -52,7 +54,7 @@ class NetherNetHttpSignalingTest {
     private static ScriptedBackend backend;
     private static HttpClient client;
     private static String baseUrl;
-    private static final LinkedBlockingQueue<ClientIdentity> authenticatedChildren = new LinkedBlockingQueue<>();
+    private static final LinkedBlockingQueue<NetherNetChildChannel> checkedChildren = new LinkedBlockingQueue<>();
 
     /** Records accepts and answers each offer with the canned SDP. */
     private static final class ScriptedBackend implements WebRtcServerBackend {
@@ -93,15 +95,14 @@ class NetherNetHttpSignalingTest {
         group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
         backend = new ScriptedBackend();
         signaling = new NetherNetHttpSignaling((SslContext) null, group);
-        signaling.setOfferValidator(null); // The scripted backend uses unsigned offers.
+        signaling.disableOfferCheck(); // The scripted backend uses unsigned offers.
 
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(group, group)
                 .channelFactory(() -> new NetherNetServerChannel(backend, signaling))
                 .childHandler(new ChannelInitializer<NetherNetChildChannel>() {
                     @Override protected void initChannel(NetherNetChildChannel channel) {
-                        ClientIdentity identity = channel.getClientIdentity();
-                        if (identity != null) authenticatedChildren.add(identity);
+                        if (channel.getOfferCheck() != null) checkedChildren.add(channel);
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
@@ -133,28 +134,23 @@ class NetherNetHttpSignalingTest {
     }
 
     @Test
-    void validatesBeforeBackendCreationAndPublishesTheIdentity() throws Exception {
-        AtomicBoolean validatedOnIoLoop = new AtomicBoolean();
-        var validator = ClientAssertionFixtures.validator();
-        signaling.setOfferValidator(sdp -> {
-            for (var loop : group) {
-                if (loop.inEventLoop()) validatedOnIoLoop.set(true);
-            }
-            return validator.validate(sdp);
-        });
+    void checksBeforeBackendCreationAndBindsTheChild() throws Exception {
+        signaling.setOfferCheck(OfferFixtures.retailCheck());
         try {
-            String valid = ClientAssertionFixtures.validOffer();
+            String valid = OfferFixtures.retailOffer();
             int previousAccepts = backend.fullIceFlags.size();
-            assertEquals(400, post("/v1/join/opaque-peer",
-                    valid.replace(ClientAssertionFixtures.DIGEST, "CD:".repeat(31) + "CD")).statusCode());
+            assertEquals(401, post("/v1/join/opaque-peer",
+                    valid.replace(OfferFixtures.DIGEST, OfferFixtures.OTHER_DIGEST)).statusCode());
             assertEquals(previousAccepts, backend.fullIceFlags.size());
             assertEquals(200, post("/v1/join/opaque-peer", valid).statusCode());
-            ClientIdentity identity = authenticatedChildren.poll(3, TimeUnit.SECONDS);
-            assertNotNull(identity);
-            assertEquals("1234567890", identity.getClaims().get("xid"));
-            assertFalse(validatedOnIoLoop.get());
+            NetherNetChildChannel child = checkedChildren.poll(3, TimeUnit.SECONDS);
+            assertNotNull(child);
+            assertEquals(OfferCheckResult.Level.ATTESTED, child.getOfferCheck().level());
+            assertEquals(Optional.of("2535400000000000"), child.getOfferCheck().xuid());
+            assertEquals(TransportIdentityBinding.Result.ACCEPTED,
+                    TransportIdentityBinding.verifyLogin(child, OfferFixtures.CLIENT_KEY.getPublic()));
         } finally {
-            signaling.setOfferValidator(null);
+            signaling.disableOfferCheck();
         }
     }
 

@@ -46,7 +46,7 @@ class NetherNetHttpSingleRequestTest {
     @BeforeEach
     void setUp() {
         channel.freezeTime();
-        signaling.setOfferValidator(null); // These framing and lifecycle fixtures carry unsigned SDP.
+        signaling.disableOfferCheck(); // These framing and lifecycle fixtures carry unsigned SDP.
         signaling.initConnection(channel);
         signaling.setNewConnectionHandler((connectionId, networkId, sdp) -> {
             offers.add(new Offer(connectionId, networkId, sdp));
