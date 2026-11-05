@@ -19,6 +19,10 @@ description = "API shared by the Netty transports"
 dependencies {
     api(platform(libs.netty.bom))
     api(libs.netty.transport)
+
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.bundles.junit)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 tasks.jar {
