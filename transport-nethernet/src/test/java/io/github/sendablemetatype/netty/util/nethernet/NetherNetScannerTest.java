@@ -1,8 +1,8 @@
 package io.github.sendablemetatype.netty.util.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.LanServerData;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetDiscovery;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling.PongData;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -10,7 +10,6 @@ import io.netty.channel.ChannelHandlerContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.DatagramPacket;
@@ -25,28 +24,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(10)
 class NetherNetScannerTest {
-    @ParameterizedTest
-    @CsvSource({"0, 2, 4", "-1, 64, 128", "2147483647, -2147483648, 16384"})
-    void versionSixRoundTripsLongUnicodeNamesAndSignedEnums(int gameType, int transport, int connection) throws Exception {
-        PongData pong = new PongData("世界😀".repeat(40), "Ž".repeat(80), gameType, 3, 10, false, true, transport, connection);
-        ByteBuf response = discover(pong);
-        try {
-            NetherNetScanner.ServerInfo info = NetherNetScanner.readResponse(response);
-            assertEquals(6, info.version());
-            assertEquals(pong, info.data());
-        } finally {
-            response.release();
-        }
-    }
+    private static final LanServerData.V7 PREVIEW_DATA = new LanServerData.V7("Dedicated Server", 2207, "1.26.60",
+            "Bedrock level", 0, 10, 0, false, false, false, false, "24728cbd0c0b6df4", 4);
 
     @Test
-    void discoverySendsTheStableVersionSixCapture() throws Exception {
-        ByteBuf response = discover(new PongData("Dedicated Server", "Bedrock level", 0, 0, 10,
-                false, false, 2, 4, true, false, "3e8a5e7a932c5aa4"));
+    void discoveryAnswersWithTheV7PreviewResponse() throws Exception {
+        ByteBuf response = discover(PREVIEW_DATA);
         try {
             int length = response.readIntLE();
-            assertEquals(128, length);
-            try (var stream = getClass().getResourceAsStream("/discovery/stable-1.26.45.1-v6.hex")) {
+            assertEquals(134, length);
+            try (var stream = getClass().getResourceAsStream("/discovery/preview-1.26.60.21-v7.hex")) {
                 assertNotNull(stream);
                 assertEquals(new String(stream.readAllBytes(), StandardCharsets.US_ASCII).strip(),
                         response.readCharSequence(length, StandardCharsets.US_ASCII).toString());
@@ -57,19 +44,25 @@ class NetherNetScannerTest {
     }
 
     @Test
-    void negativeAndMultiByteEnumValuesUseZigZagVarints() throws Exception {
-        ByteBuf response = discover(new PongData("", "", -1, 0, 0, false, false, 64, 128, false, true, "a"));
+    void theScannerReadsTheStableV6Capture() throws Exception {
+        String hex;
+        try (var stream = getClass().getResourceAsStream("/discovery/stable-1.26.45.1-v6.hex")) {
+            assertNotNull(stream);
+            hex = new String(stream.readAllBytes(), StandardCharsets.US_ASCII).strip();
+        }
+        ByteBuf response = Unpooled.buffer().writeIntLE(hex.length());
+        response.writeCharSequence(hex, StandardCharsets.US_ASCII);
         try {
-            int length = response.readIntLE();
-            assertEquals("06000001000000000000000000000001016180018002",
-                    response.readCharSequence(length, StandardCharsets.US_ASCII).toString());
+            assertEquals(new LanServerData.V6("Dedicated Server", "Bedrock level", 0, 0, 10,
+                    false, false, true, false, "3e8a5e7a932c5aa4", 2, 4), NetherNetScanner.readResponse(response));
         } finally {
             response.release();
         }
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"06", "0680", "068001", "06ffffffff0f", "068080808010", "06808080808000", "06000000"})
+    @ValueSource(strings = {"07", "0780", "078001", "07ffffffff0f", "078080808010", "07808080808000", "07000000",
+            "06", "06000000"})
     void truncatedAndOverflowingFieldsAreRejected(String hex) {
         ByteBuf response = Unpooled.buffer().writeIntLE(hex.length());
         response.writeCharSequence(hex, StandardCharsets.US_ASCII);
@@ -82,25 +75,26 @@ class NetherNetScannerTest {
 
     @Test
     void largestAdvertisementFitsUdpAndAnOversizedUpdatePreservesIt() throws Exception {
-        PongData largest = new PongData("x".repeat(32701), "", 0, 0, 0,
-                false, false, 2, 4, true, false, "a");
-        PongData oversized = new PongData("x".repeat(32702), "", 0, 0, 0,
-                false, false, 2, 4, true, false, "a");
+        // Version 1, name 3 + 32706, protocol 1, version 1, level 1, counts 3, flags 4, nonce 2, connection 1
+        LanServerData.V7 largest = new LanServerData.V7("x".repeat(32706), 0, "", "", 0, 0, 0,
+                false, false, true, false, "a", 4);
+        LanServerData.V7 oversized = new LanServerData.V7("x".repeat(32707), 0, "", "", 0, 0, 0,
+                false, false, true, false, "a", 4);
         ByteBuf response = discover(largest, discovery ->
-                assertThrows(IllegalArgumentException.class, () -> discovery.setPongData(oversized)));
+                assertThrows(IllegalArgumentException.class, () -> discovery.setServerData(oversized)));
         try {
             assertEquals(4 + 2 * 32723, response.readableBytes());
-            assertEquals(largest, NetherNetScanner.readResponse(response).data());
+            assertEquals(largest, NetherNetScanner.readResponse(response));
         } finally {
             response.release();
         }
     }
 
-    private static ByteBuf discover(PongData pong) throws Exception {
-        return discover(pong, ignored -> {});
+    private static ByteBuf discover(LanServerData.V7 data) throws Exception {
+        return discover(data, ignored -> {});
     }
 
-    private static ByteBuf discover(PongData pong, Consumer<NetherNetDiscovery> afterUpdate) throws Exception {
+    private static ByteBuf discover(LanServerData.V7 data, Consumer<NetherNetDiscovery> afterUpdate) throws Exception {
         AtomicReference<Channel> channel = new AtomicReference<>();
         NetherNetDiscovery discovery = new NetherNetDiscovery(1) {
             @Override
@@ -110,7 +104,7 @@ class NetherNetScannerTest {
         };
         try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
             socket.setSoTimeout(2000);
-            discovery.setPongData(pong);
+            discovery.setServerData(data);
             afterUpdate.accept(discovery);
             discovery.bind(new InetSocketAddress("127.0.0.1", 0));
             ByteBuf request = Unpooled.buffer().writeShortLE(NetherNetConstants.ID_DISCOVERY_REQUEST)

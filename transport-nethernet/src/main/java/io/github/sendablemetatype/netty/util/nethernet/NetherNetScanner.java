@@ -2,8 +2,8 @@ package io.github.sendablemetatype.netty.util.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetServerDataCodec;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.LanServerData;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetDiscovery;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling.PongData;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -28,20 +28,35 @@ public class NetherNetScanner {
 
         discovery.sendDiscoveryRequest(broadcastTarget, (senderId, payload) -> {
             try {
-                ServerInfo info = readResponse(payload);
-                PongData data = info.data();
+                LanServerData data = readResponse(payload);
                 System.out.println("--------------------------------");
-                System.out.println("Found Server: " + senderId);
-                System.out.println("MOTD: " + data.serverName());
-                System.out.println("Level: " + data.levelName());
-                System.out.println("Players: " + data.playerCount() + "/" + data.maxPlayerCount());
-                System.out.println("Game Mode: " + data.gameType());
-                System.out.println("Editor World: " + data.isEditorWorld());
-                System.out.println("Hardcore: " + data.isHardcore());
-                System.out.println("Accepts Online Auth: " + data.acceptsOnlineAuth());
-                System.out.println("Accepts Self-Signed Auth: " + data.acceptsSelfSignedAuth());
-                System.out.println("Nonce: " + data.nonce());
-                System.out.println("Version: " + info.version());
+                System.out.println("Found Server: " + Long.toUnsignedString(senderId));
+                System.out.println("Data Version: " + data.dataVersion());
+                switch (data) {
+                    case LanServerData.V7 v7 -> {
+                        System.out.println("MOTD: " + v7.serverName());
+                        System.out.println("Level: " + v7.levelName());
+                        System.out.println("Version: " + v7.version() + " (protocol " + v7.protocol() + ")");
+                        System.out.println("Players: " + v7.playerCount() + "/" + v7.maxPlayerCount());
+                        System.out.println("Game Mode: " + v7.gameType());
+                        System.out.println("Editor World: " + v7.editorWorld());
+                        System.out.println("Hardcore: " + v7.hardcore());
+                        System.out.println("Accepts Online Auth: " + v7.onlineAuth());
+                        System.out.println("Accepts Self-Signed Auth: " + v7.selfSignedAuth());
+                        System.out.println("Nonce: " + v7.nonce());
+                    }
+                    case LanServerData.V6 v6 -> {
+                        System.out.println("MOTD: " + v6.serverName());
+                        System.out.println("Level: " + v6.levelName());
+                        System.out.println("Players: " + v6.playerCount() + "/" + v6.maxPlayerCount());
+                        System.out.println("Game Mode: " + v6.gameType());
+                        System.out.println("Editor World: " + v6.editorWorld());
+                        System.out.println("Hardcore: " + v6.hardcore());
+                        System.out.println("Accepts Online Auth: " + v6.onlineAuth());
+                        System.out.println("Accepts Self-Signed Auth: " + v6.selfSignedAuth());
+                        System.out.println("Nonce: " + v6.nonce());
+                    }
+                }
                 System.out.println("--------------------------------");
             } catch (Exception e) {
                 e.printStackTrace();
@@ -54,7 +69,11 @@ public class NetherNetScanner {
         discovery.close();
     }
 
-    static ServerInfo readResponse(ByteBuf payload) {
+    /**
+     * Reads a discovery response body: a little-endian length, then that many hex characters
+     * encoding the server data.
+     */
+    static LanServerData readResponse(ByteBuf payload) {
         if (!payload.isReadable(4)) {
             throw new IllegalArgumentException("Missing discovery response length");
         }
@@ -65,11 +84,9 @@ public class NetherNetScanner {
         String hex = payload.readCharSequence(length, StandardCharsets.US_ASCII).toString();
         ByteBuf data = Unpooled.wrappedBuffer(ByteBufUtil.decodeHexDump(hex));
         try {
-            return new ServerInfo(NetherNetServerDataCodec.VERSION, NetherNetServerDataCodec.decode(data));
+            return NetherNetServerDataCodec.decode(data);
         } finally {
             data.release();
         }
     }
-
-    record ServerInfo(int version, PongData data) { }
 }

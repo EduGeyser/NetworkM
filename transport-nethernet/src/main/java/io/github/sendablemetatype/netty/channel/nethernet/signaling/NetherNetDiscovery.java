@@ -2,7 +2,6 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetServerDataCodec;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling.PongData;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling.SignalHandler;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -46,7 +45,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private final AtomicReference<DiscoveryCallback> discoveryCallback = new AtomicReference<>();
     private EventLoopGroup eventLoops;
     private volatile Channel channel;
-    private volatile byte[] pongData;
+    private volatile byte[] serverData;
     private volatile NetherNetServerSignaling.NewConnectionHandler newConnectionHandler;
     private volatile boolean closed;
 
@@ -172,7 +171,16 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
 
     private record DiscoveryCallback(BiConsumer<Long, ByteBuf> consumer, InetSocketAddress expectedSender) { }
 
-    public void setPongData(PongData data) {
+    /**
+     * Sets the server data every discovery response carries. It is encoded once here and cached.
+     * Only v7 is advertised: current clients do not send offers to a server that answers in an
+     * older version (claimed by upstream for 1.26.51 clients; see {@link NetherNetServerDataCodec}).
+     *
+     * @param data the advertisement
+     * @throws IllegalArgumentException if the encoded advertisement does not fit one datagram;
+     *         the previous advertisement stays in place
+     */
+    public void setServerData(LanServerData.V7 data) {
         Objects.requireNonNull(data, "data");
         ByteBuf buf = Unpooled.buffer(128, MAX_SERVER_DATA_BYTES);
         byte[] hexBytes;
@@ -189,9 +197,9 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         try {
             response.writeIntLE(hexBytes.length);
             response.writeBytes(hexBytes);
-            byte[] pongData = new byte[response.readableBytes()];
-            response.readBytes(pongData);
-            this.pongData = pongData;
+            byte[] serverData = new byte[response.readableBytes()];
+            response.readBytes(serverData);
+            this.serverData = serverData;
         } finally {
             response.release();
         }
@@ -344,14 +352,14 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     }
 
     private void handleRequest(long senderId, InetSocketAddress sender) {
-        byte[] pongData = this.pongData;
-        if (pongData == null) return;
+        byte[] serverData = this.serverData;
+        if (serverData == null) return;
 
         ByteBuf buf = Unpooled.buffer();
         buf.writeShortLE(NetherNetConstants.ID_DISCOVERY_RESPONSE);
         buf.writeLongLE(this.networkId);
         buf.writeZero(8);
-        buf.writeBytes(pongData);
+        buf.writeBytes(serverData);
 
         sendPacket(buf, sender);
     }

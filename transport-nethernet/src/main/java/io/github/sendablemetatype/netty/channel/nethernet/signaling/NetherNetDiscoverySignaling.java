@@ -197,9 +197,26 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
         this.discovery.setNewConnectionHandler(handler);
     }
 
+    /**
+     * Not supported: LAN advertises server data v7, which needs the protocol and version that
+     * {@link PongData} does not carry. Use {@link #setServerData(LanServerData.V7)}.
+     *
+     * @throws UnsupportedOperationException always
+     */
     @Override
     public void setAdvertisementData(PongData pongData) {
-        this.discovery.setPongData(pongData);
+        throw new UnsupportedOperationException("LAN discovery advertises v7 server data; use setServerData");
+    }
+
+    /**
+     * Sets the server data discovery responses carry.
+     *
+     * @param data the advertisement
+     * @throws IllegalArgumentException if it does not fit one datagram
+     * @see NetherNetDiscovery#setServerData(LanServerData.V7)
+     */
+    public void setServerData(LanServerData.V7 data) {
+        this.discovery.setServerData(data);
     }
 
     @Override

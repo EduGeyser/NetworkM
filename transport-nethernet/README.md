@@ -108,31 +108,27 @@ as is the server identity assertion attached to answers.
 
 ### LAN advertisements
 
-`NetherNetDiscovery` emits binary ServerData v6, matching stable Bedrock
-1.26.45.1. The scanner and `NetherNetServerDataCodec` decode v6 and reject
-unsupported versions or malformed records. Preview's v7 format is deferred
-until a stable release adopts it.
+`NetherNetDiscovery` answers discovery requests with binary server data v7, the
+layout BDS 1.26.50 and later send. It no longer answers in v6. The scanner and
+`NetherNetServerDataCodec` read v6 and v7 and reject other versions and
+malformed records. The v7 layout still has to be confirmed against a current
+retail capture.
 
-`PongData` includes `acceptsOnlineAuth`, `acceptsSelfSignedAuth`, and `nonce`.
-The existing nine-argument constructor and builder methods remain available.
-Both authentication flags default to true; consumers with a different admission
-policy must set them explicitly. These fields describe policy and do not enable
-authentication or Login nonce checks.
-
-The default nonce is generated once for the process and reused across new
-builders and advertisement updates. Set it explicitly when sharing a nonce with
-another endpoint, such as HTTP server status:
+`LanServerData.V7` is the LAN record. It is separate from the HTTP status
+document (`NetherNetServerStatus`), and the two need not match. The
+authentication flags describe the endpoint's admission policy; they do not
+enable authentication or Login nonce checks. Use one nonce per endpoint, in
+BDS's form (unpadded lowercase hex), for LAN and HTTP alike:
 
 ```java
-PongData data = new PongData.Builder()
-        .setServerName("My server")
-        .setLevelName("My world")
-        .setAcceptsOnlineAuth(true)
-        .setAcceptsSelfSignedAuth(false)
-        .setNonce(sharedNonce)
-        .build();
-signaling.setAdvertisementData(data);
+LanServerData.V7 data = new LanServerData.V7("My server", protocol, "1.26.60",
+        "My world", playerCount, maxPlayers, gameType, false, false,
+        true, false, sharedNonce, 4);
+discoverySignaling.setServerData(data);
 ```
+
+`setAdvertisementData(PongData)` is not supported on LAN signaling, because
+`PongData` carries no protocol or version.
 
 Advertisements are encoded when updated and cached for discovery responses.
 An update that cannot fit a UDP datagram fails without replacing the previous
