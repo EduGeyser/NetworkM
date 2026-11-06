@@ -75,7 +75,7 @@ import java.util.function.Predicate;
  * an assisted join over the provider's WebSocket. Its peer comes from {@link SharedIcePort#openPeer}, so it is never a
  * player: no child channel, no session, no admission event, and it holds one of the endpoint's pending handshakes
  * while it lives. The prober opens both NetherNet data channels and sends one PING, the host answers with its PONG, and
- * the peer closes at most a second later.
+ * the peer closes at most a second after the engine accepted the PONG for transmission.
  *
  * <p>Only the trusted policy a successful heartbeat installed admits checks: its context, keys and endpoints, each
  * endpoint with its own deadline, and the heartbeat's monotonic deadline over all of it. Withdrawing or replacing the
@@ -392,10 +392,13 @@ final class DiagnosticHost {
         }
         long now = observe();
         DiagnosticChannels channels = check.channels;
+        // The PONG counts as sent once the engine accepted it, and the prober's time to close starts then
+        boolean sent = check.pongSent;
         Outcome ended = !authorized(check, now) ? Outcome.WITHDRAWN
                 : channels.protocolFailed() ? Outcome.INVALID_PROTOCOL
-                : channels.failedTransport() ? check.complete ? Outcome.PONG_SENT : Outcome.TRANSPORT_FAILED
-                : !check.complete && lastNanos - check.handshakeDeadlineNanos >= 0 ? Outcome.HANDSHAKE_TIMEOUT
+                : channels.failedTransport() ? sent ? Outcome.PONG_SENT : Outcome.TRANSPORT_FAILED
+                : !sent && lastNanos - check.handshakeDeadlineNanos >= 0 ? Outcome.HANDSHAKE_TIMEOUT
+                : sent && lastNanos - check.pongSentNanos >= LINGER_NANOS ? Outcome.PONG_SENT
                 : null;
         if (ended != null) {
             stop(check, ended);
@@ -407,19 +410,14 @@ final class DiagnosticHost {
             return;
         }
         // The PING may come before the host sees the connection up, so it is read as soon as the exchange starts
-        byte[] frame = check.exchange == null || check.complete ? null : channels.poll();
+        byte[] frame = check.exchange == null || check.pinged ? null : channels.poll();
         if (frame != null) {
+            check.pinged = true;
             try {
                 check.exchange.receive(0, frame);
             } catch (IllegalArgumentException invalid) {
                 stop(check, Outcome.INVALID_PING);
-                return;
             }
-            check.complete = true;
-            check.completeNanos = lastNanos;
-        }
-        if (check.complete && lastNanos - check.completeNanos >= LINGER_NANOS) {
-            stop(check, Outcome.PONG_SENT);
         }
     }
 
@@ -450,14 +448,22 @@ final class DiagnosticHost {
         check.selectedRemote = remote;
         DataLink reliable = check.reliable;
         check.exchange = new DiagnosticExchange(check.admission.claims().attemptIdHex(), true,
-                (channel, frame) -> reliable.send(ByteBuffer.wrap(frame), failure -> {
-                    if (failure != null) {
-                        check.channels.failed();
-                        check.wake();
-                    }
-                }));
+                (channel, frame) -> reliable.send(ByteBuffer.wrap(frame),
+                        failure -> check.later(() -> pongSettled(check, failure))));
         check.exchange.start();
         return true;
+    }
+
+    /** The engine accepted the PONG for transmission, or refused it. Event loop. */
+    private void pongSettled(Check check, Throwable failure) {
+        if (failure == null) {
+            observe();
+            check.pongSent = true;
+            check.pongSentNanos = lastNanos;
+        } else {
+            check.channels.failed();
+        }
+        advance(check);
     }
 
     private void stop(Check check, Outcome outcome) {
@@ -466,9 +472,6 @@ final class DiagnosticHost {
         }
         check.closing = true;
         check.outcome = outcome;
-        if (outcome != Outcome.PONG_SENT) {
-            check.complete = false;
-        }
         if (check.candidate != null) {
             check.candidate.cancel(false);
         }
@@ -484,7 +487,7 @@ final class DiagnosticHost {
         ledger.finishDiagnostic(check.record, true);
         long now = observe();
         Outcome outcome = failure != null ? Outcome.CLEANUP_FAILED
-                : check.complete && !authorized(check, now) ? Outcome.OBSERVATION_INVALIDATED
+                : check.outcome == Outcome.PONG_SENT && !authorized(check, now) ? Outcome.OBSERVATION_INVALIDATED
                 : check.outcome;
         DiagnosticExchange exchange = check.exchange;
         DiagnosticResult result = new DiagnosticResult(claims.attemptIdHex(), check.key.keyId(),
@@ -654,8 +657,12 @@ final class DiagnosticHost {
         HostCandidate answerCandidate;
         DiagnosticExchange exchange;
         InetSocketAddress selectedLocal, selectedRemote;
-        boolean complete, closing;
-        long completeNanos;
+        /** Whether the PING arrived, so the exchange handed its PONG to the engine or failed. */
+        boolean pinged;
+        /** Whether the engine accepted the PONG, and when the loop learned it. */
+        boolean pongSent;
+        long pongSentNanos;
+        boolean closing;
         Outcome outcome;
 
         Check(Admission admission, Key key, InetSocketAddress remote, OwnershipGuard guard,
@@ -685,7 +692,19 @@ final class DiagnosticHost {
         }
 
         void wake() {
-            onLoop(() -> advance(this));
+            later(() -> advance(this));
+        }
+
+        /**
+         * Runs the task on the loop after the current one, never inline: a send completion may run inside the send,
+         * which the check makes from within {@link #advance}.
+         */
+        void later(Runnable task) {
+            try {
+                loop.execute(task);
+            } catch (RejectedExecutionException shutDown) {
+                // The loop is gone, and the check with it
+            }
         }
 
         // Engine threads from here on: record what the engine reports, then step on the event loop.
