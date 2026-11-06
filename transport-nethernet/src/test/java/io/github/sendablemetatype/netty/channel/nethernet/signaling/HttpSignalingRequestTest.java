@@ -258,6 +258,28 @@ class HttpSignalingRequestTest {
     }
 
     @Test
+    void negotiationDeadlineOfAPipelinedJoinCountsFromItsArrival() throws Exception {
+        List<Runnable> calls = new ArrayList<>();
+        EmbeddedHttp http = connect(NetherNetHttpSignaling.builder(worker)
+                .statusProvider(request -> StatusAnswer.serve(NetherNetServerStatus.builder().name("A").build()))
+                .statusExecutor(calls::add));
+        http.send(get("/v1/join") + post("42", OFFER));
+        http.advance(900);
+        calls.getFirst().run();
+        http.channel.runPendingTasks();
+        Join join = sink.next();
+        assertEquals(1, http.responses().size(), "the status response");
+
+        http.advance(NetherNetHttpSignaling.DEFAULT_NEGOTIATION_TIMEOUT.toMillis() - 901);
+        assertTrue(http.responses().isEmpty());
+        http.advance(1);
+
+        assertEquals(JoinRefusal.NO_ANSWER_IN_TIME.httpStatus(), http.response().status(),
+                "the wait behind the status request is part of the deadline");
+        assertTrue(join.reply().abandoned().toCompletableFuture().isDone());
+    }
+
+    @Test
     void clientLeavingAbandonsTheJoin() throws Exception {
         EmbeddedHttp http = connect();
         http.send(post("42", OFFER));

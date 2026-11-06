@@ -24,7 +24,6 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -58,6 +57,8 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
     private int handled;
     private boolean busy;
     private FullHttpRequest held;
+    /** When the held request was read whole, on the loop's ticker. */
+    private long heldSince;
 
     HttpRequestHandler(NetherNetHttpSignaling signaling, HttpConnection connection) {
         this.signaling = signaling;
@@ -86,10 +87,11 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             // Pipelined behind a request still waiting for its response
             if (held == null) {
                 held = request.retain();
+                heldSince = ctx.executor().ticker().nanoTime();
             }
             return;
         }
-        handle(request);
+        handle(request, ctx.executor().ticker().nanoTime());
     }
 
     @Override
@@ -101,7 +103,8 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         ctx.close();
     }
 
-    private void handle(FullHttpRequest request) {
+    /** @param receivedNanos when the request was read whole, on the loop's ticker */
+    private void handle(FullHttpRequest request, long receivedNanos) {
         busy = true;
         boolean first = handled++ == 0;
         if (!request.decoderResult().isSuccess()) {
@@ -121,7 +124,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         if (HttpMethod.GET.equals(request.method()) && JOIN_PATH.equals(path)) {
             status(request, first && HttpUtil.isKeepAlive(request));
         } else if (HttpMethod.POST.equals(request.method()) && path.startsWith(OFFER_PATH_PREFIX)) {
-            offer(request, path.substring(OFFER_PATH_PREFIX.length()));
+            offer(request, path.substring(OFFER_PATH_PREFIX.length()), receivedNanos);
         } else {
             respond(HttpResponseStatus.NOT_FOUND, false);
         }
@@ -166,7 +169,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         }));
     }
 
-    private void offer(FullHttpRequest request, String encodedNetworkId) {
+    private void offer(FullHttpRequest request, String encodedNetworkId, long receivedNanos) {
         String networkId = networkId(encodedNetworkId);
         if (networkId == null) {
             respond(HttpResponseStatus.BAD_REQUEST, false);
@@ -188,7 +191,8 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         Join.Addressed addressed = new Join.Addressed(request.headers().get(HttpHeaderNames.HOST), localPort,
                 signaling.trustedProxies().isProxy(peer));
         Exchange exchange = new Exchange();
-        exchange.start(signaling.negotiationTimeout());
+        // From the end of the request, also for one that waited behind a status request (E-4)
+        exchange.start(receivedNanos + signaling.negotiationTimeout().toNanos());
         Join join = new Join(exchange.connectionId, networkId, offer, source, exchange, addressed);
         NetherNetHttpSignaling.log.debug("Offer {} from network {} at {} via HTTP",
                 Long.toUnsignedString(exchange.connectionId), networkId, source);
@@ -285,7 +289,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                 if (next != null) {
                     try {
                         if (future.isSuccess()) {
-                            handle(next);
+                            handle(next, heldSince);
                         }
                     } finally {
                         next.release();
@@ -333,8 +337,10 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         private State state = State.PENDING;
         private ScheduledFuture<?> deadline;
 
-        void start(Duration timeout) {
-            deadline = ctx.executor().schedule(this::expire, timeout.toNanos(), TimeUnit.NANOSECONDS);
+        /** @param deadlineNanos when the negotiation deadline passes, on the loop's ticker */
+        void start(long deadlineNanos) {
+            long delay = Math.max(0, deadlineNanos - ctx.executor().ticker().nanoTime());
+            deadline = ctx.executor().schedule(this::expire, delay, TimeUnit.NANOSECONDS);
             ctx.channel().closeFuture().addListener(future -> onLoop(this::left));
         }
 
