@@ -121,6 +121,15 @@ public record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> a
         return new ProviderEndpoint(bind, sorted);
     }
 
+    /**
+     * Whether a configured endpoint is one a peer can use: a numeric unicast address that is public, private or, for
+     * a provider on this machine, loopback, on a fixed port.
+     */
+    public static boolean advertisable(InetSocketAddress endpoint, boolean localDevelopment) {
+        return !endpoint.isUnresolved() && endpoint.getPort() >= 1
+                && EndpointAddress.advertisable(endpoint.getAddress(), localDevelopment);
+    }
+
     /** The advertised endpoints as host candidates, in the same order. */
     public List<HostCandidate> candidates() {
         return advertised.stream().map(HostCandidate::host).toList();

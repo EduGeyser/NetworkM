@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.provider;
 
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderClient;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderOrigin;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.ProviderEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateMethod;
 import io.netty.util.NetUtil;
 
@@ -79,19 +80,21 @@ public final class ProviderRuntimeConfiguration {
         if (udpPort < 1 || udpPort > 65535) {
             throw new IOException("NXS needs a fixed UDP port between 1 and 65535");
         }
-        List<InetSocketAddress> endpoints = settings.advertiseAddresses();
+        List<InetSocketAddress> endpoints = settings.advertiseAddresses().stream()
+                .map(endpoint -> endpoint.getPort() == 0 && !endpoint.isUnresolved()
+                        ? new InetSocketAddress(endpoint.getAddress(), udpPort)
+                        : endpoint)
+                .distinct()
+                .toList();
         if (endpoints.size() > 32) {
             throw new IOException("nxs.advertise-addresses allows at most 32 endpoints");
         }
         for (InetSocketAddress endpoint : endpoints) {
-            if (endpoint.isUnresolved() || endpoint.getAddress().isAnyLocalAddress()
-                    || endpoint.getAddress().isMulticastAddress()) {
-                throw new IOException("nxs.advertise-addresses must name numeric unicast addresses");
+            // Loopback is sorted out below, where it depends on where the provider runs
+            if (!ProviderEndpoint.advertisable(endpoint, true)) {
+                throw new IOException("nxs.advertise-addresses must name numeric addresses a peer can use");
             }
         }
-        endpoints = endpoints.stream()
-                .map(endpoint -> endpoint.getPort() == 0 ? new InetSocketAddress(endpoint.getAddress(), udpPort) : endpoint)
-                .toList();
         // The list may be shared with built-in signaling, where a client on this machine can use loopback. Players
         // get these from the provider, so loopback stays only where the endpoint policy takes it.
         List<String> warnings = List.of();
