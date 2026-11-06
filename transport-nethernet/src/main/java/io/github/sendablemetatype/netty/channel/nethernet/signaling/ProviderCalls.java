@@ -13,6 +13,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -30,6 +31,7 @@ final class ProviderCalls {
     private final InternalLogger log;
     private final Duration timeout;
     private final Executor executor;
+    private final LongSupplier nanos;
     private final Semaphore calls = new Semaphore(MAX_CONCURRENT_CALLS);
     // Racing a duplicate first warning is harmless; this only bounds the volume.
     private final AtomicBoolean warned = new AtomicBoolean();
@@ -41,10 +43,15 @@ final class ProviderCalls {
      * @param executor runs the calls; not an I/O loop
      */
     ProviderCalls(String name, InternalLogger log, Duration timeout, Executor executor) {
+        this(name, log, timeout, executor, System::nanoTime);
+    }
+
+    ProviderCalls(String name, InternalLogger log, Duration timeout, Executor executor, LongSupplier nanos) {
         this.name = name;
         this.log = log;
         this.timeout = timeout;
         this.executor = executor;
+        this.nanos = nanos;
     }
 
     /**
@@ -62,10 +69,20 @@ final class ProviderCalls {
             return CompletableFuture.completedFuture(fallback.get());
         }
         CompletableFuture<T> reply = new CompletableFuture<>();
+        long started = nanos.getAsLong();
         try {
             executor.execute(() -> {
                 try {
-                    reply.complete(Objects.requireNonNull(call.call(), "the answer"));
+                    T answer = Objects.requireNonNull(call.call(), "the answer");
+                    // The scheduled deadline runs on the loop, which may itself be late, so an answer
+                    // past its deadline can get here first; it still counts as late.
+                    if (nanos.getAsLong() - started > timeout.toNanos()) {
+                        if (reply.complete(fallback.get())) {
+                            failed("The {} did not answer within {} ms", timeout.toMillis());
+                        }
+                    } else {
+                        reply.complete(answer);
+                    }
                 } catch (Throwable e) {
                     // Throwable: an Error escaping here would leave the request to its deadline
                     if (!reply.isDone()) {
