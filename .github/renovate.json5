@@ -1,0 +1,40 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    // Keeps actions pinned by commit, with the full version in the trailing comment
+    'helpers:pinGitHubActionDigestsToSemver',
+  ],
+  packageRules: [
+    {
+      groupName: 'GitHub Actions',
+      matchManagers: ['github-actions'],
+    },
+    {
+      groupName: 'Gradle dependencies',
+      matchManagers: ['gradle', 'custom.regex'],
+      matchUpdateTypes: ['minor', 'patch'],
+    },
+    {
+      // Only the nmcp publishing task loads these; they never reach the transport artifacts
+      groupName: 'Publisher libraries',
+      matchPackageNames: [
+        'com.squareup.okhttp3:okhttp',
+        'com.squareup.okio:okio',
+        'io.github.pdvrieze.xmlutil:*',
+        'org.jetbrains.kotlin:kotlin-stdlib',
+        'org.jetbrains:annotations',
+      ],
+    },
+  ],
+  customManagers: [
+    {
+      // The root build hands this catalog version to the JaCoCo plugin, so no library references it
+      customType: 'regex',
+      managerFilePatterns: ['/(^|/)gradle/libs\\.versions\\.toml$/'],
+      matchStrings: ['jacoco ="(?<currentValue>[^"]+)"'],
+      depNameTemplate: 'org.jacoco:org.jacoco.agent',
+      datasourceTemplate: 'maven',
+    },
+  ],
+}

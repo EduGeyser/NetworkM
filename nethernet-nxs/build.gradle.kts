@@ -1,7 +1,3 @@
-plugins {
-    id("com.gradleup.nmcp")
-}
-
 description = "NetherNet External Signaling (NXS) provider client and stateless admission"
 
 val specification = layout.projectDirectory.dir("docs/external-signaling")

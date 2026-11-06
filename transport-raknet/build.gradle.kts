@@ -18,6 +18,18 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 
 description = "RakNet transport for Netty"
 
+// Epoll's native library for the build host, so the epoll cases of ProxyChannelTests run on every Linux architecture
+val epollClassifier = if (providers.systemProperty("os.name").get() == "Linux") {
+    when (providers.systemProperty("os.arch").get()) {
+        "amd64", "x86_64" -> "linux-x86_64"
+        "aarch64" -> "linux-aarch_64"
+        "riscv64" -> "linux-riscv64"
+        else -> null
+    }
+} else {
+    null
+}
+
 dependencies {
     api(platform(libs.netty.bom))
     api(project(":transport-common"))
@@ -27,7 +39,8 @@ dependencies {
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.junit)
-    testImplementation(variantOf(libs.netty.transport.native.epoll) { classifier("linux-x86_64") })
+    testImplementation(libs.netty.transport.native.epoll)
+    epollClassifier?.let { testRuntimeOnly(variantOf(libs.netty.transport.native.epoll) { classifier(it) }) }
     testRuntimeOnly(libs.junit.platform.launcher)
 
     constraints {
