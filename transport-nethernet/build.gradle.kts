@@ -7,6 +7,7 @@ description = "NetherNet transport for Netty"
 val webrtcNativePlatform = providers.gradleProperty("webrtcNativePlatform")
 
 dependencies {
+    api(project(":transport-common"))
     api(platform(libs.netty.bom))
     api(project(":transport-common"))
     api(libs.bundles.netty)

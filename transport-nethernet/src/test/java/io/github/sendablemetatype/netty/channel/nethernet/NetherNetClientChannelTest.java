@@ -1,29 +1,27 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetFramingCodec;
-import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherClientChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
-import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
-import io.github.sendablemetatype.webrtc.RTCDataChannelInit;
-import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
-import io.github.sendablemetatype.webrtc.RTCDataChannelState;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelOption;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.lang.reflect.Field;
 import java.net.ConnectException;
 import java.net.SocketAddress;
-import java.nio.ByteBuffer;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
@@ -31,24 +29,53 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class NetherNetClientChannelLifecycleTest {
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void dataChannelsUseTheReferenceSubprotocolAndReliability(boolean reliable) {
-        RTCDataChannelInit init = NetherNetClientChannel.dataChannelInit(reliable);
-        assertEquals("", init.protocol);
-        assertEquals(reliable, init.ordered);
-        assertFalse(init.negotiated);
-        assertEquals(reliable ? -1 : 0, init.maxRetransmits);
-        assertEquals(-1, init.maxPacketLifeTime);
+class NetherNetClientChannelTest {
+    private static final String OFFER = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n";
+    private static final String ANSWER = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+            + "a=max-message-size:262144\r\n";
+
+    @Test
+    void theDataChannelsUseTheReferenceParameters() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            h.signaling.connections.getFirst().complete(List.of());
+            h.pump();
+            FakePeer peer = h.engine.lastPeer();
+            assertEquals(PeerConfig.Role.OFFERER, peer.config().role());
+            assertEquals(List.of(
+                    ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL),
+                    ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL)),
+                    peer.links().stream().map(FakeDataLink::parameters).toList());
+        }
     }
 
     @Test
-    void duplicateConnectCannotReplaceTheOriginalPromiseOrTarget() {
+    void theOfferGoesOutBeforeTrickledCandidatesAndTheAnswerAndCandidatesReachThePeer() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            peer.localCandidate("candidate:1", "0");
+            h.pump();
+            long id = h.connectionId();
+            assertEquals(List.of("CONNECTREQUEST " + id + " " + OFFER, "CANDIDATEADD " + id + " candidate:1"),
+                    h.signaling.sent);
+
+            h.signaling.signalHandlers.getLast().onSignal("CANDIDATEADD " + id + " candidate:remote");
+            h.signaling.signalHandlers.getLast().onSignal(NetherNetConstants.buildSignalConnectResponse(id, ANSWER));
+            h.pump();
+            assertEquals(List.of(new FakePeer.RemoteCandidate("candidate:remote", "0")), peer.remoteCandidates());
+            assertEquals(List.of(ANSWER), peer.remoteAnswers());
+            assertEquals(256 * 262143, h.channel.maxMessageSize());
+        }
+    }
+
+    @Test
+    void aDuplicateConnectCannotReplaceTheOriginalPromiseOrTarget() {
         try (Harness h = new Harness()) {
             ChannelFuture original = h.connect();
             SocketAddress target = h.channel.remoteAddress();
@@ -85,56 +112,53 @@ class NetherNetClientChannelLifecycleTest {
     }
 
     @Test
-    void oldSignalingSuccessCannotInitializeTheRetry() {
+    void anOldSignalingSuccessCannotCreateThePeerOfTheRetry() {
         try (Harness h = new Harness()) {
             ChannelFuture original = h.connect();
             h.advance(100);
             h.signaling.connections.get(0).complete(List.of());
             h.pump();
-            assertEquals(0, h.channel.webRtcInitializations);
-            assertTrue(h.channel.isOpen());
+            assertTrue(h.engine.peers().isEmpty());
             assertFalse(original.isDone());
             h.signaling.connections.get(1).complete(List.of());
             h.pump();
-            assertEquals(1, h.channel.webRtcInitializations, "The current attempt must still enter WebRTC initialization");
-            assertInstanceOf(ConnectException.class, original.cause());
-            assertInstanceOf(InitializationProbe.class, original.cause().getCause());
+            assertEquals(1, h.engine.peers().size(), "the current attempt still creates its peer");
         }
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void nativeLinkageFailureFailsTheCurrentHandshakeImmediately(boolean missingClass) {
+    void aLinkageFailureFailsTheCurrentHandshakeImmediately(boolean missingClass) {
         try (Harness h = new Harness()) {
             LinkageError failure = missingClass ? new NoClassDefFoundError("Native binding unavailable")
                     : new UnsatisfiedLinkError("Native library unavailable");
-            h.channel.initializationLinkageFailure = failure;
+            h.engine.failCreation(failure);
             ChannelFuture connect = h.connect();
-            h.signaling.connections.get(0).complete(List.of());
+            h.signaling.connections.getFirst().complete(List.of());
             h.pump();
             assertInstanceOf(ConnectException.class, connect.cause());
             assertSame(failure, connect.cause().getCause());
             assertFalse(h.channel.isOpen());
             assertEquals(1, h.signaling.closes);
             h.advance(1000);
-            assertEquals(1, h.signaling.connections.size(), "Linkage failures must not wait for handshake retries");
+            assertEquals(1, h.signaling.connections.size(), "linkage failures must not wait for retries");
         }
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void signalingSuccessQueuedBeforeOrCompletedAfterCloseCannotStartWebRtc(boolean queuedBeforeClose) {
+    void aSignalingSuccessQueuedBeforeOrCompletedAfterCloseCannotCreateAPeer(boolean queuedBeforeClose) {
         try (Harness h = new Harness()) {
             ChannelFuture original = h.connect();
             if (queuedBeforeClose) {
-                h.signaling.connections.get(0).complete(List.of());
+                h.signaling.connections.getFirst().complete(List.of());
             }
             h.channel.close();
             if (!queuedBeforeClose) {
-                h.signaling.connections.get(0).complete(List.of());
+                h.signaling.connections.getFirst().complete(List.of());
             }
             h.pump();
-            assertEquals(0, h.channel.webRtcInitializations);
+            assertTrue(h.engine.peers().isEmpty());
             assertInstanceOf(ClosedChannelException.class, original.cause());
             assertEquals(1, h.signaling.closes);
         }
@@ -157,7 +181,7 @@ class NetherNetClientChannelLifecycleTest {
     }
 
     @Test
-    void synchronousSignalingFailureCompletesTheConnectPromise() {
+    void aSynchronousSignalingFailureCompletesTheConnectPromise() {
         try (Harness h = new Harness()) {
             IllegalStateException failure = new IllegalStateException("Signaling rejected connect");
             h.signaling.connectFailure = failure;
@@ -170,7 +194,7 @@ class NetherNetClientChannelLifecycleTest {
     }
 
     @Test
-    void retryCleanupFailureDoesNotLeaveTheConnectPromisePending() {
+    void aRetryCleanupFailureDoesNotLeaveTheConnectPromisePending() {
         try (Harness h = new Harness()) {
             ChannelFuture connect = h.connect();
             IllegalStateException failure = new IllegalStateException("Failed to unregister old attempt");
@@ -183,94 +207,109 @@ class NetherNetClientChannelLifecycleTest {
     }
 
     @Test
-    void oneObserverPreservesMessagesBeforeAndDuringOpen() throws Exception {
+    void messagesBeforeAndDuringOpenArePreserved() {
         try (Harness h = new Harness()) {
             ChannelFuture connect = h.connect();
-            AtomicReference<RTCDataChannelState> state = new AtomicReference<>(RTCDataChannelState.CONNECTING);
-            RTCDataChannelObserver observer = h.observer(state);
-            observer.onMessage(message(42));
+            FakePeer peer = h.start();
+            FakeDataLink reliable = peer.links().getFirst();
+            peer.message(reliable, (byte) 0, (byte) 42);
             h.pump();
             assertTrue(h.events.isEmpty());
-            state.set(RTCDataChannelState.OPEN);
-            observer.onStateChange();
-            observer.onMessage(message(43));
+            peer.open(reliable);
+            peer.message(reliable, (byte) 0, (byte) 43);
             h.pump();
             assertEquals(List.of("active", "data:42", "data:43"), h.events);
             assertTrue(connect.isSuccess());
             assertInstanceOf(AlreadyConnectedException.class,
                     h.channel.connect(new NetherNetAddress("other-target")).cause());
-            h.signaling.connections.get(0).completeExceptionally(new IllegalStateException("Late signaling result"));
-            h.signaling.notFoundHandlers.get(0).onNotFound("Late not-found result");
+            h.signaling.connections.getFirst().completeExceptionally(new IllegalStateException("Late signaling result"));
+            h.signaling.notFoundHandlers.getFirst().onNotFound("Late not-found result");
             h.pump();
             assertTrue(h.channel.isActive());
         }
     }
 
     @Test
-    void retryDiscardsEarlyMessagesAndRejectsTheOldObserver() throws Exception {
+    void aRetryDiscardsEarlyMessagesAndIgnoresTheOldPeer() {
         try (Harness h = new Harness()) {
+            // Keeps the old peer's events flowing after its close, as a slow teardown would.
+            h.engine.holdPeerClose(true);
             h.connect();
-            AtomicReference<RTCDataChannelState> oldState = new AtomicReference<>(RTCDataChannelState.CONNECTING);
-            RTCDataChannelObserver old = h.observer(oldState);
-            old.onMessage(message(42));
+            FakePeer old = h.start();
+            FakeDataLink oldReliable = old.links().getFirst();
+            old.message(oldReliable, (byte) 0, (byte) 42);
             assertTrue(h.allocator.metric().usedHeapMemory() > 0);
             h.advance(100);
             assertEquals(0, h.allocator.metric().usedHeapMemory());
-            old.onMessage(message(43));
-            oldState.set(RTCDataChannelState.OPEN);
-            old.onStateChange();
+            assertTrue(old.closeCalled(), "the retry closes the old attempt's peer");
+            old.open(oldReliable);
+            h.pump();
+            assertTrue(h.events.isEmpty(), "the old attempt cannot activate the channel");
 
-            AtomicReference<RTCDataChannelState> currentState = new AtomicReference<>(RTCDataChannelState.CONNECTING);
-            RTCDataChannelObserver current = h.observer(currentState);
-            current.onMessage(message(44));
-            currentState.set(RTCDataChannelState.OPEN);
-            current.onStateChange();
+            FakePeer current = h.start();
+            FakeDataLink reliable = current.links().getFirst();
+            current.message(reliable, (byte) 0, (byte) 44);
+            current.open(reliable);
             h.pump();
             assertEquals(List.of("active", "data:44"), h.events);
             assertEquals(0, h.allocator.metric().usedHeapMemory());
-            oldState.set(RTCDataChannelState.CLOSED);
-            old.onStateChange();
-            h.pump();
-            assertTrue(h.channel.isActive());
         }
     }
 
     @Test
-    void closeDiscardsEarlyMessagesAndInvalidatesOpenNotifications() throws Exception {
+    void closeDiscardsEarlyMessagesAndIgnoresALaterOpen() {
         try (Harness h = new Harness()) {
+            h.engine.holdPeerClose(true);
             h.connect();
-            AtomicReference<RTCDataChannelState> state = new AtomicReference<>(RTCDataChannelState.CONNECTING);
-            RTCDataChannelObserver observer = h.observer(state);
-            observer.onMessage(message(42));
+            FakePeer peer = h.start();
+            FakeDataLink reliable = peer.links().getFirst();
+            peer.message(reliable, (byte) 0, (byte) 42);
             h.channel.close();
-            observer.onMessage(message(43));
-            state.set(RTCDataChannelState.OPEN);
-            observer.onStateChange();
+            peer.open(reliable);
             h.pump();
             assertFalse(h.channel.isActive());
             assertTrue(h.events.isEmpty());
             assertEquals(0, h.allocator.metric().usedHeapMemory());
+            assertTrue(peer.closeCalled());
         }
     }
 
     @Test
-    void ownedFactoryIsNotAllocatedBeforeWebRtcIsNeeded() throws Exception {
+    void anOwnedEngineIsCreatedOnlyWhenAPeerIsNeededAndClosedWithTheChannel() throws Exception {
         EmbeddedChannel clock = new EmbeddedChannel();
         FakeSignaling signaling = new FakeSignaling();
-        NetherNetClientChannel channel = new NetherNetClientChannel(signaling);
+        AtomicInteger creations = new AtomicInteger();
+        FakeEngine engine = new FakeEngine();
+        NetherNetClientChannel channel = new NetherNetClientChannel(() -> {
+            creations.incrementAndGet();
+            return engine;
+        }, signaling);
         try {
             clock.eventLoop().register(channel).sync();
             channel.connect(new NetherNetAddress("target"));
             clock.runPendingTasks();
-            assertNull(field(channel, "factory"));
-            channel.close().sync();
-            signaling.connections.get(0).complete(List.of());
+            assertEquals(0, creations.get());
+            signaling.connections.getFirst().complete(List.of());
             clock.runPendingTasks();
-            assertNull(field(channel, "factory"));
+            assertEquals(1, creations.get());
+            channel.close().sync();
+            assertEquals(1, engine.closeCalls());
             assertEquals(1, signaling.closes);
         } finally {
             channel.close().syncUninterruptibly();
             clock.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void aSharedEngineIsNotClosedWithTheChannel() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            h.start();
+            h.channel.close();
+            h.pump();
+            assertEquals(0, h.engine.closeCalls());
+            assertTrue(h.engine.lastPeer().closeCalled());
         }
     }
 
@@ -291,99 +330,45 @@ class NetherNetClientChannelLifecycleTest {
         }
     }
 
-    private static RTCDataChannelBuffer message(int value) {
-        return new RTCDataChannelBuffer(ByteBuffer.wrap(new byte[]{(byte) value}), true);
-    }
-
     @Test
-    void aClientWithoutAReliableChannelCannotReportASuccessfulWrite() throws Exception {
+    void unreliableMessagesWaitForActivationAndApplicationReads() {
         try (Harness h = new Harness()) {
-            h.connect();
-            h.observer(new AtomicReference<>(RTCDataChannelState.OPEN)).onStateChange();
-            h.pump();
-            assertTrue(h.channel.isActive());
-            ByteBuf payload = h.channel.alloc().buffer().writeByte(0).writeByte(1);
-
-            ChannelFuture write = h.channel.writeAndFlush(payload);
-            h.pump();
-
-            assertTrue(write.isDone());
-            assertFalse(write.isSuccess());
-            assertInstanceOf(IllegalStateException.class, write.cause().getCause());
-            assertEquals(0, payload.refCnt());
-            assertFalse(h.channel.isOpen());
-            assertEquals(0, h.allocator.metric().usedHeapMemory());
-        }
-    }
-
-    @Test
-    void unreliableMessagesWaitForActivationAndApplicationReads() throws Exception {
-        try (Harness h = new Harness()) {
-            h.channel.pipeline().addFirst(new NetherNetFramingCodec());
             h.channel.config().setAutoRead(false);
             ChannelFuture connect = h.connect();
-            RTCDataChannelObserver unreliable = h.channel.createUnreliableObserver(
-                    (Integer) field(h.channel, "attemptGeneration"));
-            unreliable.onStateChange();
-            ByteBuffer callback = ByteBuffer.wrap(new byte[]{99, 0, 42, 99});
-            callback.position(1).limit(3);
-            unreliable.onMessage(new RTCDataChannelBuffer(callback, true));
-            callback.put(2, (byte) 43);
+            FakePeer peer = h.start();
+            peer.message(peer.links().get(1), (byte) 0, (byte) 42);
             h.pump();
             assertFalse(connect.isDone());
             assertTrue(h.events.isEmpty());
 
-            h.observer(new AtomicReference<>(RTCDataChannelState.OPEN)).onStateChange();
+            peer.open(peer.links().getFirst());
             h.pump();
             assertTrue(connect.isSuccess());
             assertEquals(List.of("active"), h.events);
 
             h.channel.read();
             h.pump();
-            assertEquals(List.of("active", "data:42"), h.events);
+            assertEquals(List.of("active", "unreliable:42"), h.events);
             assertEquals(0, h.allocator.metric().usedHeapMemory());
         }
     }
 
     @Test
-    void retryAndCloseDiscardUnreliableFramesAndRejectLateCallbacks() throws Exception {
-        try (Harness h = new Harness()) {
-            h.channel.pipeline().addFirst(new NetherNetFramingCodec());
-            h.connect();
-            RTCDataChannelObserver old = h.channel.createUnreliableObserver(
-                    (Integer) field(h.channel, "attemptGeneration"));
-            old.onMessage(new RTCDataChannelBuffer(ByteBuffer.wrap(new byte[]{0, 41}), true));
-            assertTrue(h.allocator.metric().usedHeapMemory() > 0);
-            h.advance(100);
-            assertEquals(0, h.allocator.metric().usedHeapMemory());
-            old.onMessage(new RTCDataChannelBuffer(ByteBuffer.wrap(new byte[]{0, 42}), true));
-
-            RTCDataChannelObserver current = h.channel.createUnreliableObserver(
-                    (Integer) field(h.channel, "attemptGeneration"));
-            current.onMessage(new RTCDataChannelBuffer(ByteBuffer.wrap(new byte[]{0, 43}), true));
-            h.observer(new AtomicReference<>(RTCDataChannelState.OPEN)).onStateChange();
-            h.pump();
-            assertEquals(List.of("active", "data:43"), h.events);
-
-            h.channel.close().sync();
-            current.onMessage(new RTCDataChannelBuffer(ByteBuffer.wrap(new byte[]{0, 44}), true));
-            h.pump();
-            assertEquals(List.of("active", "data:43"), h.events);
-            assertEquals(0, h.allocator.metric().usedHeapMemory());
-        }
-    }
-
-    @Test
-    void invalidAnswerLimitFailsImmediatelyButStaleAnswersCannotFailARetry() throws Exception {
+    void anInvalidAnswerLimitFailsAtOnceButAStaleAnswerCannotFailARetry() {
         try (Harness h = new Harness()) {
             ChannelFuture connect = h.connect();
-            long oldId = (Long) field(h.channel, "connectionId");
+            h.start().completeOffer(OFFER);
+            h.pump();
+            long oldId = h.connectionId();
             h.advance(100);
             String sdp = "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n";
             h.signaling.signalHandlers.get(0).onSignal(NetherNetConstants.buildSignalConnectResponse(oldId, sdp));
             h.pump();
             assertFalse(connect.isDone());
-            long currentId = (Long) field(h.channel, "connectionId");
+            h.start().completeOffer(OFFER);
+            h.pump();
+            long currentId = h.connectionId();
+            assertNotEquals(oldId, currentId);
             h.signaling.signalHandlers.get(1).onSignal(NetherNetConstants.buildSignalConnectResponse(currentId, sdp));
             h.pump();
             assertInstanceOf(ConnectException.class, connect.cause());
@@ -395,16 +380,40 @@ class NetherNetClientChannelLifecycleTest {
         }
     }
 
-    private static Object field(NetherNetClientChannel channel, String name) throws Exception {
-        Field field = NetherNetClientChannel.class.getDeclaredField(name);
-        field.setAccessible(true);
-        return field.get(channel);
+    @Test
+    void aPeerFailingDuringTheHandshakeRetries() {
+        try (Harness h = new Harness()) {
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.closed(CloseCause.ICE_FAILED);
+            h.pump();
+            assertEquals(2, h.signaling.connections.size());
+            assertFalse(connect.isDone());
+            assertTrue(peer.closeCalled());
+        }
+    }
+
+    @Test
+    void aPeerFailingAfterConnectEndsTheConnectionWithConnectionLost() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            FakePeer peer = h.start();
+            peer.open(peer.links().getFirst());
+            h.pump();
+            assertTrue(h.channel.isActive());
+            peer.closed(CloseCause.ICE_FAILED);
+            h.pump();
+            assertEquals(List.of("active", "CONNECTION_LOST", "inactive"), h.events);
+            assertFalse(h.channel.isOpen());
+            assertEquals(1, h.signaling.connections.size(), "no retry once connected");
+        }
     }
 
     private static final class Harness implements AutoCloseable {
         private final EmbeddedChannel clock = new EmbeddedChannel();
         private final FakeSignaling signaling = new FakeSignaling();
-        private final ProbeClient channel = new ProbeClient(signaling);
+        private final FakeEngine engine = new FakeEngine();
+        private final NetherNetClientChannel channel = new NetherNetClientChannel(engine, signaling);
         private final UnpooledByteBufAllocator allocator = new UnpooledByteBufAllocator(false);
         private final List<String> events = new ArrayList<>();
 
@@ -420,12 +429,25 @@ class NetherNetClientChannelLifecycleTest {
                 }
 
                 @Override
+                public void channelInactive(ChannelHandlerContext ctx) {
+                    events.add("inactive");
+                }
+
+                @Override
+                public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+                    events.add(String.valueOf(event));
+                }
+
+                @Override
                 public void channelRead(ChannelHandlerContext ctx, Object message) {
-                    ByteBuf buffer = (ByteBuf) message;
                     try {
-                        events.add("data:" + buffer.readUnsignedByte());
+                        if (message instanceof NetherNetPacket packet) {
+                            events.add("unreliable:" + packet.content().readUnsignedByte());
+                        } else {
+                            events.add("data:" + ((ByteBuf) message).readUnsignedByte());
+                        }
                     } finally {
-                        buffer.release();
+                        ReferenceCountUtil.release(message);
                     }
                 }
             });
@@ -439,8 +461,18 @@ class NetherNetClientChannelLifecycleTest {
             return connect;
         }
 
-        private RTCDataChannelObserver observer(AtomicReference<RTCDataChannelState> state) throws Exception {
-            return channel.createReliableObserver(state::get, (Integer) field(channel, "attemptGeneration"));
+        /** Completes the current attempt's signaling, which creates its peer. */
+        private FakePeer start() {
+            signaling.connections.getLast().complete(List.of());
+            pump();
+            return engine.lastPeer();
+        }
+
+        /** The connection ID of the newest connect request. */
+        private long connectionId() {
+            String request = signaling.sent.stream().filter(signal -> signal.startsWith("CONNECTREQUEST"))
+                    .reduce((first, second) -> second).orElseThrow();
+            return Long.parseUnsignedLong(request.split(" ", 3)[1]);
         }
 
         private void pump() {
@@ -462,35 +494,11 @@ class NetherNetClientChannelLifecycleTest {
         }
     }
 
-    private static final class ProbeClient extends NetherNetClientChannel {
-        private int webRtcInitializations;
-        private LinkageError initializationLinkageFailure;
-
-        private ProbeClient(NetherNetClientSignaling signaling) {
-            super(null, signaling);
-            config = new DefaultNetherClientChannelConfig(this) {
-                @Override
-                public <T> T getOption(ChannelOption<T> option) {
-                    if (option == NetherChannelOption.NETHER_PORT_ALLOCATOR_CONFIG) {
-                        webRtcInitializations++;
-                        if (initializationLinkageFailure != null) {
-                            throw initializationLinkageFailure;
-                        }
-                        throw new InitializationProbe();
-                    }
-                    return super.getOption(option);
-                }
-            };
-        }
-    }
-
-    private static final class InitializationProbe extends RuntimeException {
-    }
-
     private static final class FakeSignaling implements NetherNetClientSignaling {
         private final List<CompletableFuture<List<IceServerInfo>>> connections = new ArrayList<>();
         private final List<NotFoundHandler> notFoundHandlers = new ArrayList<>();
         private final List<SignalHandler> signalHandlers = new ArrayList<>();
+        private final List<String> sent = new ArrayList<>();
         private RuntimeException connectFailure;
         private RuntimeException removeFailure;
         private int closes;
@@ -506,7 +514,7 @@ class NetherNetClientChannelLifecycleTest {
         }
 
         @Override public void setNotFoundHandler(NotFoundHandler handler) { notFoundHandlers.add(handler); }
-        @Override public void sendSignal(String targetNetworkId, String data) { }
+        @Override public void sendSignal(String targetNetworkId, String data) { sent.add(data); }
         @Override public void setSignalHandler(long connectionId, SignalHandler handler) { signalHandlers.add(handler); }
         @Override
         public void removeSignalHandler(long connectionId) {

@@ -1,39 +1,39 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
-import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetFramingCodec;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.DefaultEventLoop;
-import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
+import static io.github.sendablemetatype.netty.channel.nethernet.ActiveChild.payload;
 import static org.junit.jupiter.api.Assertions.*;
 
+/** A write completes once the engine accepted every segment, in write order. */
 @Timeout(15)
 class NetherNetSendCompletionTest {
+    private static final int PAUSE = 1000;
+
     @Test
-    void failedSizeEstimateDoesNotLeaveAFrameInTheSubmissionQueue() {
-        try (Harness h = new Harness()) {
+    void failedSizeEstimateDoesNotLeaveAMessageInTheSubmissionQueue() {
+        try (ActiveChild h = new ActiveChild()) {
             IllegalArgumentException failure = new IllegalArgumentException("size estimate failed");
             h.channel.config().setMessageSizeEstimator(() -> message -> {
                 ByteBuf content = ((ByteBufHolder) message).content();
-                if (content.getUnsignedByte(content.readerIndex() + 1) == 2) {
+                if (content.getUnsignedByte(content.readerIndex()) == 2) {
                     throw failure;
                 }
                 return content.readableBytes();
@@ -44,10 +44,10 @@ class NetherNetSendCompletionTest {
             ChannelFuture last = h.channel.writeAndFlush(payload(3));
             assertSame(failure, rejectedWrite.cause());
             assertEquals(0, rejected.refCnt());
-            assertEquals(2, h.session.messages.size());
-            assertArrayEquals(new byte[]{0, 1}, h.session.messages.get(0));
-            assertArrayEquals(new byte[]{0, 3}, h.session.messages.get(1));
-            h.session.callbacks.forEach(callback -> callback.accept(null));
+            assertEquals(2, h.reliable().sendCount());
+            assertArrayEquals(new byte[]{0, 1}, h.reliable().sentBytes().get(0));
+            assertArrayEquals(new byte[]{0, 3}, h.reliable().sentBytes().get(1));
+            h.reliable().acceptAll();
             h.run();
             assertTrue(first.isSuccess());
             assertTrue(last.isSuccess());
@@ -56,106 +56,100 @@ class NetherNetSendCompletionTest {
 
     @Test
     void cancelledTailPreservesTheFlushBoundaryDuringBackpressure() {
-        try (Harness h = new Harness()) {
-            h.channel.writeAndFlush(Unpooled.buffer(2 * 1024 * 1024).writeZero(2 * 1024 * 1024));
+        try (ActiveChild h = paced()) {
+            h.reliable().setQueuedBytes(PAUSE);
             h.channel.write(payload(1));
             ByteBuf cancelled = payload(2);
             ChannelFuture cancellation = h.channel.write(cancelled);
             assertTrue(cancellation.cancel(false));
             h.channel.flush();
             assertEquals(0, cancelled.refCnt());
+            assertEquals(0, h.reliable().sendCount());
             ChannelFuture unflushed = h.channel.write(payload(3));
-            h.channel.onEngineBytesSent(2 * 1024 * 1024);
+            h.reliable().drain(PAUSE);
             h.run();
-            assertEquals(2, h.session.messages.size());
-            assertArrayEquals(new byte[]{0, 1}, h.session.messages.get(1));
+            assertEquals(1, h.reliable().sendCount());
+            assertArrayEquals(new byte[]{0, 1}, h.reliable().sentBytes().get(0));
             assertFalse(unflushed.isDone());
             h.channel.flush();
-            assertEquals(3, h.session.messages.size());
-            assertArrayEquals(new byte[]{0, 3}, h.session.messages.get(2));
+            assertEquals(2, h.reliable().sendCount());
+            assertArrayEquals(new byte[]{0, 3}, h.reliable().sentBytes().get(1));
         }
     }
 
     @Test
     void completionListenerCanLeaveANewWriteUnflushed() {
-        try (Harness h = new Harness()) {
+        try (ActiveChild h = new ActiveChild()) {
             ChannelFuture first = h.channel.writeAndFlush(payload(1));
             List<ChannelFuture> next = new ArrayList<>();
             first.addListener(ignored -> next.add(h.channel.write(payload(2))));
-            h.session.complete(0, null);
+            h.reliable().accept(0);
             h.run();
             assertEquals(1, next.size());
-            assertEquals(1, h.session.messages.size());
-            assertFalse(next.get(0).isDone());
+            assertEquals(1, h.reliable().sendCount());
+            assertFalse(next.getFirst().isDone());
             h.channel.flush();
-            assertEquals(2, h.session.messages.size());
-            h.session.complete(1, null);
+            assertEquals(2, h.reliable().sendCount());
+            h.reliable().accept(1);
             h.run();
-            assertTrue(next.get(0).isSuccess());
+            assertTrue(next.getFirst().isSuccess());
         }
     }
 
     @Test
     void writesWaitForAcceptanceAndCompleteInOrder() {
-        try (Harness h = new Harness()) {
+        try (ActiveChild h = new ActiveChild()) {
             ByteBuf first = payload(1);
             ByteBuf second = payload(2);
             ChannelFuture a = h.channel.write(first);
             ChannelFuture b = h.channel.writeAndFlush(second);
-            assertEquals(2, h.session.callbacks.size());
+            assertEquals(2, h.reliable().sendCount());
             assertFalse(a.isDone());
             assertFalse(b.isDone());
-            assertEquals(0, first.refCnt());
-            h.session.complete(1, null);
+            assertEquals(0, first.refCnt(), "the engine holds its own copy once send returned");
+            h.reliable().accept(1);
             h.run();
             assertFalse(b.isDone());
-            h.session.complete(0, null);
+            h.reliable().accept(0);
             h.run();
             assertTrue(a.isSuccess());
             assertTrue(b.isSuccess());
-            assertEquals(0, first.refCnt());
             assertEquals(0, second.refCnt());
-            h.session.complete(0, new IOException("duplicate callback"));
-            h.run();
-            assertTrue(h.channel.isOpen());
         }
     }
 
     @Test
     void eachFlushSubmitsImmediatelyWhileEarlierSendsArePending() {
-        try (Harness h = new Harness()) {
+        try (ActiveChild h = new ActiveChild()) {
             List<ChannelFuture> writes = new ArrayList<>();
             for (int i = 0; i < 100; i++) {
                 writes.add(h.channel.writeAndFlush(payload(i)));
-                assertEquals(i + 1, h.session.callbacks.size());
+                assertEquals(i + 1, h.reliable().sendCount());
             }
             assertTrue(writes.stream().noneMatch(ChannelFuture::isDone));
-            h.session.callbacks.forEach(callback -> callback.accept(null));
+            h.reliable().acceptAll();
             h.run();
             assertTrue(writes.stream().allMatch(ChannelFuture::isSuccess));
         }
     }
 
     @Test
-    void acceptanceDoesNotCountAsBufferDrain() {
-        try (Harness h = new Harness()) {
-            ChannelFuture first = h.channel.write(Unpooled.buffer(2 * 1024 * 1024).writeZero(2 * 1024 * 1024));
-            ChannelFuture second = h.channel.writeAndFlush(payload(1));
-            assertEquals(1, h.session.callbacks.size());
-            h.session.complete(0, null);
+    void acceptanceDoesNotCountAsQueueDrain() {
+        try (ActiveChild h = paced()) {
+            h.reliable().setQueuedBytes(PAUSE - 2);
+            ChannelFuture first = h.channel.write(payload(1));
+            ChannelFuture second = h.channel.writeAndFlush(payload(2));
+            assertEquals(1, h.reliable().sendCount(), "the first segment fills the engine queue");
+            h.reliable().accept(0);
             h.run();
             assertTrue(first.isSuccess());
             assertFalse(second.isDone());
-            assertEquals(1, h.session.callbacks.size());
-            h.channel.onEngineBytesSent(-1);
-            h.channel.onEngineBytesSent(0);
+            assertEquals(1, h.reliable().sendCount());
+            h.reliable().drain(PAUSE);
             h.run();
-            assertEquals(1, h.session.callbacks.size());
-            h.channel.onEngineBytesSent(2 * 1024 * 1024);
-            h.run();
-            assertEquals(2, h.session.callbacks.size());
+            assertEquals(2, h.reliable().sendCount());
             assertFalse(second.isDone());
-            h.session.complete(1, null);
+            h.reliable().accept(1);
             h.run();
             assertTrue(second.isSuccess());
         }
@@ -163,10 +157,9 @@ class NetherNetSendCompletionTest {
 
     @Test
     void completionListenersSubmitTheirNextBatchAfterDraining() {
-        try (Harness h = new Harness()) {
+        try (ActiveChild h = new ActiveChild()) {
             List<ChannelFuture> writes = new ArrayList<>();
-            java.util.concurrent.atomic.AtomicInteger accepted = new java.util.concurrent.atomic.AtomicInteger();
-            List<Integer> acceptedAtSend = new ArrayList<>();
+            AtomicInteger accepted = new AtomicInteger();
             for (int i = 0; i < 20; i++) {
                 ChannelFuture write = h.channel.write(payload(i));
                 write.addListener(ignored -> {
@@ -175,30 +168,30 @@ class NetherNetSendCompletionTest {
                 });
             }
             h.channel.flush();
-            h.session.onSend = () -> acceptedAtSend.add(accepted.get());
-            List.copyOf(h.session.callbacks).forEach(callback -> callback.accept(null));
+            h.reliable().acceptAll();
             h.run();
+            assertEquals(20, accepted.get());
             assertEquals(20, writes.size());
-            assertEquals(java.util.Collections.nCopies(20, 20), acceptedAtSend);
+            assertEquals(40, h.reliable().sendCount(), "every listener's write went out after the batch completed");
             assertTrue(writes.stream().noneMatch(ChannelFuture::isDone));
-            h.session.callbacks.subList(20, 40).forEach(callback -> callback.accept(null));
+            h.reliable().acceptAll();
             h.run();
             assertTrue(writes.stream().allMatch(ChannelFuture::isSuccess));
         }
     }
 
     @Test
-    void bufferDrainCanArriveBeforeAcceptance() {
-        try (Harness h = new Harness()) {
-            ChannelFuture first = h.channel.write(Unpooled.buffer(2 * 1024 * 1024).writeZero(2 * 1024 * 1024));
+    void queueDrainCanArriveBeforeAcceptance() {
+        try (ActiveChild h = paced()) {
+            ChannelFuture first = h.channel.write(ByteBufZeros.of(PAUSE));
             ChannelFuture second = h.channel.writeAndFlush(payload(1));
-            h.channel.onEngineBytesSent(2 * 1024 * 1024);
+            assertEquals(1, h.reliable().sendCount());
+            h.reliable().drain(PAUSE + 1);
             h.run();
-            assertEquals(2, h.session.callbacks.size());
+            assertEquals(2, h.reliable().sendCount());
             assertFalse(first.isDone());
             assertFalse(second.isDone());
-            h.session.complete(0, null);
-            h.session.complete(1, null);
+            h.reliable().acceptAll();
             h.run();
             assertTrue(first.isSuccess());
             assertTrue(second.isSuccess());
@@ -208,24 +201,23 @@ class NetherNetSendCompletionTest {
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void resumingWritesDoesNotFlushNewUnflushedMessages(boolean atWatermark) {
-        try (Harness h = new Harness()) {
-            h.channel.writeAndFlush(atWatermark
-                    ? Unpooled.buffer(2 * 1024 * 1024).writeZero(2 * 1024 * 1024) : payload(1));
+        try (ActiveChild h = paced()) {
+            h.channel.writeAndFlush(atWatermark ? ByteBufZeros.of(PAUSE) : payload(1));
             ChannelFuture flushed = h.channel.writeAndFlush(payload(2));
             ChannelFuture unflushed = h.channel.write(payload(3));
-            h.session.complete(0, null);
+            h.reliable().accept(0);
             if (atWatermark) {
-                h.channel.onEngineBytesSent(2 * 1024 * 1024);
+                h.reliable().drain(PAUSE + 1);
             }
             h.run();
-            assertEquals(2, h.session.callbacks.size());
-            h.session.complete(1, null);
+            assertEquals(2, h.reliable().sendCount());
+            h.reliable().accept(1);
             h.run();
             assertTrue(flushed.isSuccess());
             assertFalse(unflushed.isDone());
             h.channel.flush();
-            assertEquals(3, h.session.callbacks.size());
-            h.session.complete(2, null);
+            assertEquals(3, h.reliable().sendCount());
+            h.reliable().accept(2);
             h.run();
             assertTrue(unflushed.isSuccess());
         }
@@ -233,19 +225,19 @@ class NetherNetSendCompletionTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void failureClosesAndReleasesFlushedAndUnflushedWrites(boolean firstAccepted) {
-        try (Harness h = new Harness()) {
+    void aRefusalClosesAndReleasesFlushedAndUnflushedWrites(boolean firstAccepted) {
+        try (ActiveChild h = new ActiveChild()) {
             ByteBuf first = payload(1);
             ByteBuf second = payload(2);
             ByteBuf unflushed = payload(3);
             ChannelFuture a = h.channel.write(first);
             ChannelFuture b = h.channel.writeAndFlush(second);
             ChannelFuture c = h.channel.write(unflushed);
-            IOException failure = new IOException("native queue rejected the frame");
+            IOException failure = new IOException("engine queue refused the segment");
             if (firstAccepted) {
-                h.session.complete(0, null);
+                h.reliable().accept(0);
             }
-            h.session.complete(1, failure);
+            h.reliable().reject(1, failure);
             h.run();
             assertEquals(firstAccepted, a.isSuccess());
             assertTrue(a.isDone());
@@ -256,28 +248,22 @@ class NetherNetSendCompletionTest {
             assertEquals(0, second.refCnt());
             assertEquals(0, unflushed.refCnt());
             assertFalse(h.channel.isOpen());
-            assertEquals(1, h.session.closes);
-            h.channel.onEngineBytesSent(4);
-            h.session.complete(0, null);
-            h.session.complete(1, null);
-            h.run();
-            assertFalse(b.isSuccess());
-            assertFalse(h.channel.isOpen());
+            assertEquals(1, h.peer.closeCalls());
         }
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void sendFailureClosesEvenWithAutoCloseDisabled(boolean synchronous) {
-        try (Harness h = new Harness()) {
+    void aRefusalClosesEvenWithAutoCloseDisabled(boolean synchronous) {
+        try (ActiveChild h = new ActiveChild()) {
             h.channel.config().setAutoClose(false);
             if (synchronous) {
-                h.session.failure = new IllegalStateException("preparation failed");
+                h.reliable().refuseSends(new IllegalStateException("send refused at once"));
             }
             ByteBuf buffer = payload(1);
             ChannelFuture write = h.channel.writeAndFlush(buffer);
             if (!synchronous) {
-                h.session.complete(0, new IOException("native send rejected"));
+                h.reliable().reject(0, new IOException("send refused later"));
             }
             h.run();
             assertTrue(write.isDone());
@@ -289,25 +275,23 @@ class NetherNetSendCompletionTest {
     }
 
     @Test
-    void closeFailsPendingSendsAndIgnoresLateCallbacks() {
-        try (Harness h = new Harness()) {
+    void closeFailsPendingWritesAndTheEngineSettlesItsSends() {
+        try (ActiveChild h = new ActiveChild()) {
             ByteBuf buffer = payload(1);
             ChannelFuture write = h.channel.writeAndFlush(buffer);
             h.channel.close().syncUninterruptibly();
+            h.run();
             assertTrue(write.isDone());
             assertFalse(write.isSuccess());
             assertEquals(0, buffer.refCnt());
-            h.session.complete(0, null);
-            h.session.complete(0, new IOException("late failure"));
-            h.run();
-            assertFalse(write.isSuccess());
-            assertEquals(1, h.session.closes);
+            assertEquals(1, h.peer.closeCalls());
+            assertTrue(h.reliable().closed());
         }
     }
 
     @Test
     void cancellationBetweenPendingWritesDoesNotStrandTheQueue() {
-        try (Harness h = new Harness()) {
+        try (ActiveChild h = new ActiveChild()) {
             ChannelFuture first = h.channel.writeAndFlush(payload(1));
             ByteBuf cancelled = payload(2);
             ChannelFuture cancellation = h.channel.write(cancelled);
@@ -315,10 +299,9 @@ class NetherNetSendCompletionTest {
             ByteBuf third = payload(3);
             ChannelFuture last = h.channel.writeAndFlush(third);
             h.run();
-            assertEquals(2, h.session.callbacks.size());
+            assertEquals(2, h.reliable().sendCount());
             assertEquals(0, cancelled.refCnt());
-            h.session.complete(0, null);
-            h.session.complete(1, null);
+            h.reliable().acceptAll();
             h.run();
             assertTrue(first.isSuccess());
             assertTrue(last.isSuccess());
@@ -328,19 +311,19 @@ class NetherNetSendCompletionTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void fragmentedMessageWaitsForEveryNativeResult(boolean rejected) {
-        try (Harness h = new Harness()) {
-            h.channel.setMaxOutboundMessageSize(4);
-            h.channel.pipeline().addLast(new NetherNetFramingCodec());
-            ByteBuf message = Unpooled.wrappedBuffer(new byte[]{1, 2, 3, 4, 5, 6});
+    void aSplitMessageWaitsForEverySegmentsResult(boolean rejected) {
+        try (ActiveChild h = new ActiveChild(child -> child.setMaxOutboundMessageSize(4))) {
+            ByteBuf message = payload(1, 2, 3, 4, 5, 6);
             ChannelFuture write = h.channel.writeAndFlush(message);
-            assertEquals(2, h.session.callbacks.size());
-            assertArrayEquals(new byte[]{1, 1, 2, 3}, h.session.messages.get(0));
-            assertArrayEquals(new byte[]{0, 4, 5, 6}, h.session.messages.get(1));
-            h.session.complete(0, null);
+            assertEquals(2, h.reliable().sendCount());
+            h.reliable().accept(0);
             h.run();
             assertFalse(write.isDone());
-            h.session.complete(1, rejected ? new IOException("second fragment rejected") : null);
+            if (rejected) {
+                h.reliable().reject(1, new IOException("second segment refused"));
+            } else {
+                h.reliable().accept(1);
+            }
             h.run();
             assertTrue(write.isDone());
             assertEquals(!rejected, write.isSuccess());
@@ -349,39 +332,17 @@ class NetherNetSendCompletionTest {
     }
 
     @Test
-    void heapAndDirectWindowsArePassedWithoutAnotherDirectCopy() {
-        try (Harness h = new Harness()) {
-            for (boolean direct : new boolean[]{false, true}) {
-                ByteBuf buffer = direct ? Unpooled.directBuffer(4) : Unpooled.buffer(4);
-                buffer.writeBytes(new byte[]{9, 0, 7, 9});
-                buffer.setIndex(1, 3);
-                int index = h.session.callbacks.size();
-                ChannelFuture write = h.channel.writeAndFlush(buffer);
-                h.run();
-                assertArrayEquals(new byte[]{0, 7}, h.session.messages.get(index));
-                assertEquals(direct, h.session.direct.get(index));
-                assertEquals(1, buffer.readerIndex());
-                assertEquals(3, buffer.writerIndex());
-                h.session.complete(index, null);
-                h.run();
-                assertTrue(write.isSuccess());
-                assertEquals(0, buffer.refCnt());
-            }
-        }
-    }
-
-    @Test
     void completionsRunOnTheEventLoop() throws Exception {
         DefaultEventLoop loop = new DefaultEventLoop();
-        ManualSession session = new ManualSession();
-        ActiveChild channel = new ActiveChild(session);
+        ChildFixture fixture = new ChildFixture(null).openLinks();
+        NetherNetChildChannel channel = fixture.child;
         try {
             loop.register(channel).sync();
             ChannelFuture write = channel.writeAndFlush(payload(1));
             loop.submit(() -> { }).sync();
-            java.util.concurrent.CompletableFuture<Boolean> listenerThread = new java.util.concurrent.CompletableFuture<>();
+            CompletableFuture<Boolean> listenerThread = new CompletableFuture<>();
             write.addListener(ignored -> listenerThread.complete(loop.inEventLoop()));
-            Thread engine = new Thread(() -> session.complete(0, null), "native-send-callback");
+            Thread engine = new Thread(() -> fixture.reliable.accept(0), "engine-send-callback");
             engine.start();
             engine.join(2000);
             assertTrue(listenerThread.get(3, TimeUnit.SECONDS));
@@ -395,8 +356,8 @@ class NetherNetSendCompletionTest {
     @Test
     void loopShutdownFailsPendingWritesBeforeLateCallbacks() throws Exception {
         DefaultEventLoop loop = new DefaultEventLoop();
-        ManualSession session = new ManualSession();
-        ActiveChild channel = new ActiveChild(session);
+        ChildFixture fixture = new ChildFixture(null).openLinks();
+        NetherNetChildChannel channel = fixture.child;
         ByteBuf buffer = payload(1);
         try {
             loop.register(channel).sync();
@@ -404,14 +365,10 @@ class NetherNetSendCompletionTest {
             loop.submit(() -> { }).sync();
             loop.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
             assertTrue(write.isDone());
-            Thread engine = new Thread(() -> session.complete(0, null), "native-send-callback");
-            engine.start();
-            engine.join(2000);
             assertTrue(channel.closeFuture().await(3, TimeUnit.SECONDS));
-            assertTrue(write.await(3, TimeUnit.SECONDS));
             assertFalse(write.isSuccess());
             assertEquals(0, buffer.refCnt());
-            assertNotEquals("native-send-callback", session.closeThread);
+            assertNotEquals("engine-send-callback", fixture.peer.closeThread());
         } finally {
             if (!loop.isTerminated()) {
                 channel.close().syncUninterruptibly();
@@ -424,20 +381,20 @@ class NetherNetSendCompletionTest {
     void aTemporarilyRejectedCompletionTaskIsRetried() throws Exception {
         DefaultEventLoop loop = new DefaultEventLoop() {
             @Override public void execute(Runnable task) {
-                if (Thread.currentThread().getName().equals("native-send-callback")) {
-                    throw new java.util.concurrent.RejectedExecutionException("task queue is full");
+                if (Thread.currentThread().getName().equals("engine-send-callback")) {
+                    throw new RejectedExecutionException("task queue is full");
                 }
                 super.execute(task);
             }
         };
-        ManualSession session = new ManualSession();
-        ActiveChild channel = new ActiveChild(session);
+        ChildFixture fixture = new ChildFixture(null).openLinks();
+        NetherNetChildChannel channel = fixture.child;
         ByteBuf buffer = payload(1);
         try {
             loop.register(channel).sync();
             ChannelFuture write = channel.writeAndFlush(buffer);
             loop.submit(() -> { }).sync();
-            Thread engine = new Thread(() -> session.complete(0, null), "native-send-callback");
+            Thread engine = new Thread(() -> fixture.reliable.accept(0), "engine-send-callback");
             engine.start();
             engine.join(2000);
             assertTrue(write.await(3, TimeUnit.SECONDS));
@@ -452,35 +409,37 @@ class NetherNetSendCompletionTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void explicitFlushBypassesRejectedRecoveryWhileNativeSendsRemainPending(boolean atWatermark) throws Exception {
+    void explicitFlushBypassesRejectedRecoveryWhileEngineSendsRemainPending(boolean atWatermark) throws Exception {
         AtomicInteger rejections = new AtomicInteger();
         DefaultEventLoop loop = new DefaultEventLoop() {
             @Override public void execute(Runnable task) {
-                if (Thread.currentThread().getName().equals("native-send-callback")) {
+                if (Thread.currentThread().getName().equals("engine-send-callback")) {
                     rejections.incrementAndGet();
                     throw new RejectedExecutionException("task queue is full");
                 }
                 super.execute(task);
             }
         };
-        ManualSession session = new ManualSession();
-        ActiveChild channel = new ActiveChild(session);
+        ChildFixture fixture = new ChildFixture(null);
+        NetherNetChildChannel channel = fixture.child;
+        // Set before the links bind, as their low watermark follows it.
+        channel.config().setOption(NetherChannelOption.NETHER_SEND_PAUSE_BYTES, PAUSE);
+        FakeDataLink link = fixture.openLinks().reliable;
         try {
             loop.register(channel).sync();
             loop.submit(() -> {
-                int firstSize = atWatermark ? 2 * 1024 * 1024 : 2;
-                ChannelFuture first = channel.write(Unpooled.buffer(firstSize).writeZero(firstSize));
+                ChannelFuture first = channel.write(atWatermark ? ByteBufZeros.of(PAUSE) : payload(0));
                 ChannelFuture second = channel.writeAndFlush(payload(2));
                 ChannelFuture third = channel.write(payload(3));
-                assertEquals(atWatermark ? 1 : 2, session.callbacks.size());
+                assertEquals(atWatermark ? 1 : 2, link.sendCount());
 
                 Thread engine = new Thread(() -> {
                     if (atWatermark) {
-                        channel.onEngineBytesSent(firstSize);
+                        link.drain(PAUSE + 1);
                     } else {
-                        session.complete(1, null);
+                        link.accept(1);
                     }
-                }, "native-send-callback");
+                }, "engine-send-callback");
                 engine.start();
                 engine.join(2000);
                 assertFalse(engine.isAlive());
@@ -488,7 +447,7 @@ class NetherNetSendCompletionTest {
 
                 // This task still owns the loop, so recovery cannot run before this flush.
                 channel.flush();
-                assertEquals(3, session.callbacks.size());
+                assertEquals(3, link.sendCount());
                 assertFalse(first.isDone());
                 assertFalse(second.isDone());
                 assertFalse(third.isDone());
@@ -500,67 +459,15 @@ class NetherNetSendCompletionTest {
         }
     }
 
-    private static ByteBuf payload(int value) {
-        return Unpooled.buffer(2).writeByte(0).writeByte(value);
+    /** A child that pauses once {@value #PAUSE} bytes wait in the engine queue. */
+    private static ActiveChild paced() {
+        return new ActiveChild(child -> child.config().setOption(NetherChannelOption.NETHER_SEND_PAUSE_BYTES, PAUSE));
     }
 
-    private static final class ManualSession implements WebRtcSession {
-        final List<Consumer<Throwable>> callbacks = new ArrayList<>();
-        final List<byte[]> messages = new ArrayList<>();
-        final List<Boolean> direct = new ArrayList<>();
-        RuntimeException failure;
-        Runnable onSend = () -> { };
-        volatile int closes;
-        volatile String closeThread;
-
-        @Override
-        public void send(ByteBuffer data, Consumer<Throwable> completion) {
-            if (failure != null) {
-                throw failure;
-            }
-            onSend.run();
-            byte[] bytes = new byte[data.remaining()];
-            data.duplicate().get(bytes);
-            messages.add(bytes);
-            direct.add(data.isDirect());
-            callbacks.add(completion);
-        }
-
-        void complete(int index, Throwable cause) {
-            callbacks.get(index).accept(cause);
-        }
-
-        @Override public void addRemoteCandidate(String candidateSdp) { }
-        @Override public void close() { closeThread = Thread.currentThread().getName(); closes++; }
-    }
-
-    private static final class ActiveChild extends NetherNetChildChannel {
-        ActiveChild(WebRtcSession session) {
-            super(null, new InetSocketAddress("127.0.0.1", 19132), new InetSocketAddress("127.0.0.1", 19133));
-            attachSession(session);
-            markTransportOpen();
-        }
-    }
-
-    private static final class Harness implements AutoCloseable {
-        final EmbeddedChannel clock = new EmbeddedChannel();
-        final ManualSession session = new ManualSession();
-        final ActiveChild channel = new ActiveChild(session);
-
-        Harness() {
-            clock.freezeTime();
-            clock.eventLoop().register(channel).syncUninterruptibly();
-            run();
-        }
-
-        void run() { clock.runPendingTasks(); }
-
-        @Override public void close() {
-            if (channel.isOpen()) {
-                channel.close().syncUninterruptibly();
-            }
-            run();
-            clock.finishAndReleaseAll();
+    /** A message that alone fills the paced engine queue. */
+    private static final class ByteBufZeros {
+        static ByteBuf of(int bytes) {
+            return io.netty.buffer.Unpooled.buffer(bytes).writeZero(bytes);
         }
     }
 }
