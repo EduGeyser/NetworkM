@@ -48,11 +48,13 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
+import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -112,8 +114,9 @@ import java.util.function.Supplier;
  *
  * <p><b>ICE.</b> By default every peer gathers its host candidates on one UDP port at the address
  * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
- * opens the port after bind returned, and the sources start once it is open; a port that fails
- * to open then closes the endpoint, with the error logged. With
+ * sets the port up after bind returned, and the sources start once it is set up, which
+ * {@link #ready()} reports (with what that guarantees); a port that cannot be set up then closes
+ * the endpoint, with the error logged. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
  * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead. On the shared
  * port, {@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS} keeps STUN bindings alive from it and
@@ -122,6 +125,11 @@ import java.util.function.Supplier;
  * <p>The child is exposed as soon as its join is admitted. It owns its engine peer from creation
  * and negotiates in its own initializer once registered. The engine is either the caller's, which
  * this channel never closes, or one this channel creates when it binds and closes with itself.
+ *
+ * <p><b>Close.</b> The close future completes before the endpoint has let go of everything:
+ * peers, the ICE port and an owned engine close afterwards, on the engine's threads.
+ * {@link #termination()} completes once they did, so a host that binds the same address again, as
+ * on a reload, waits for it.
  */
 public class NetherNetServerChannel extends AbstractServerChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetServerChannel.class);
@@ -147,6 +155,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     // Guarded by sourcesLock.
     private final Map<JoinSource, Registration> sources = new LinkedHashMap<>();
     private boolean sourcesStarted;
+    /**
+     * Removed sources still letting go of their ports, one stage each until it completes. Added to
+     * under sourcesLock with the removal, so the close sees every source either here or in sources.
+     */
+    private final Set<CompletableFuture<Void>> removedSources = ConcurrentHashMap.newKeySet();
 
     private volatile InetSocketAddress localAddress;
     /**
@@ -158,6 +171,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /** What answers announce: the literal advertised entries, then every entry once names resolved. */
     private volatile List<InetSocketAddress> advertised = List.of();
     private volatile Bound bound;
+    /** Completes once the endpoint takes joins; see {@link #ready()}. */
+    private final CompletableFuture<Void> ready = new CompletableFuture<>();
+    /** Completes once the closed endpoint released everything; see {@link #termination()}. */
+    private final CompletableFuture<Void> termination = new CompletableFuture<>();
     /** Polls STUN discovery on the event loop; null without discovery. Event loop only. */
     private ScheduledFuture<?> discoveryRefresh;
     private volatile boolean open = true;
@@ -276,24 +293,30 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /**
      * Stops and closes a source. Its players stay connected; joins it delivered that have no child
-     * yet are refused at once and give back their share of the budget.
+     * yet are refused at once and give back their share of the budget. The endpoint's
+     * {@link #termination()} still waits for the source's own until it completes.
      *
      * @param source the source
      * @return whether the endpoint had it
      */
     public boolean removeSource(JoinSource source) {
         Registration registration;
+        CompletableFuture<Void> released = new CompletableFuture<>();
         synchronized (sourcesLock) {
             registration = sources.remove(source);
+            if (registration == null) {
+                return false;
+            }
+            // The endpoint's termination waits for it, also when the endpoint closes meanwhile
+            removedSources.add(released);
         }
-        if (registration == null) {
-            return false;
-        }
+        released.whenComplete((ignored, failure) -> removedSources.remove(released));
         registration.removed = true;
         // Before the source closes, so the refusals can still reach their clients.
         withdrawAdmissions(registration);
         registration.releaseHeldChecks();
         closeQuietly(source);
+        settled(source::termination).whenComplete((ignored, failure) -> released.complete(null));
         for (ChildlessPeer peer : childless) {
             if (peer.from == registration) {
                 peer.close();
@@ -604,8 +627,55 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     // ---- Bind and close ----
 
+    /**
+     * Completes once the endpoint takes joins: it is bound, the engine has set up its shared ICE
+     * port, and its sources have started. The bind future completes before that, once the bind
+     * found the port free; the engine sets the port up afterwards, on its own threads. With ports
+     * per session there is no port to set up, and this completes with the bind.
+     *
+     * <p>For the port this guarantees only that it was free when the bind and then the engine
+     * probed it, and that the engine's endpoint for it exists. It does not hold the port: the
+     * WebRTC engine binds the UDP socket on each local address when the first peer gathers there.
+     * A process that takes the port in between costs the joins that gather while it holds it their
+     * host candidates on that address, and nothing here reports it.
+     *
+     * <p>Fails with the reason the endpoint did not get there: the bind's failure, the reason the
+     * ICE port did not open (such as a {@link java.net.BindException} when another process took
+     * the port after the bind found it free), or a {@link ClosedChannelException} when the endpoint
+     * was closed first. After a failure that follows the bind, the endpoint closes itself.
+     * Actions that depend on this stage run on the endpoint's event loop and must not block.
+     *
+     * @return the stage
+     */
+    public CompletionStage<Void> ready() {
+        return ready.minimalCompletionStage();
+    }
+
+    /**
+     * Completes once this endpoint is closed and has released everything it held: the termination
+     * of every child and of every peer a source opened, the ports of its sources
+     * ({@link JoinSource#termination()}), also of sources removed before the close that have not let
+     * go of them yet, its shared ICE port, and the engine it owns, if it owns one. A host that binds the same address again, as on a reload, waits for this first: the
+     * close future completes before any of it. Never completes exceptionally; a part that never
+     * finishes its teardown keeps it pending, so wait with a timeout.
+     *
+     * @return the stage
+     */
+    public CompletionStage<Void> termination() {
+        return termination.minimalCompletionStage();
+    }
+
     @Override
     protected void doBind(SocketAddress requested) throws Exception {
+        try {
+            bindEndpoint(requested);
+        } catch (Throwable failure) {
+            ready.completeExceptionally(failure);
+            throw failure;
+        }
+    }
+
+    private void bindEndpoint(SocketAddress requested) throws Exception {
         if (!(requested instanceof InetSocketAddress address)) {
             throw new IllegalArgumentException("Unsupported address type");
         }
@@ -679,9 +749,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             try {
                 endpoint = opened.join();
             } catch (CompletionException e) {
-                throw e.getCause() instanceof Exception cause ? cause : e;
+                switch (reasonOf(e)) {
+                    case Exception reason -> throw reason;
+                    case Error reason -> throw reason;
+                    default -> throw e;
+                }
             }
-            ready(plan, endpoint);
+            takeJoins(plan, endpoint);
             return;
         }
         // The engine opens the port on its own thread; this loop does not wait for it (ruling A-4).
@@ -778,24 +852,38 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             return;
         }
         if (failure != null) {
-            Throwable cause = failure instanceof CompletionException && failure.getCause() != null
-                    ? failure.getCause() : failure;
+            Throwable reason = reasonOf(failure);
             log.error("The NetherNet endpoint at {} could not open its ICE port, closing it: {}", localAddress,
-                    cause.toString());
+                    reason.toString());
+            ready.completeExceptionally(reason);
             close();
             return;
         }
         try {
-            ready(plan, endpoint);
+            takeJoins(plan, endpoint);
         } catch (RuntimeException e) {
             log.error("The NetherNet endpoint at {} could not set up its ICE port, closing it: {}", localAddress,
                     e.toString());
+            ready.completeExceptionally(e);
             close();
         }
     }
 
+    /**
+     * Why opening the ICE port failed, without the wrappers of the stage and of the engine's
+     * thread, which cannot throw a checked exception.
+     */
+    private static Throwable reasonOf(Throwable failure) {
+        Throwable reason = failure;
+        while ((reason instanceof CompletionException || reason instanceof UncheckedIOException)
+                && reason.getCause() != null) {
+            reason = reason.getCause();
+        }
+        return reason;
+    }
+
     /** The ICE port is open, if it is shared: the endpoint takes joins from now on. Event loop. */
-    private void ready(BindPlan plan, IceEndpoint endpoint) {
+    private void takeJoins(BindPlan plan, IceEndpoint endpoint) {
         if (endpoint != null && !plan.relays().isEmpty()) {
             endpoint.proxyRelays(plan.relays());
         }
@@ -822,15 +910,19 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             toStart = List.copyOf(sources.values());
         }
         toStart.forEach(Registration::start);
+        ready.complete(null);
     }
 
     @Override
     protected void doClose() throws Exception {
+        ready.completeExceptionally(new ClosedChannelException());
         List<Registration> closing;
+        List<CompletableFuture<Void>> stillRemoving;
         synchronized (sourcesLock) {
             open = false;
             closing = List.copyOf(sources.values());
             sources.clear();
+            stillRemoving = List.copyOf(removedSources);
         }
         for (Registration registration : closing) {
             registration.removed = true;
@@ -839,17 +931,21 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // Before the sources close, so the refusals can still reach their clients. Without this,
         // a check the executor drops below would keep its share and throttle entry for good.
         List.copyOf(admitting).forEach(Admission::withdraw);
+        // What termination waits for: the sources' ports, removed sources included, and the chain
+        // from the peers to the engine.
+        List<CompletableFuture<Void>> released = new ArrayList<>(stillRemoving);
         for (Registration registration : closing) {
             closeQuietly(registration.source);
+            released.add(settled(registration.source::termination));
         }
 
         List<CompletableFuture<Void>> terminations = new ArrayList<>();
         for (NetherNetChildChannel child : live) {
-            terminations.add(child.termination().toCompletableFuture());
+            terminations.add(settled(child::termination));
             child.close();
         }
         for (ChildlessPeer peer : childless) {
-            terminations.add(peer.close().toCompletableFuture());
+            terminations.add(settled(peer::close));
         }
         Bound settings = bound;
         if (settings != null) {
@@ -863,12 +959,33 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // The shared port closes once no peer uses it anymore, also when it is still opening, then
         // an owned engine releases its threads; a shared engine stays with its owner.
         CompletionStage<IceEndpoint> port = iceEndpoint;
-        CompletableFuture.allOf(terminations.toArray(CompletableFuture[]::new))
+        released.add(CompletableFuture.allOf(terminations.toArray(CompletableFuture[]::new))
                 .thenCompose(ignored -> port == null ? CompletableFuture.<IceEndpoint>completedFuture(null)
                         : port.handle((endpoint, failure) -> endpoint))
                 .thenCompose(endpoint -> endpoint == null ? CompletableFuture.<Void>completedFuture(null)
-                        : endpoint.close())
-                .whenComplete((ignored, failure) -> engine.release());
+                        : settled(endpoint::close))
+                .thenCompose(ignored -> engine.release())
+                .toCompletableFuture());
+        CompletableFuture.allOf(released.toArray(CompletableFuture[]::new))
+                .whenComplete((ignored, failure) -> termination.complete(null));
+    }
+
+    /**
+     * A teardown stage that completes, never exceptionally, once the teardown ended either way,
+     * also when asking for it throws: a failed part must not hold up the rest of the close.
+     */
+    private static CompletableFuture<Void> settled(Supplier<? extends CompletionStage<Void>> teardown) {
+        try {
+            return teardown.get().toCompletableFuture().handle((ignored, failure) -> {
+                if (failure != null) {
+                    log.debug("A NetherNet endpoint teardown step failed: {}", failure.toString());
+                }
+                return null;
+            });
+        } catch (RuntimeException e) {
+            log.debug("A NetherNet endpoint teardown step failed: {}", e.toString());
+            return CompletableFuture.completedFuture(null);
+        }
     }
 
     private static void closeQuietly(JoinSource source) {
@@ -1296,7 +1413,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, localAddress, negotiation, tracker, intake,
-                relayed ? settings.iceEndpoint() : null);
+                relayed ? settings.iceEndpoint() : null, join.addressed());
         child.setMaxOutboundMessageSize(admission.maxMessageSize);
         child.attr(NetherNetChildChannel.CONNECTION_ID).set(negotiation.id());
         Join.Authenticated authenticated = join.authenticated();

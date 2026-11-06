@@ -356,7 +356,7 @@ class HttpSignalingRequestTest {
         Join join = sink.next();
         assertEquals(EmbeddedHttp.CLIENT, join.source().address());
         assertEquals(AddressSource.SIGNALING, join.source().source());
-        assertEquals(new Join.Addressed("127.0.0.1:19132", EmbeddedHttp.LOCAL.getPort(), false, null), join.addressed());
+        assertEquals(new Join.Addressed("127.0.0.1:19132", EmbeddedHttp.LOCAL.getPort(), false, false, null), join.addressed());
         assertFalse(join.reply().trickles());
         assertThrows(UnsupportedOperationException.class, () -> join.reply().candidate("candidate:1"));
         assertNotEquals(0, Long.parseUnsignedLong(join.connectionId()),

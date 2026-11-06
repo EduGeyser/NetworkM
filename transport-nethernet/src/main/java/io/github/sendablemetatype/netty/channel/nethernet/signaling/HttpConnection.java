@@ -14,7 +14,10 @@ final class HttpConnection {
     final Channel channel;
     /** The client a trusted proxy declared in its PROXY header, or null. */
     InetSocketAddress proxyDeclared;
-    /** Whether the connection speaks TLS. */
+    /**
+     * Whether the connection speaks TLS: set once the TLS handler is in place, before any request
+     * is decrypted, so every request handled on a TLS connection sees it.
+     */
     boolean tls;
     /** The response that may leave the connection open for one more request; any other ends it. */
     HttpResponse keepOpen;
@@ -28,6 +31,11 @@ final class HttpConnection {
         this.limits = limits;
         // Given back on the close itself, which no handler can hold up
         channel.closeFuture().addListener(future -> release());
+    }
+
+    /** The client: the one a trusted proxy declared in its PROXY header, else the connection's peer. */
+    InetSocketAddress client() {
+        return proxyDeclared != null ? proxyDeclared : (InetSocketAddress) channel.remoteAddress();
     }
 
     /**

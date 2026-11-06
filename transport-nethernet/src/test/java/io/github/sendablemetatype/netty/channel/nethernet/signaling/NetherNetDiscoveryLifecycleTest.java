@@ -54,6 +54,19 @@ class NetherNetDiscoveryLifecycleTest {
     }
 
     @Test
+    void terminationCompletesOnceTheSocketAndItsEventLoopAreGone() throws Exception {
+        EventLoopGroup group = newGroup();
+        NetherNetDiscovery discovery = discovery(group);
+        discovery.bind(new InetSocketAddress("127.0.0.1", 0));
+        assertFalse(discovery.termination().toCompletableFuture().isDone());
+
+        discovery.close();
+        discovery.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+
+        assertTrue(group.isTerminated());
+    }
+
+    @Test
     void duplicateBindKeepsTheOriginalSocketAndDoesNotCreateAnotherGroup() {
         EventLoopGroup group = newGroup();
         AtomicInteger creations = new AtomicInteger();

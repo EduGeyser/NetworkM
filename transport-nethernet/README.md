@@ -104,6 +104,15 @@ every join replies through its own `ReplyPath`. A source starts once: to restart
 one, remove it and add a new instance. Closing the endpoint closes its sources.
 `sources()` lists them.
 
+**Close.** The close future completes before the endpoint has let go of
+everything: peers, the ICE port and an owned engine close afterwards on the
+engine's threads. `termination()` completes once the children and the peers
+sources opened have terminated, the sources have let go of their ports
+(`JoinSource.termination()`: HTTP signaling's TCP listener, LAN discovery's UDP
+socket), sources removed before the close included, the ICE port is closed, and an owned engine is closed. A host that binds
+the same address again, as on a reload, waits for it, with a timeout: a part
+whose teardown never finishes keeps it pending.
+
 A custom source implements `JoinSource` and hands the endpoint a `Join` per offer
 through the `JoinSink` it gets at start. Its `ReplyPath` carries the answer and
 the refusal back; a path that settles joins on its own, as HTTP signaling does at
@@ -121,9 +130,17 @@ close it. Removing the source closes its peers.
 **ICE port.** By default every peer gathers its host candidates on one UDP port,
 the address and port the endpoint binds (`NETHER_SERVER_SHARED_ICE_PORT`, true).
 Port 0 binds a free port, found when the endpoint binds. A taken port fails the
-bind. The engine opens the port after bind returned; a port that fails to open
-then closes the endpoint. Between bind and the port opening, joins are refused
-with `CAPACITY`. Set
+bind. The engine sets the port up after bind returned; a port it cannot set up
+then closes the endpoint. Until then, joins are refused with `CAPACITY`.
+`ready()` completes once the engine has set up the port and the
+sources have started, and fails with the reason otherwise: the bind's failure,
+why the port could not be set up (a `BindException` when another process took
+it after the bind found it free), or a `ClosedChannelException` when the
+endpoint closed first. It does not mean the port is held: the WebRTC engine
+binds the UDP socket on each local address when the first peer gathers there, so
+a process that takes the port in between costs the joins that gather while it
+holds it their host candidates on that address, unreported.
+Set
 `NETHER_SERVER_SHARED_ICE_PORT` to false to give each session ports of its own
 from `NETHER_CANDIDATE_POLICY`'s port window, the way BDS allocates them
 ([client behavior](docs/client-behavior.md#how-vanilla-bds-answers-for-comparison)).
@@ -279,7 +296,11 @@ connection ID, address and the check's diagnostics; logs never contain the token
 The admitted child carries the result in `child.getOfferCheck()` (attribute
 `NetherNetChildChannel.OFFER_CHECK`). `xuid()` and `displayName()` read the `xid`
 and `xname` claims; they are only as trustworthy as `attested()` says. The child
-also carries `NetherNetChildChannel.CONNECTION_ID`, the client's connection ID.
+also carries `NetherNetChildChannel.CONNECTION_ID`, the client's connection ID,
+and for a join over HTTP signaling `child.addressed()`, the request's
+`Join.Addressed`: its `Host`, the local port, whether a trusted proxy sent it, and
+whether its connection spoke TLS (`tls()`), which tells a join signaled over
+HTTPS from one over plain HTTP.
 
 **Refusals.** A refused join creates nothing. Its source tells the client with a
 `JoinRefusal`: an HTTP status with an empty body over HTTP, a `CONNECTERROR`
@@ -356,6 +377,7 @@ cannot be bound again.
 | `maxConnectionsPerAddress(int)` | 100 | Open connections per client address (IPv6 per /64, proxied clients by their declared source). |
 | `maxRequestBodyBytes(int)` | 32 KiB | The largest request body; larger ones get `413`. |
 | `metrics(NetherServerMetrics)` | none | Where the source reports what it refuses on its own, see [Metrics and access log](#metrics-and-access-log). |
+| `tlsHandshakeFailures(Consumer<TlsHandshakeFailure>)` | none | Told about every TLS handshake that started and failed, see below. |
 
 **TLS.** Each connection's first bytes say whether it is TLS. On a TLS
 ClientHello the `TlsContextSelector` is asked with the requested server name
@@ -368,6 +390,15 @@ Withdraw TLS rather than serve a certificate the client would reject, such as an
 IP address certificate to a player who connected by domain name. A new
 certificate applies from the next connection. `TlsContexts.fromPem(...)` and
 `TlsContexts.fromPkcs12(...)` load contexts from files.
+
+A handshake that starts and fails, most often because the client rejected the
+certificate, goes to the `tlsHandshakeFailures` listener as a
+`TlsHandshakeFailure`: the client's address (the one a trusted PROXY protocol
+header declared, else the connection's peer), the server name it asked for, and
+the cause (an `SSLException` for a TLS error, a `ClosedChannelException` when
+the connection closed first). Withdrawn TLS starts no handshake and is not
+reported. The listener runs on the I/O thread; anyone can fail handshakes at
+will, so a listener that logs should limit itself.
 
 ```java
 SslContext ipCertificate = TlsContexts.fromPem(chain, key, null);

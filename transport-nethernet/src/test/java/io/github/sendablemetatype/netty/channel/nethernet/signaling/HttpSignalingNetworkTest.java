@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.EmbeddedHttp.Response;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsHandshakeFailure;
 import io.github.sendablemetatype.netty.util.address.IpRangeSet;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.netty.channel.EventLoopGroup;
@@ -25,12 +26,17 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.signaling.SocketHttp.get;
 import static io.github.sendablemetatype.netty.channel.nethernet.signaling.SocketHttp.post;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -92,8 +98,13 @@ class HttpSignalingNetworkTest {
     }
 
     private static SSLSocket tls(Socket under, String serverName) throws Exception {
+        return tls(under, serverName, authority);
+    }
+
+    /** A TLS connection over {@code under} from a client that trusts only {@code trusted}. */
+    private static SSLSocket tls(Socket under, String serverName, X509Bundle trusted) throws Exception {
         // A context of its own: resuming a cached session would send that session's server name
-        SSLSocket socket = (SSLSocket) TestCertificates.trusting(authority).getSocketFactory()
+        SSLSocket socket = (SSLSocket) TestCertificates.trusting(trusted).getSocketFactory()
                 .createSocket(under, "127.0.0.1", under.getPort(), true);
         if (serverName != null) {
             SSLParameters parameters = socket.getSSLParameters();
@@ -120,6 +131,16 @@ class HttpSignalingNetworkTest {
     }
 
     @Test
+    void eachJoinSaysWhetherItsConnectionSpokeTls() throws Exception {
+        start(NetherNetHttpSignaling.builder(worker).tls(name -> serverContext));
+
+        SocketHttp.write(tls(null), post("1", OFFER));
+        assertTrue(sink.next().addressed().tls());
+        SocketHttp.write(plain(), post("2", OFFER));
+        assertFalse(sink.next().addressed().tls());
+    }
+
+    @Test
     void tlsSelectorIsAskedWithTheRequestedServerName() throws Exception {
         List<String> asked = new CopyOnWriteArrayList<>();
         start(NetherNetHttpSignaling.builder(worker).tls(name -> {
@@ -142,6 +163,44 @@ class HttpSignalingNetworkTest {
         assertThrows(SSLException.class, () -> tls("play.example.test"), "withdrawn for this name");
         assertEquals(200, exchange(tls(null), get("/v1/join", "Connection: close\r\n")).status());
         assertEquals(200, exchange(plain(), get("/v1/join", "Connection: close\r\n")).status());
+    }
+
+    @Test
+    void aHandshakeTheClientRejectsIsReportedWithTheClientAddress() throws Exception {
+        BlockingQueue<TlsHandshakeFailure> failures = new LinkedBlockingQueue<>();
+        start(NetherNetHttpSignaling.builder(worker)
+                .tls(name -> "withdrawn.example.test".equals(name) ? null : serverContext)
+                .tlsHandshakeFailures(failures::add));
+        X509Bundle another = TestCertificates.authority();
+
+        Socket under = plain();
+        // Read now: the failed handshake closes the socket
+        InetSocketAddress client = (InetSocketAddress) under.getLocalSocketAddress();
+        assertThrows(SSLException.class, () -> tls(under, "play.example.test", another));
+        assertThrows(SSLException.class, () -> tls("withdrawn.example.test"));
+
+        TlsHandshakeFailure failure = failures.poll(10, TimeUnit.SECONDS);
+        assertNotNull(failure, "the rejected certificate is reported");
+        assertEquals(client, failure.client());
+        assertEquals("play.example.test", failure.serverName());
+        assertInstanceOf(SSLException.class, failure.cause());
+        assertNull(failures.poll(200, TimeUnit.MILLISECONDS), "withdrawn TLS started no handshake");
+    }
+
+    @Test
+    void aFailedHandshakeBehindAProxyNamesTheClientItDeclared() throws Exception {
+        BlockingQueue<TlsHandshakeFailure> failures = new LinkedBlockingQueue<>();
+        start(NetherNetHttpSignaling.builder(worker).trustedProxies(PROXY_PROTOCOL_FROM_LOOPBACK)
+                .tls(name -> serverContext).tlsHandshakeFailures(failures::add));
+
+        Socket under = plain();
+        SocketHttp.write(under, SocketHttp.proxyV2("203.0.113.7", 51000));
+        assertThrows(SSLException.class, () -> tls(under, null, TestCertificates.authority()));
+
+        TlsHandshakeFailure failure = failures.poll(10, TimeUnit.SECONDS);
+        assertNotNull(failure);
+        assertEquals(new InetSocketAddress("203.0.113.7", 51000), failure.client());
+        assertNull(failure.serverName());
     }
 
     @Test

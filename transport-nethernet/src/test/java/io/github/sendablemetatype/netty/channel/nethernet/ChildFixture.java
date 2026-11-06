@@ -54,7 +54,7 @@ final class ChildFixture {
         SourcedAddress signaled = remote == null ? SourcedAddress.unknown()
                 : new SourcedAddress(remote, AddressSource.SIGNALING, null);
         return new NetherNetChildChannel(parent, local, NO_SIGNALING, new RemoteAddressTracker(signaled, false),
-                RemoteCandidateIntake.server(), null);
+                RemoteCandidateIntake.server(), null, null);
     }
 
     /** The client opens both data channels and both open, which activates the child. */

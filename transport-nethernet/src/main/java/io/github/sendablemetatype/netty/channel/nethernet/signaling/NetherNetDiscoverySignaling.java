@@ -414,6 +414,12 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
         // Not implemented for Discovery signaling
     }
 
+    /** Completes once the closed discovery socket, on its port, and its event loop are gone. */
+    @Override
+    public CompletionStage<Void> termination() {
+        return discovery.termination();
+    }
+
     @Override
     public void close() {
         DiscoveryAttempt attempt;

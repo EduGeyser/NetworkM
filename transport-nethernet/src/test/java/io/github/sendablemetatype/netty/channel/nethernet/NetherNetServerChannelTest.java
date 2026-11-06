@@ -4,6 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
@@ -23,6 +24,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
@@ -37,15 +39,19 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.UncheckedIOException;
 import java.net.BindException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -169,6 +175,60 @@ class NetherNetServerChannelTest {
     }
 
     @Test
+    void readyCompletesOnceTheIcePortOpenedAndTheSourcesStarted() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        try {
+            FakeJoinSource source = new FakeJoinSource(true);
+            server.addSource(source, EndpointHarness.ADMIT_ALL);
+            CompletableFuture<Integer> startsWhenReady = server.ready().toCompletableFuture()
+                    .thenApply(ignored -> source.starts.get());
+            harness.sync();
+            assertFalse(startsWhenReady.isDone(), "the bound endpoint waits for its ICE port");
+
+            engine.open.complete(null);
+            assertEquals(1, startsWhenReady.get(2, TimeUnit.SECONDS));
+        } finally {
+            server.close().sync();
+        }
+    }
+
+    @Test
+    void readyFailsWithTheReasonTheIcePortDidNotOpen() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        BindException taken = new BindException("taken after the probe");
+
+        // As the WebRTC engine reports it from its endpoint thread
+        engine.open.completeExceptionally(new UncheckedIOException(taken));
+
+        ExecutionException failed = assertThrows(ExecutionException.class,
+                () -> server.ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+        assertSame(taken, failed.getCause());
+        assertTrue(server.closeFuture().await(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void readyFailsWithTheBindsFailureOrWhenTheEndpointClosesFirst() throws Exception {
+        try (DatagramSocket taken = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
+                    .awaitUninterruptibly();
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> ((NetherNetServerChannel) bind.channel()).ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+            assertSame(bind.cause(), failed.getCause());
+        }
+
+        NetherNetServerChannel closed = (NetherNetServerChannel) bootstrap(EngineRef.shared(new HeldEndpointEngine()))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        closed.close().sync();
+        ExecutionException failed = assertThrows(ExecutionException.class,
+                () -> closed.ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+        assertInstanceOf(ClosedChannelException.class, failed.getCause());
+    }
+
+    @Test
     void anIcePortThatOpensAfterTheEndpointClosedIsClosed() throws Exception {
         HeldEndpointEngine engine = new HeldEndpointEngine();
         ChannelFuture bind = bootstrap(EngineRef.shared(engine)).bind(new InetSocketAddress("127.0.0.1", 0))
@@ -207,6 +267,7 @@ class NetherNetServerChannelTest {
     void portsPerSessionAreAnOption() throws Exception {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         harness.bind();
+        assertTrue(harness.server.ready().toCompletableFuture().isDone(), "no port to wait for");
         harness.source(true).offer("1", OFFER);
         assertNull(harness.negotiating().config().endpoint());
     }
@@ -305,6 +366,18 @@ class NetherNetServerChannelTest {
         harness.activate(peer);
         assertTrue(child.isActive());
         assertEquals(1, reply.connected.get(), "the source learns the join went active");
+    }
+
+    @Test
+    void theChildCarriesWhatAnHttpClientReachedAndOthersCarryNothing() throws Exception {
+        harness.bind();
+        FakeJoinSource source = harness.source(false);
+        Join.Addressed overHttps = new Join.Addressed("play.example.com:19132", 19132, false, true, null);
+
+        source.offer("1", OFFER, new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.SIGNALING, null), overHttps);
+        assertEquals(Optional.of(overHttps), harness.child().addressed());
+        source.offer("2", OFFER);
+        assertEquals(Optional.empty(), harness.child().addressed());
     }
 
     @Test
@@ -451,6 +524,95 @@ class NetherNetServerChannelTest {
         assertEquals(List.of("remote-3 false"), accepted);
         assertEquals(0, harness.engine.closeCalls(), "a shared engine stays with its owner");
         assertThrows(IllegalStateException.class, () -> harness.server.addSource(new FakeJoinSource(true)));
+    }
+
+    @Test
+    void terminationWaitsForThePeersTheIcePortAndTheOwnedEngine() throws Exception {
+        FakeEngine fake = new FakeEngine();
+        fake.holdPeerClose(true);
+        fake.holdEndpointClose(true);
+        CompletableFuture<Void> engineClosed = new CompletableFuture<>();
+        NetherNetEngine engine = new NetherNetEngine() {
+            @Override
+            public Peer createPeer(PeerConfig config, PeerListener listener) {
+                return fake.createPeer(config, listener);
+            }
+
+            @Override
+            public CompletionStage<IceEndpoint> openEndpoint(EndpointConfig config) {
+                return fake.openEndpoint(config);
+            }
+
+            @Override
+            public CompletionStage<Void> close() {
+                return fake.close().thenCompose(ignored -> engineClosed);
+            }
+        };
+        NetherNetServerChannel server = (NetherNetServerChannel) owned(() -> engine)
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        FakeJoinSource source = new FakeJoinSource(true);
+        server.addSource(source, EndpointHarness.ADMIT_ALL);
+        source.offer("1", OFFER);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (fake.peers().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        FakePeer peer = fake.peer(0);
+        FakeIceEndpoint port = (FakeIceEndpoint) peer.config().endpoint();
+        CompletableFuture<Void> termination = server.termination().toCompletableFuture();
+
+        server.close().sync();
+        harness.sync();
+        assertFalse(termination.isDone(), "the closed endpoint's peer is still tearing down");
+        assertFalse(port.closed(), "the port closes after its peers");
+
+        peer.finishClose();
+        harness.sync();
+        assertTrue(port.closed());
+        assertFalse(termination.isDone(), "the port is still closing");
+
+        port.finishClose();
+        assertEquals(1, fake.closeCalls(), "the owned engine closes after the port");
+        assertFalse(termination.isDone(), "the owned engine is still closing");
+
+        engineClosed.complete(null);
+        termination.get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void terminationWaitsForTheSourcesToLetGoOfTheirPorts() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource source = harness.source(true);
+        CompletableFuture<Void> sourceReleased = new CompletableFuture<>();
+        source.termination = sourceReleased;
+
+        server.close().sync();
+        harness.sync();
+        assertTrue(source.closed);
+        assertFalse(server.termination().toCompletableFuture().isDone());
+
+        sourceReleased.complete(null);
+        server.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void terminationWaitsForASourceRemovedBeforeTheCloseThatStillLetsGoOfItsPort() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource removed = harness.source(true);
+        CompletableFuture<Void> removedReleased = new CompletableFuture<>();
+        removed.termination = removedReleased;
+        FakeJoinSource released = harness.source(true);
+
+        assertTrue(server.removeSource(removed));
+        assertTrue(server.removeSource(released));
+        server.close().sync();
+        harness.sync();
+        assertTrue(removed.closed);
+        assertFalse(server.termination().toCompletableFuture().isDone(),
+                "the removed source still holds its port");
+
+        removedReleased.complete(null);
+        server.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
     }
 
     // Peers without a child.

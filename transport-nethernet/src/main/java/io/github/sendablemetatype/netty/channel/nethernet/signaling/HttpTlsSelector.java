@@ -89,6 +89,11 @@ final class HttpTlsSelector extends ByteToMessageDecoder {
                 throw e;
             }
             connection.tls = true;
+            handler.handshakeFuture().addListener(handshake -> {
+                if (!handshake.isSuccess()) {
+                    signaling.tlsHandshakeFailed(connection, hostname, handshake.cause());
+                }
+            });
         }
     }
 }

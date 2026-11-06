@@ -35,6 +35,8 @@ final class FakeJoinSource implements JoinSource {
     volatile JoinSink sink;
     volatile boolean closed;
     volatile List<IceServer> iceServers = List.of();
+    /** What {@link #termination()} returns; replace it to hold the termination. */
+    volatile CompletableFuture<Void> termination = CompletableFuture.completedFuture(null);
     final AtomicInteger starts = new AtomicInteger();
 
     /** @param trickles whether replies trickle, as Xbox and LAN do, or carry one full answer, as HTTP does */
@@ -80,6 +82,11 @@ final class FakeJoinSource implements JoinSource {
     @Override
     public void close() {
         closed = true;
+    }
+
+    @Override
+    public CompletionStage<Void> termination() {
+        return termination;
     }
 
     /** Delivers an offer from {@link #CLIENT}. */

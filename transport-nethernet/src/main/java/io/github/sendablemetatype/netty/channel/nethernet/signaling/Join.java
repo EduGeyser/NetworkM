@@ -63,10 +63,12 @@ public record Join(String connectionId, String remoteNetworkId, String offer, So
      *        shares it
      * @param viaTrustedProxy whether a trusted proxy sent the request, in either role; its
      *        {@code Host} then names the proxy, not this server
+     * @param tls whether the connection the request came over spoke TLS (HTTPS) to this server. A
+     *        forwarder that ended TLS itself and passed the request on in plain HTTP makes it false
      * @param client what the request's query said about the client, or null when it said nothing
      *        usable
      */
-    public record Addressed(String host, int localPort, boolean viaTrustedProxy, ClientInfo client) {
+    public record Addressed(String host, int localPort, boolean viaTrustedProxy, boolean tls, ClientInfo client) {
     }
 
     /**
