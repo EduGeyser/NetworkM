@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.transport;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AnswerCandidates;
 
 import java.net.InetSocketAddress;
@@ -59,7 +60,7 @@ public record AssistedAnswer(String sdp) {
                         && !line.equals("a=end-of-candidates"))
                 .toList())
                 + "\r\na=candidate:1 1 UDP 2130706431 " + candidate.getAddress().getHostAddress()
-                + " " + candidate.getPort() + " typ " + type.wire() + "\r\na=end-of-candidates\r\n");
+                + " " + candidate.getPort() + " typ " + type.sdpName() + "\r\na=end-of-candidates\r\n");
         return new AssistedAnswer(signer == null ? answer : signer.sign(answer));
     }
 

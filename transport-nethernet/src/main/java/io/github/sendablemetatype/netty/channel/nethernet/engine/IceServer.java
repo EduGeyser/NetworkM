@@ -22,6 +22,12 @@ public record IceServer(List<String> urls, String username, String credential) {
         }
     }
 
+    /** Whether the server relays: any of its URLs is a {@code turn:} or {@code turns:} one. */
+    public boolean isTurn() {
+        return urls.stream().anyMatch(url -> url.regionMatches(true, 0, "turn:", 0, 5)
+                || url.regionMatches(true, 0, "turns:", 0, 6));
+    }
+
     @Override
     public String toString() {
         return "IceServer[urls=" + urls.stream().map(IceServer::redacted).toList()

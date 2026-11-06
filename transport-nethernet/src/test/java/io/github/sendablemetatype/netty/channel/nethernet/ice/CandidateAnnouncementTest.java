@@ -26,11 +26,16 @@ class CandidateAnnouncementTest {
     }
 
     @Test
+    void behindRelaysNothingButTheConfiguredAddressesIsAnnounced() {
+        // Mappings and the typed endpoint name this host, which the relays exist to hide
+        assertEquals(new CandidateAnnouncement.Relayed(List.of()),
+                CandidateAnnouncement.of(List.of(), true, DISCOVERED, TYPED));
+    }
+
+    @Test
     void otherwiseAddsTheMappingsAndTheTypedEndpoint() {
         assertEquals(new CandidateAnnouncement.Added(List.of(DISCOVERED.getFirst(), TYPED.orElseThrow())),
                 CandidateAnnouncement.of(List.of(), false, DISCOVERED, TYPED));
-        assertEquals(new CandidateAnnouncement.Added(DISCOVERED),
-                CandidateAnnouncement.of(List.of(), true, DISCOVERED, TYPED), "players reach the media through relays");
         assertSame(CandidateAnnouncement.AS_GATHERED, CandidateAnnouncement.of(List.of(), false, List.of(), Optional.empty()));
     }
 

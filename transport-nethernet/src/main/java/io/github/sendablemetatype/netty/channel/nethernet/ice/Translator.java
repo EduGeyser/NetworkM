@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -44,7 +45,8 @@ final class Translator {
      * RFC 8445 section 5.1.2.1 with the server reflexive type preference, below any host. Each
      * further translation takes the next lower local preference, which must be unique per type.
      */
-    private static final long PRIORITY = (100L << 24) | (65535L << 8) | 255;
+    private static final long PRIORITY = ((long) CandidateType.SERVER_REFLEXIVE.typePreference() << 24)
+            | (65535L << 8) | 255;
     private static final int FOUNDATION = 80000000;
 
     private final boolean hideBase;

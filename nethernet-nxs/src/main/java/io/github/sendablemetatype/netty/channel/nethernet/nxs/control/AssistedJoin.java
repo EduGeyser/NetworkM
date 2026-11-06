@@ -17,6 +17,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.control;
 
 import com.google.gson.JsonObject;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.DtlsFingerprint;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityPublicKey;
 import io.netty.util.NetUtil;
@@ -179,7 +180,7 @@ public record AssistedJoin(
                     || !c[1].equals("1")
                     || !c[2].equalsIgnoreCase("UDP")
                     || !c[6].equals("typ")
-                    || !Set.of("host", "srflx", "prflx", "relay").contains(c[7])
+                    || CandidateType.fromSdpName(c[7]) == CandidateType.UNKNOWN
                     || !c[5].matches("[0-9]{1,5}")
                     || !(NetUtil.isValidIpV4Address(c[4]) || NetUtil.isValidIpV6Address(c[4]))) {
                 throw new IllegalArgumentException("Invalid assisted candidate");

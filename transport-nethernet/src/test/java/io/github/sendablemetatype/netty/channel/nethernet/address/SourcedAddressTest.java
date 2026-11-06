@@ -1,6 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.address;
 
-import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.util.address.IpRangeSet;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import org.junit.jupiter.api.Test;

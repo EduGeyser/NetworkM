@@ -137,7 +137,7 @@ class NetherNetServerChannelTest {
             ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
                     .awaitUninterruptibly();
             assertInstanceOf(BindException.class, bind.cause());
-            // The bootstrap closes the channel from a listener that runs after the failure wakes us.
+            // The bootstrap closes a channel whose bind failed from a listener on the event loop
             assertTrue(bind.channel().closeFuture().await(2, TimeUnit.SECONDS));
         }
     }
@@ -173,8 +173,12 @@ class NetherNetServerChannelTest {
         NetherNetServerChannel server = harness.bind();
         harness.source(true).offer("1", OFFER);
         harness.source(false).offer("2", OFFER);
-        harness.negotiating();
-        harness.sync();
+        // Each join passes admission off the event loop, so the peers come in their own time
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (harness.engine.peers().size() < 2 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(2, harness.engine.peers().size());
 
         int port = ((InetSocketAddress) server.localAddress()).getPort();
         assertNotEquals(0, port, "port 0 picks a free port");

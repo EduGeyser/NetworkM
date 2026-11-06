@@ -17,6 +17,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 
 import com.google.gson.*;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderClient.*;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.*;
@@ -604,7 +605,7 @@ final class WireCodec {
             json.addProperty("port", candidate.endpoint().getPort());
             json.addProperty("foundation", Integer.toString(++index));
             json.addProperty("priority", priority(candidate.type(), rank));
-            json.addProperty("type", candidate.type().wire());
+            json.addProperty("type", candidate.type().sdpName());
             array.add(json);
         }
         return array;
@@ -612,7 +613,7 @@ final class WireCodec {
 
     /** {@code type preference << 24 | local preference << 8 | (256 - component 1)}. */
     static int priority(CandidateType type, int rank) {
-        return type.preference() << 24 | (65535 - rank) << 8 | 255;
+        return type.typePreference() << 24 | (65535 - rank) << 8 | 255;
     }
 
     static String outcomes(List<Wire.OutcomeEvent> events, boolean endpoints) {

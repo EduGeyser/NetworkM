@@ -22,6 +22,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionContext;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
@@ -40,7 +41,6 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.Provi
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.control.AssistedJoin;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AssistedAnswer;
-import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityCheck;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostProfile;
@@ -760,7 +760,7 @@ public final class HostTransport implements ProviderTransport {
                     return;
                 }
                 state.closeMonitor();
-                state.candidate.complete(new Candidate(mapped, CandidateType.SRFLX));
+                state.candidate.complete(new Candidate(mapped, CandidateType.SERVER_REFLEXIVE));
             }));
         }
     }

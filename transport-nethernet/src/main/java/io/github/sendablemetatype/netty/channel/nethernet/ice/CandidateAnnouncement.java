@@ -36,9 +36,10 @@ public sealed interface CandidateAnnouncement {
     /**
      * The PROXY protocol relays that front the media port. Only the relays are announced, as server
      * reflexive candidates with their base hidden, plus this host's TURN relay candidates with
-     * their related address hidden, so players never learn this host's own addresses.
+     * their related address hidden, so players never learn this host's own addresses. With no
+     * relay endpoints, only the TURN candidates are announced.
      *
-     * @param relays The relays' public endpoints
+     * @param relays The relays' public endpoints, empty when the host configured none
      */
     record Relayed(List<InetSocketAddress> relays) implements CandidateAnnouncement {
         public Relayed {
@@ -59,13 +60,11 @@ public sealed interface CandidateAnnouncement {
     }
 
     /**
-     * Picks what a join's answer announces: the configured addresses when there are any, as relays
-     * when PROXY protocol relays front the media port; otherwise the fresh STUN mappings and the
-     * endpoint the player typed.
-     * <p>
-     * With relays but no advertised addresses, the answer stays as gathered and names this host;
-     * players can then only connect if something in front of signaling rewrites the answers.
-     * The endpoint should warn about that configuration when it binds.
+     * Picks what a join's answer announces. Behind PROXY protocol relays, only the configured
+     * addresses as relays and TURN, never anything else this host knows about itself: with no
+     * addresses configured that leaves TURN alone, which the endpoint warns about when it binds.
+     * Otherwise the configured addresses when there are any, else the fresh STUN mappings and
+     * the endpoint the player typed.
      *
      * @param advertised   The resolved advertised addresses, empty when none are configured
      * @param mediaRelayed Whether PROXY protocol relays front the media port
@@ -75,13 +74,14 @@ public sealed interface CandidateAnnouncement {
      */
     static CandidateAnnouncement of(List<InetSocketAddress> advertised, boolean mediaRelayed,
                                     List<InetSocketAddress> discovered, Optional<InetSocketAddress> typed) {
+        if (mediaRelayed) {
+            return new Relayed(advertised);
+        }
         if (!advertised.isEmpty()) {
-            return mediaRelayed ? new Relayed(advertised) : new Advertised(advertised);
+            return new Advertised(advertised);
         }
         List<InetSocketAddress> added = new ArrayList<>(discovered);
-        if (!mediaRelayed) {
-            typed.ifPresent(added::add);
-        }
+        typed.ifPresent(added::add);
         return added.isEmpty() ? AS_GATHERED : new Added(added);
     }
 

@@ -80,8 +80,9 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      * them: IP literals or unresolved names, port 0 for the media port. Names are looked up once,
      * off the event loop, when the channel binds; until they resolve, answers announce the
      * literals only, and a name that does not resolve closes the channel. Gathered ones narrow the
-     * host candidates to them, others are announced as the public side of a NAT. Empty by
-     * default: answers carry what ICE gathered and the address the player typed.
+     * host candidates to them, others are announced as the public side of a NAT. Behind PROXY
+     * protocol relays these must be the relays' public addresses. Empty by default: answers carry
+     * what ICE gathered and the address the player typed, or behind relays only TURN.
      */
     public static final ChannelOption<List<InetSocketAddress>> NETHER_SERVER_ADVERTISED_ADDRESSES =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_ADVERTISED_ADDRESSES");
