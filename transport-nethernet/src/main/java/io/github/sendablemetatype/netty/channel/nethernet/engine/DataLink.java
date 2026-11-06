@@ -27,8 +27,11 @@ public interface DataLink {
     void send(ByteBuffer message, Consumer<Throwable> completion);
 
     /**
-     * Bytes accepted by {@link #send} and not yet handed to the network. Cheap
-     * to read: no call into the engine's threads.
+     * Bytes passed to {@link #send} and not yet handed to the network, counted
+     * from the moment {@code send} returns, before its completion runs, and
+     * dropped again for a message the engine refused. Cheap to read: no call
+     * into the engine's threads. The transport paces its sends on this, so a
+     * burst of sends must show here at once.
      */
     long queuedBytes();
 
