@@ -329,8 +329,8 @@ class DiagnosticCodecTest {
                 java.util.List.of(
                         new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey(key.keyId(), key.secret())));
         var gate =
-                new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionGate(
-                        io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionGate.Limits.defaults(),
+                new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger(
+                        io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger.Limits.defaults(),
                         validator);
         for (var entry : FIXTURE.getAsJsonArray("vectors")) {
             JsonObject v = entry.getAsJsonObject();

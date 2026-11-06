@@ -92,7 +92,7 @@ class LoginBindingTest extends AdmissionFixture {
     @Test
     void connectedWithoutLoginTimesOutButDecidedSessionsContinue() {
         for (int mode = 0; mode < 3; mode++) {
-            var gate = new AdmissionGate(AdmissionGate.Limits.defaults(), validator());
+            var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
             var r = gate.reserve(request(), now, 0);
             assertTrue(gate.ready(r));
             gate.connected(r);
@@ -102,7 +102,7 @@ class LoginBindingTest extends AdmissionFixture {
             if (mode == 2) {
                 gate.loginDecided(r, false);
             }
-            List<AdmissionGate.Reservation> expected = mode == 1 ? List.of() : List.of(r);
+            List<TicketLedger.Reservation> expected = mode == 1 ? List.of() : List.of(r);
             assertEquals(expected, gate.sweep(now + 30_000, 30_000_000_000L));
             gate.finish(r);
         }
@@ -110,7 +110,7 @@ class LoginBindingTest extends AdmissionFixture {
 
     @Test
     void aRefusedLoginClosesAtOnce() {
-        var gate = new AdmissionGate(AdmissionGate.Limits.defaults(), validator());
+        var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
         var r = gate.reserve(request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
@@ -122,7 +122,7 @@ class LoginBindingTest extends AdmissionFixture {
     void reserveRejectionAndTeardownReleaseTheirOwnBinding() {
         var v = validator();
         var issued = new ArrayList<VerifiedAdmission>();
-        var gate = new AdmissionGate(AdmissionGate.Limits.defaults(), (request, time) -> {
+        var gate = new TicketLedger(TicketLedger.Limits.defaults(), (request, time) -> {
             var a = v.validate(request, time);
             issued.add(a);
             return a;

@@ -20,35 +20,37 @@ import java.net.InetSocketAddress;
 import java.util.*;
 
 /**
- * Bounded admission reservations and the records of used tickets. A ticket reserves one source tuple; the same
- * ticket from another tuple, or another ticket on an occupied tuple, is a replay. A used-ticket record stays until
- * the ticket expires, and when the records are full new admissions are refused rather than old records evicted.
- * Capacity is released only by {@link #finish}, once the peer's resources are gone.
+ * What NXS alone keeps about the tickets it admits: the records of used tickets, which source tuple each holds, and
+ * how its login stands. A ticket reserves one source tuple; the same ticket from another tuple, or another ticket on
+ * an occupied tuple, is a replay. A used-ticket record stays until the ticket expires, and when the records are full
+ * new admissions are refused rather than old records evicted. A reservation ends only by {@link #finish}, once the
+ * peer's resources are gone.
  *
- * <p>The transport's identity verifier reports each login decision through {@link #loginDecided}; a session whose
- * login is refused, revoked, or still undecided at the ticket's deadline is handed back by {@link #sweep} for
- * closing, even when its data channels are open.
+ * <p>The ledger holds no capacity of its own: sessions and pending handshakes are the NetherNet endpoint's one budget
+ * for every join source (ruling A-2), which each admitted ticket passes after the ledger. The used-ticket records
+ * are bounded here, since only NXS has them.
+ *
+ * <p>The host reports each login decision through {@link #loginDecided}; a session whose login is refused, revoked,
+ * or still undecided at the ticket's deadline is handed back by {@link #sweep} for closing, even when its data
+ * channels are open.
  */
-public final class AdmissionGate {
+public final class TicketLedger {
     /**
-     * The gate's bounds.
+     * The ledger's bounds.
      *
-     * @param sessions        Reserved tuples, players connected or connecting
      * @param claims          Used-ticket records, kept until each ticket expires
-     * @param pending         Reservations whose peer is not created yet
      * @param handshakeMillis How long an admitted peer may take to connect
      */
-    public record Limits(int sessions, int claims, int pending, long handshakeMillis) {
+    public record Limits(int claims, long handshakeMillis) {
         public Limits {
-            if (sessions < 1 || sessions > 65536 || claims < sessions || claims > 262144 || pending < 1
-                    || pending > sessions || handshakeMillis < 100 || handshakeMillis > 120_000) {
-                throw new IllegalArgumentException("Admission limits");
+            if (claims < 1 || claims > 262144 || handshakeMillis < 100 || handshakeMillis > 120_000) {
+                throw new IllegalArgumentException("Ticket ledger limits");
             }
         }
 
         /** The limits a host uses unless it has a reason to change them. */
         public static Limits defaults() {
-            return new Limits(1024, 8192, 1024, 15_000);
+            return new Limits(8192, 15_000);
         }
     }
 
@@ -56,7 +58,7 @@ public final class AdmissionGate {
         PENDING, ACCEPTED, REJECTED
     }
 
-    /** One reserved ticket and tuple. Its fields belong to the gate. */
+    /** One reserved ticket and tuple. Its fields belong to the ledger. */
     public static final class Reservation {
         private AdmissionContext admission;
         private final TicketId ticketId;
@@ -79,12 +81,12 @@ public final class AdmissionGate {
             return ticketId;
         }
 
-        /** The client's address this reservation holds. */
+        /** The client's address this reservation holds, or null for an assisted join, which holds none. */
         public InetSocketAddress tuple() {
             return tuple;
         }
 
-        /** When the gate accepted the request, on the clock the caller passed. */
+        /** When the ledger accepted the request, on the clock the caller passed. */
         public long acceptedNanos() {
             return acceptedNanos;
         }
@@ -95,39 +97,31 @@ public final class AdmissionGate {
         }
     }
 
-    /** Counts for monitoring: what the gate holds now, and what it refused or accepted so far. */
-    public record Stats(int sessions, int pending, int claims, long invalid, long replayRejected, long capacityRejected,
+    /** Counts for monitoring: what the ledger holds now, and what it refused or accepted so far. */
+    public record Stats(int sessions, int claims, long invalid, long replayRejected, long capacityRejected,
                         long accepted) {
     }
 
-    /** The refusals at the pending limit since the last warning; see {@link #pollPendingLimitWarning}. */
-    public record PendingLimitWarning(int pending, int limit, long rejected) {
-    }
-
-    private static final long WARNING_INTERVAL_NANOS = 5_000_000_000L;
     private final Limits limits;
     private final AdmissionValidator validator;
     private final Map<TicketId, Reservation> claims = new HashMap<>();
     private final Map<InetSocketAddress, Reservation> tuples = new HashMap<>();
-    private int pending;
+    private int sessions;
     private boolean draining, closed;
     private long invalid, replayRejected, capacityRejected, accepted;
-    private long pendingLimitRejected, lastPendingWarningNanos;
-    private int pendingAtRejection;
-    private boolean pendingWarningEmitted;
 
     /**
-     * @param validator Checks each request before the gate reserves anything for it
+     * @param validator Checks each request before the ledger reserves anything for it
      */
-    public AdmissionGate(Limits limits, AdmissionValidator validator) {
+    public TicketLedger(Limits limits, AdmissionValidator validator) {
         this.limits = Objects.requireNonNull(limits);
         this.validator = Objects.requireNonNull(validator);
     }
 
     /**
-     * Reserves capacity after token validation. Native STUN verification must still succeed.
+     * Reserves the ticket after token validation. Native STUN verification must still succeed.
      *
-     * @return The reservation, or null when the ticket is invalid, replayed or over capacity
+     * @return The reservation, or null when the ticket is invalid, replayed or the records are full
      */
     public synchronized Reservation reserve(AdmissionRequest request, long nowMillis, long nowNanos) {
         if (closed) {
@@ -142,8 +136,11 @@ public final class AdmissionGate {
     }
 
     /**
-     * Reserves capacity for a join authenticated some other way, such as an assisted join over the provider's
-     * WebSocket. Releases the admission's login binding when it refuses.
+     * Reserves a join authenticated some other way, such as an assisted join over the provider's WebSocket. Releases
+     * the admission's login binding when it refuses.
+     *
+     * @param address The source tuple the ticket holds; null for an assisted join, which only knows the candidates
+     *                the client claims, so it is kept by its ticket alone (area 9, finding F4)
      */
     public synchronized Reservation reserveAuthenticated(AdmissionContext admission, InetSocketAddress address,
                                                          long nowMillis, long nowNanos) {
@@ -152,32 +149,22 @@ public final class AdmissionGate {
             admission.loginBinding().release();
             return null;
         }
-        if (claims.containsKey(admission.ticketId()) || tuples.containsKey(address)) {
+        if (claims.containsKey(admission.ticketId()) || (address != null && tuples.containsKey(address))) {
             replayRejected++;
             admission.loginBinding().release();
             return null;
         }
-        if (draining) {
-            capacityRejected++;
-            admission.loginBinding().release();
-            return null;
-        }
-        if (pending >= limits.pending()) {
-            capacityRejected++;
-            pendingLimitRejected++;
-            pendingAtRejection = pending;
-            admission.loginBinding().release();
-            return null;
-        }
-        if (tuples.size() >= limits.sessions() || claims.size() >= limits.claims()) {
+        if (draining || claims.size() >= limits.claims()) {
             capacityRejected++;
             admission.loginBinding().release();
             return null;
         }
         Reservation reservation = new Reservation(admission, address, nowMillis, nowNanos);
         claims.put(reservation.ticketId, reservation);
-        tuples.put(reservation.tuple, reservation);
-        pending++;
+        if (address != null) {
+            tuples.put(address, reservation);
+        }
+        sessions++;
         return reservation;
     }
 
@@ -186,15 +173,12 @@ public final class AdmissionGate {
         return current(reservation) && !reservation.closing ? reservation.admission : null;
     }
 
-    /**
-     * Native STUN verification and peer creation succeeded. A used ticket cannot allocate another peer.
-     */
+    /** The peer was created for the reservation. A used ticket cannot allocate another peer. */
     public synchronized boolean ready(Reservation reservation) {
         if (!current(reservation) || reservation.closing || reservation.ready) {
             return false;
         }
         reservation.ready = true;
-        pending--;
         accepted++;
         return true;
     }
@@ -217,22 +201,22 @@ public final class AdmissionGate {
         }
     }
 
-    /** Counts a request the endpoint rejected before it reached the gate, so {@link #stats} include it. */
+    /** Counts a request the endpoint rejected before it reached the ledger, so {@link #stats} include it. */
     public synchronized void invalidNativeRequest() {
         invalid++;
     }
 
     /**
-     * Call only once native teardown is complete, or when native creation never started.
+     * Call only once the peer's teardown is complete, or when no peer was ever created.
      */
     public synchronized boolean finish(Reservation reservation) {
         if (!current(reservation)) {
             return false;
         }
-        if (!reservation.ready) {
-            pending--;
+        sessions--;
+        if (reservation.tuple != null) {
+            tuples.remove(reservation.tuple);
         }
-        tuples.remove(reservation.tuple);
         reservation.closed = true;
         reservation.admission.loginBinding().release();
         reservation.admission = null;
@@ -248,8 +232,8 @@ public final class AdmissionGate {
     }
 
     /**
-     * Marks for closing the sessions whose login was refused or lapsed and the handshakes that timed out. Capacity
-     * stays reserved until {@link #finish} is called for each.
+     * Marks for closing the sessions whose login was refused or lapsed and the handshakes that timed out. Each stays
+     * reserved until {@link #finish} is called for it.
      */
     public synchronized List<Reservation> sweep(long nowMillis, long nowNanos) {
         List<Reservation> timedOut = new ArrayList<>();
@@ -282,10 +266,14 @@ public final class AdmissionGate {
         return !closed && !draining;
     }
 
-    /** @return The sessions still reserved, each now closing; finish each once its peer is gone */
+    /**
+     * Refuses new reservations and revokes the pending logins.
+     *
+     * @return The sessions still reserved, each now closing; finish each once its peer is gone
+     */
     public synchronized List<Reservation> close() {
         closed = true;
-        List<Reservation> active = new ArrayList<>(tuples.values());
+        List<Reservation> active = claims.values().stream().filter(reservation -> !reservation.closed).toList();
         for (Reservation reservation : active) {
             reservation.closing = true;
             reservation.admission.loginBinding().release();
@@ -296,23 +284,6 @@ public final class AdmissionGate {
 
     /** The current counts. */
     public synchronized Stats stats() {
-        return new Stats(tuples.size(), pending, claims.size(), invalid, replayRejected, capacityRejected, accepted);
-    }
-
-    /**
-     * One aggregate warning about refusals at the pending limit, at most every five seconds.
-     *
-     * @return The warning, or null when none is due
-     */
-    public synchronized PendingLimitWarning pollPendingLimitWarning(long nowNanos) {
-        if (pendingLimitRejected == 0 || (pendingWarningEmitted
-                && nowNanos - lastPendingWarningNanos < WARNING_INTERVAL_NANOS)) {
-            return null;
-        }
-        var warning = new PendingLimitWarning(pendingAtRejection, limits.pending(), pendingLimitRejected);
-        pendingLimitRejected = 0;
-        lastPendingWarningNanos = nowNanos;
-        pendingWarningEmitted = true;
-        return warning;
+        return new Stats(sessions, claims.size(), invalid, replayRejected, capacityRejected, accepted);
     }
 }
