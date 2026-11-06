@@ -8,10 +8,17 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOp
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerThrottle;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateAnnouncement;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
@@ -87,7 +94,9 @@ import java.util.function.Supplier;
  * login; the throttle and the budget apply to it all the same. A refused join gets a typed
  * {@link JoinRefusal} through its reply path and creates nothing. A join holds its share of the
  * budget and its throttle entry until its child's {@linkplain NetherNetChannel#termination()
- * termination} completed.
+ * termination} completed. A source may also open peers on the shared ICE port that carry no player
+ * ({@link SharedIcePort#openPeer}, NXS connectivity checks): no child, no session, one pending
+ * handshake each until the peer's termination completed.
  *
  * <p><b>Identity.</b> One {@link ServerIdentity}, set with
  * {@link NetherChannelOption#NETHER_SERVER_IDENTITY}, signs the answers of every source. Binding
@@ -117,6 +126,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final AdmissionGate gate = new AdmissionGate();
     /** Children whose termination has not completed yet. */
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
+    /** Peers without a child that sources opened on the shared port, until their termination completed. */
+    private final Set<ChildlessPeer> childless = ConcurrentHashMap.newKeySet();
     /** Joins in the admission stage, which closing the endpoint or removing their source ends. */
     private final Set<Admission> admitting = ConcurrentHashMap.newKeySet();
     /** The one source's hold on the shared port's held checks, if any source took them. */
@@ -273,6 +284,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         withdrawAdmissions(registration);
         registration.releaseHeldChecks();
         closeQuietly(source);
+        for (ChildlessPeer peer : childless) {
+            if (peer.from == registration) {
+                peer.close();
+            }
+        }
         return true;
     }
 
@@ -379,6 +395,101 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         @Override
         public CompletionStage<IceEndpoint.StunMonitor> monitorStun(InetSocketAddress server) {
             return endpoint.monitorStun(server);
+        }
+
+        @Override
+        public Optional<Peer> openPeer(IceCredentials credentials, DtlsIdentity identity, PeerListener listener) {
+            Objects.requireNonNull(credentials, "credentials");
+            Objects.requireNonNull(identity, "identity");
+            Objects.requireNonNull(listener, "listener");
+            NetherNetEngine current = engine.current();
+            if (current == null || !open || from.removed) {
+                return Optional.empty();
+            }
+            AdmissionGate.Reservation slot = gate.reservePending(config.getMaxPendingJoins());
+            if (slot == null) {
+                return Optional.empty();
+            }
+            Peer peer;
+            try {
+                peer = current.createPeer(new PeerConfig(PeerConfig.Role.ANSWERER, List.of(),
+                        config.getCandidatePolicy(), endpoint, identity, credentials), listener);
+            } catch (IllegalStateException engineClosed) {
+                slot.release();
+                return Optional.empty();
+            } catch (RuntimeException e) {
+                slot.release();
+                throw e;
+            }
+            ChildlessPeer held = new ChildlessPeer(peer, slot, from);
+            childless.add(held);
+            if (!open || from.removed) {
+                // Closed or removed meanwhile, after the close that would have found it.
+                held.close();
+                return Optional.empty();
+            }
+            return Optional.of(held);
+        }
+    }
+
+    /** A peer without a child, which holds its pending handshake until its termination completed. */
+    private final class ChildlessPeer implements Peer {
+        private final Peer peer;
+        private final AdmissionGate.Reservation slot;
+        private final Registration from;
+        private final AtomicBoolean closing = new AtomicBoolean();
+
+        private ChildlessPeer(Peer peer, AdmissionGate.Reservation slot, Registration from) {
+            this.peer = peer;
+            this.slot = slot;
+            this.from = from;
+        }
+
+        @Override
+        public CompletionStage<String> answer(String offer) {
+            return peer.answer(offer);
+        }
+
+        @Override
+        public CompletionStage<String> offer() {
+            return peer.offer();
+        }
+
+        @Override
+        public CompletionStage<Void> applyAnswer(String answer) {
+            return peer.applyAnswer(answer);
+        }
+
+        @Override
+        public void addRemoteCandidate(String candidate, String mid) {
+            peer.addRemoteCandidate(candidate, mid);
+        }
+
+        @Override
+        public CompletionStage<String> gatheredLocalDescription() {
+            return peer.gatheredLocalDescription();
+        }
+
+        @Override
+        public DataLink openChannel(ChannelParameters parameters) {
+            return peer.openChannel(parameters);
+        }
+
+        @Override
+        public CompletionStage<TransportMetrics> metrics() {
+            return peer.metrics();
+        }
+
+        @Override
+        public CompletionStage<Void> close() {
+            CompletionStage<Void> terminated = peer.close();
+            if (closing.compareAndSet(false, true)) {
+                terminated.whenComplete((ignored, failure) -> {
+                    childless.remove(this);
+                    slot.release();
+                });
+            }
+            return terminated;
         }
     }
 
@@ -673,6 +784,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         for (NetherNetChildChannel child : live) {
             terminations.add(child.termination().toCompletableFuture());
             child.close();
+        }
+        for (ChildlessPeer peer : childless) {
+            terminations.add(peer.close().toCompletableFuture());
         }
         Bound settings = bound;
         if (settings != null) {

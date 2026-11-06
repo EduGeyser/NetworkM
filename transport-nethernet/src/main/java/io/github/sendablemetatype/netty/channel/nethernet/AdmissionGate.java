@@ -5,7 +5,8 @@ package io.github.sendablemetatype.netty.channel.nethernet;
  * admission until its connection's termination completed, and pending handshakes, held from
  * admission until the connection goes active or its termination completed. Joins waiting for
  * their identity check count as pending, so the pending budget also bounds the checks in flight
- * and the peers still tearing down that never went active. Thread-safe.
+ * and the peers still tearing down that never went active. A peer that carries no player (an NXS
+ * connectivity check) holds a pending handshake for its whole life and no session. Thread-safe.
  */
 final class AdmissionGate {
     // Guarded by this.
@@ -33,7 +34,21 @@ final class AdmissionGate {
         }
         sessions++;
         pending++;
-        return new Reservation();
+        return new Reservation(true);
+    }
+
+    /**
+     * Takes one pending handshake and no session, for a peer that carries no player.
+     *
+     * @param maxPending the most pending handshakes at once
+     * @return the reservation, or null when the pending budget is spent
+     */
+    synchronized Reservation reservePending(int maxPending) {
+        if (pending >= maxPending) {
+            return null;
+        }
+        pending++;
+        return new Reservation(false);
     }
 
     synchronized int sessions() {
@@ -47,9 +62,10 @@ final class AdmissionGate {
     /** What one join holds. Each part is given back once, however often it is released. */
     final class Reservation {
         private boolean pendingHeld = true;
-        private boolean sessionHeld = true;
+        private boolean sessionHeld;
 
-        private Reservation() {
+        private Reservation(boolean session) {
+            this.sessionHeld = session;
         }
 
         /** The connection went active: it is no longer a pending handshake. */

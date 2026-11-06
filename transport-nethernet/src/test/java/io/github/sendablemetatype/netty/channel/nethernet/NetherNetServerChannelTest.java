@@ -4,19 +4,27 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -29,6 +37,7 @@ import org.junit.jupiter.api.Timeout;
 import java.net.BindException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -405,6 +414,65 @@ class NetherNetServerChannelTest {
         assertThrows(IllegalStateException.class, () -> harness.server.addSource(new FakeJoinSource(true)));
     }
 
+    // Peers without a child.
+
+    @Test
+    void aPeerWithoutAChildHoldsAPendingHandshakeUntilItsTerminationCompleted() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_MAX_PENDING_JOINS, 1);
+        harness.engine.holdPeerClose(true);
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource source = harness.source(true);
+        harness.sync();
+        SharedIcePort port = source.sink.sharedIcePort().orElseThrow();
+        IceCredentials credentials = new IceCredentials("NXS1K001check", "checkpassword0123456789");
+        DtlsIdentity identity = new DtlsIdentity("certificate", "key");
+
+        Peer peer = port.openPeer(credentials, identity, new Silent()).orElseThrow();
+        FakePeer created = harness.engine.lastPeer();
+        assertEquals(PeerConfig.Role.ANSWERER, created.config().role());
+        assertEquals(credentials, created.config().localCredentials());
+        assertSame(identity, created.config().identity());
+        assertEquals(((InetSocketAddress) server.localAddress()).getPort(), created.config().endpoint().port());
+        assertEquals(0, server.gate().sessions(), "it is no player");
+        assertEquals(1, server.gate().pending());
+        assertTrue(port.openPeer(credentials, identity, new Silent()).isEmpty(), "the budget is spent");
+        assertFalse(source.sink.admits(SourcedAddress.unknown()), "joins share the budget");
+
+        peer.close();
+        harness.sync();
+        assertEquals(1, server.gate().pending(), "a peer still tearing down keeps its share");
+        created.finishClose();
+        assertEquals(0, server.gate().pending());
+        assertTrue(harness.children.isEmpty());
+    }
+
+    @Test
+    void closingTheEndpointOrRemovingTheSourceClosesItsPeersWithoutAChild() throws Exception {
+        harness.bind();
+        FakeJoinSource removed = harness.source(true);
+        FakeJoinSource kept = harness.source(true);
+        harness.sync();
+        IceCredentials credentials = new IceCredentials("NXS1K001check", "checkpassword0123456789");
+        DtlsIdentity identity = new DtlsIdentity("certificate", "key");
+        removed.sink.sharedIcePort().orElseThrow().openPeer(credentials, identity, new Silent())
+                .orElseThrow();
+        FakePeer ofRemoved = harness.engine.lastPeer();
+        SharedIcePort port = kept.sink.sharedIcePort().orElseThrow();
+        port.openPeer(credentials, identity, new Silent()).orElseThrow();
+        FakePeer ofKept = harness.engine.lastPeer();
+
+        harness.server.removeSource(removed);
+        assertTrue(ofRemoved.terminated());
+        assertFalse(ofKept.closeCalled());
+        assertTrue(removed.sink.sharedIcePort().orElseThrow()
+                .openPeer(credentials, identity, new Silent()).isEmpty(), "a removed source opens none");
+
+        harness.server.close().sync();
+        assertTrue(ofKept.terminated());
+        assertEquals(0, harness.server.gate().pending());
+        assertTrue(port.openPeer(credentials, identity, new Silent()).isEmpty());
+    }
+
     private ServerBootstrap owned(Supplier<? extends NetherNetEngine> engines) {
         return bootstrap(EngineRef.owned(engines));
     }
@@ -417,6 +485,54 @@ class NetherNetServerChannelTest {
                 .option(NetherChannelOption.NETHER_SERVER_IDENTITY, EndpointHarness.IDENTITY)
                 .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, new OfferCheck(List.of()))
                 .childHandler(new ChannelInboundHandlerAdapter());
+    }
+
+    /** A listener that ignores the peer's events. */
+    private static final class Silent implements PeerListener {
+        @Override
+        public void onLocalCandidate(String candidate, String mid) {
+        }
+
+        @Override
+        public void onGatheringComplete() {
+        }
+
+        @Override
+        public boolean onRemoteChannel(DataLink link) {
+            return false;
+        }
+
+        @Override
+        public void onChannelOpen(DataLink link) {
+        }
+
+        @Override
+        public void onMessage(DataLink link, ByteBuffer message) {
+        }
+
+        @Override
+        public void onQueueLow(DataLink link) {
+        }
+
+        @Override
+        public void onChannelClosed(DataLink link, CloseCause cause) {
+        }
+
+        @Override
+        public void onPathSelected(TransportPath path) {
+        }
+
+        @Override
+        public void onStateChange(PeerState state) {
+        }
+
+        @Override
+        public void onIceStateChange(IceState state) {
+        }
+
+        @Override
+        public void onClosed(CloseCause cause) {
+        }
     }
 
     /** The fake engine, with shared ICE ports that open only once the test completes {@link #open}. */
