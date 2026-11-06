@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import com.sun.net.httpserver.HttpServer;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetHttpClientSignaling.Probe;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings;
@@ -277,6 +278,33 @@ class NetherNetHttpClientSignalingTest {
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
 
         assertTrue(nextSignal().startsWith(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID));
+    }
+
+    @Test
+    void aFailureReachesATypedHandlerWithItsReason() throws Exception {
+        startForeign(200, "37", null);
+        BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
+        NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(
+                trusting().withScheme(Scheme.HTTP), group, "client-1");
+        client.setSignalHandler(CONNECTION_ID, new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(String signal) {
+                signals.add(signal);
+            }
+
+            @Override
+            public void onFailure(long connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        });
+        client.connect(address).get(15, TimeUnit.SECONDS);
+
+        client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+
+        SignalingFailure failure = failures.poll(15, TimeUnit.SECONDS);
+        assertEquals(new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR, JoinRefusal.INTERNAL.errorCode(),
+                "HTTP 200 without an SDP answer: 37"), failure);
+        assertTrue(signals.isEmpty());
     }
 
     @Test

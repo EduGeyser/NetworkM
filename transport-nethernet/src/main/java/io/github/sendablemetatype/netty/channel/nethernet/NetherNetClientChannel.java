@@ -13,6 +13,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -193,9 +195,22 @@ public class NetherNetClientChannel extends NetherNetChannel {
         try {
             signaling.setNotFoundHandler(reason -> executeForAttempt(gen, () ->
                     failHandshake(gen, "Target Network ID " + this.targetNetworkId + " not found or offline", null)));
-            signaling.setSignalHandler(this.connectionId, signal -> {
-                if (isCurrentAttempt(gen)) {
-                    handleSignal(signal);
+            signaling.setSignalHandler(this.connectionId, new NetherNetSignaling.SignalHandler() {
+                @Override
+                public void onSignal(String signal) {
+                    if (isCurrentAttempt(gen)) {
+                        handleSignal(signal);
+                    }
+                }
+
+                @Override
+                public void onFailure(long id, SignalingFailure failure) {
+                    executeForAttempt(gen, () -> {
+                        if (isCurrentHandshake(gen)) {
+                            connectionFailed(failure.failure());
+                            failHandshake(gen, "The signaling gave up on the offer: " + failure.reason(), null);
+                        }
+                    });
                 }
             });
             signaling.connect(remoteAddress).whenComplete((iceServers, failure) -> executeForAttempt(gen, () -> {

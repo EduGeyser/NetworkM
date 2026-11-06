@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings;
@@ -94,8 +95,8 @@ import java.util.function.Function;
  * not a NetherNet status (a web page, say) fails it too. The offer then goes out as
  * {@code POST /v1/join/{localNetworkId}} on the scheme that answered, and its answer comes back as
  * a {@code CONNECTRESPONSE} signal; a refusal, a {@code 2xx} without an SDP (vanilla BDS answers a
- * refused offer with {@code 200} and body {@code 37}) or a transport failure as a
- * {@code CONNECTERROR}. HTTP carries nothing after the offer, so the offer has to hold every
+ * refused offer with {@code 200} and body {@code 37}), no answer in time or a transport failure
+ * as a {@link SignalingFailure}. HTTP carries nothing after the offer, so the offer has to hold every
  * candidate; candidate signals are dropped.
  * <p>
  * Requests are HTTP/1.1 with {@code Connection: close}, follow no redirects, and quote at most
@@ -256,8 +257,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         Target current = target;
         if (closed || current == null) {
-            fail(connectionId, current, "HTTP client signaling is " + (closed ? "closed" : "not connected"),
-                    JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
+                    JoinRefusal.INTERNAL.errorCode(), "HTTP client signaling is " + (closed ? "closed" : "not connected")));
             return;
         }
         String path = "/v1/join/" + URLEncoder.encode(localNetworkId, StandardCharsets.UTF_8).replace("+", "%20");
@@ -275,21 +276,23 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         if (error != null) {
             Throwable cause = unwrap(error);
-            fail(connectionId, current, "could not reach the signaling endpoint: " + describe(cause),
-                    cause instanceof TimeoutException ? JoinRefusal.NO_ANSWER_IN_TIME.errorCode()
-                            : JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, cause instanceof TimeoutException
+                    ? new SignalingFailure(NetherConnectionFailure.HANDSHAKE_TIMEOUT,
+                            JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), "the signaling endpoint did not answer in time")
+                    : new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED, JoinRefusal.INTERNAL.errorCode(),
+                            "could not reach the signaling endpoint: " + describe(cause)));
             return;
         }
         if (response.status() / 100 != 2) {
-            fail(connectionId, current, "HTTP " + response.status() + reason(response.body()),
-                    errorCodeFor(response.status()));
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
+                    errorCodeFor(response.status()), "HTTP " + response.status() + reason(response.body())));
             return;
         }
         // A refusal can arrive as a 2xx with a short body instead of an SDP, as vanilla BDS does
         if (!response.body().startsWith("v=")) {
-            fail(connectionId, current,
-                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body()),
-                    JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
+                    JoinRefusal.INTERNAL.errorCode(),
+                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body())));
             return;
         }
         SignalHandler handler = handlers.get(connectionId);
@@ -298,12 +301,11 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
     }
 
-    private void fail(long connectionId, Target current, String reason, int errorCode) {
-        log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), reason);
+    private void fail(long connectionId, Target current, SignalingFailure failure) {
+        log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), failure.reason());
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
-            handler.onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " "
-                    + Long.toUnsignedString(connectionId) + " " + errorCode);
+            handler.onFailure(connectionId, failure);
         }
     }
 

@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+
 public interface NetherNetSignaling extends AutoCloseable {
 
     /**
@@ -47,5 +49,18 @@ public interface NetherNetSignaling extends AutoCloseable {
          * @param signal The raw signal payload.
          */
         void onSignal(String signal);
+
+        /**
+         * Called when client signaling gave up on the offer of the registered connection ID. By
+         * default this arrives as a {@code CONNECTERROR} signal with the failure's error code, which
+         * drops the reason.
+         *
+         * @param connectionId the registered connection ID
+         * @param failure      why the signaling gave up
+         */
+        default void onFailure(long connectionId, SignalingFailure failure) {
+            onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId)
+                    + " " + failure.errorCode());
+        }
     }
 }

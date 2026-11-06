@@ -1,6 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
@@ -10,6 +12,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
@@ -122,6 +125,33 @@ class NetherNetClientChannelTest {
             assertEquals(1, h.signaling.connections.size());
             h.advance(1);
             assertEquals(2, h.signaling.connections.size(), "once answered, the handshake timeout applies");
+        }
+    }
+
+    @Test
+    void aSignalingFailureEndsTheConnectWithItsReasonAndFailure() {
+        try (Harness h = new Harness()) {
+            List<NetherConnectionFailure> failures = new ArrayList<>();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void connectionFailed(NetherConnectionFailure reason) {
+                    failures.add(reason);
+                }
+            });
+            ChannelFuture connect = h.connect();
+            h.start().completeOffer(OFFER);
+            h.pump();
+
+            h.signaling.signalHandlers.getLast().onFailure(h.connectionId(),
+                    new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR, 16, "HTTP 401"));
+            h.pump();
+
+            ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
+            assertTrue(failure.getMessage().endsWith(": HTTP 401"), failure.getMessage());
+            assertEquals(List.of(NetherConnectionFailure.CONNECT_ERROR), failures);
+            assertFalse(h.channel.isOpen());
+            h.advance(1000);
+            assertEquals(1, h.signaling.connections.size(), "no retry after the server refused");
         }
     }
 
