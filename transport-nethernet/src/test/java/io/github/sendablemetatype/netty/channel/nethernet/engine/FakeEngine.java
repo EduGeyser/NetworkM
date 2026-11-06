@@ -106,6 +106,11 @@ public final class FakeEngine implements NetherNetEngine {
         return List.copyOf(peers);
     }
 
+    /** Every endpoint opened so far, in order. */
+    public List<FakeIceEndpoint> endpoints() {
+        return List.copyOf(endpoints);
+    }
+
     public FakePeer peer(int index) {
         return peers.get(index);
     }

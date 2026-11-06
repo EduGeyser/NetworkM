@@ -7,12 +7,16 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
  * An {@link IceEndpoint} of {@link FakeEngine} that binds nothing. It records
- * its settings and lets a test hand held checks to the handler.
+ * its settings, lets a test hand held checks to the handler, and lets STUN
+ * monitors report the mappings a test scripts.
  */
 public final class FakeIceEndpoint implements IceEndpoint {
     private final int port;
@@ -20,6 +24,9 @@ public final class FakeIceEndpoint implements IceEndpoint {
     private volatile Executor executor;
     private volatile List<String> relays = List.of();
     private volatile Map<String, byte[]> derivedKeys = Map.of();
+    private final Map<InetSocketAddress, InetSocketAddress> stunMappings = new ConcurrentHashMap<>();
+    private final List<InetSocketAddress> stunMonitors = new CopyOnWriteArrayList<>();
+    private final AtomicInteger stunReads = new AtomicInteger();
     private volatile boolean closed;
 
     FakeIceEndpoint(int port) {
@@ -76,6 +83,7 @@ public final class FakeIceEndpoint implements IceEndpoint {
             return CompletableFuture.failedFuture(new IllegalStateException("The endpoint is closed"));
         }
         InetSocketAddress local = new InetSocketAddress(port);
+        stunMonitors.add(server);
         return CompletableFuture.completedFuture(new StunMonitor() {
             private volatile boolean stopped;
 
@@ -84,8 +92,12 @@ public final class FakeIceEndpoint implements IceEndpoint {
                 if (stopped || closed) {
                     return CompletableFuture.failedFuture(new IllegalStateException("The monitor is closed"));
                 }
-                return CompletableFuture.completedFuture(
-                        new StunReading(server, local, null, StunReading.State.PENDING, 0, 0, 0, Optional.empty()));
+                stunReads.incrementAndGet();
+                InetSocketAddress mapped = stunMappings.get(server);
+                return CompletableFuture.completedFuture(mapped == null
+                        ? new StunReading(server, local, null, StunReading.State.PENDING, 0, 0, 0, Optional.empty())
+                        : new StunReading(server, local, mapped, StunReading.State.SUCCEEDED, 1, 0, 1,
+                                Optional.of(Duration.ZERO)));
             }
 
             @Override
@@ -117,6 +129,26 @@ public final class FakeIceEndpoint implements IceEndpoint {
 
     public Map<String, byte[]> derivedKeys() {
         return derivedKeys;
+    }
+
+    /** Whether a held check handler is set. */
+    public boolean holdsChecks() {
+        return handler != null;
+    }
+
+    /** Makes monitors of this server report this mapping, answered just now. */
+    public void mapStun(InetSocketAddress server, InetSocketAddress mapped) {
+        stunMappings.put(server, mapped);
+    }
+
+    /** The servers monitors were opened for, in order. */
+    public List<InetSocketAddress> stunMonitors() {
+        return List.copyOf(stunMonitors);
+    }
+
+    /** How many monitor reads ran. */
+    public int stunReads() {
+        return stunReads.get();
     }
 
     /** Hands a held check to the handler on its executor; false if none is set. */

@@ -15,6 +15,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateAnnouncement;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
@@ -41,6 +42,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -92,7 +94,9 @@ import java.util.function.Supplier;
  * opens the port after bind returned, and the sources start once it is open; a port that fails
  * to open then closes the endpoint, with the error logged. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
- * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead.
+ * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead. On the shared
+ * port, {@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS} keeps STUN bindings alive from it and
+ * answers announce the fresh mappings.
  *
  * <p>The child is exposed as soon as its join is admitted. It owns its engine peer from creation
  * and negotiates in its own initializer once registered. The engine is either the caller's, which
@@ -127,6 +131,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /** What answers announce: the literal advertised entries, then every entry once names resolved. */
     private volatile List<InetSocketAddress> advertised = List.of();
     private volatile Bound bound;
+    /** Polls STUN discovery on the event loop; null without discovery. Event loop only. */
+    private ScheduledFuture<?> discoveryRefresh;
     private volatile boolean open = true;
 
     /** Creates an endpoint with an engine of its own, created when it binds and closed with it. */
@@ -184,8 +190,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param answers what every join answers with
      * @param relays the PROXY protocol relays in front of the ICE port, empty for none
      * @param offerCheck checks every join's identity
+     * @param stunServers the STUN servers discovery asks, empty for none
+     * @param stunMaxAge how long a discovered mapping counts
      */
-    private record BindPlan(ServerJoin.Settings answers, List<String> relays, OfferCheck offerCheck) {
+    private record BindPlan(ServerJoin.Settings answers, List<String> relays, OfferCheck offerCheck,
+                            List<InetSocketAddress> stunServers, Duration stunMaxAge) {
     }
 
     /**
@@ -195,9 +204,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param iceEndpoint the shared ICE port, or null when each session takes its own
      * @param offerCheck checks every join's identity
      * @param checkExecutor runs the checks, off the event loop
+     * @param discovery the STUN mappings answers announce, or null without discovery
      */
     private record Bound(ServerJoin.Settings answers, IceEndpoint iceEndpoint, OfferCheck offerCheck,
-                         ExecutorService checkExecutor) {
+                         ExecutorService checkExecutor, StunDiscovery discovery) {
     }
 
     // ---- Sources ----
@@ -324,6 +334,20 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // Literals count against the limit now; this looks nothing up.
         List<InetSocketAddress> literals = AdvertisedAddresses.resolve(
                 configured.stream().filter(endpoint -> !endpoint.isUnresolved()).toList());
+        List<InetSocketAddress> stunServers = config.getStunServers();
+        if (!stunServers.isEmpty()) {
+            if (!shared) {
+                throw new IllegalStateException("STUN discovery needs the shared ICE port: a port window has no fixed "
+                        + "port whose mapping it could learn");
+            }
+            if (relayed) {
+                throw new IllegalStateException("PROXY protocol relays front the ICE port, so STUN discovery would "
+                        + "announce an address players cannot reach");
+            }
+            if (!configured.isEmpty()) {
+                throw new IllegalStateException("STUN discovery and advertised addresses cannot both be set");
+            }
+        }
         if (relayed && configured.isEmpty()) {
             log.warn("PROXY protocol relays front the ICE port, but no advertised addresses name them: answers "
                     + "name this host, and players can only connect if something in front of signaling rewrites them");
@@ -353,7 +377,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
         ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(), icePort,
                 relayed);
-        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), offerCheck);
+        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), offerCheck,
+                stunServers, config.getStunMaxAge());
 
         CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
                 : opening.toCompletableFuture();
@@ -463,9 +488,18 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if (endpoint != null && !plan.relays().isEmpty()) {
             endpoint.proxyRelays(plan.relays());
         }
+        StunDiscovery discovery = null;
+        if (endpoint != null && !plan.stunServers().isEmpty()) {
+            discovery = new StunDiscovery(plan.stunServers(), plan.stunMaxAge(), endpoint.port(),
+                    StunObserver.sharedPort(endpoint::monitorStun,
+                            task -> Thread.ofVirtual().name("nethernet-stun-lookup").start(task)),
+                    System::nanoTime);
+            long period = StunDiscovery.REFRESH.toNanos();
+            discoveryRefresh = eventLoop().scheduleAtFixedRate(discovery::refresh, period, period, TimeUnit.NANOSECONDS);
+        }
         // NXS stateless joins are no join source: they arrive at the shared port, as checks it holds
         // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
-        this.bound = new Bound(plan.answers(), endpoint, plan.offerCheck(), checkExecutors.get());
+        this.bound = new Bound(plan.answers(), endpoint, plan.offerCheck(), checkExecutors.get(), discovery);
         log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
                 endpoint != null ? "shared ICE port" : "ICE ports per session",
                 plan.answers().identity().fingerprint());
@@ -504,6 +538,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         Bound settings = bound;
         if (settings != null) {
             settings.checkExecutor().shutdownNow();
+            if (settings.discovery() != null) {
+                // Before the port closes, so the monitors close on an endpoint that is still there.
+                discoveryRefresh.cancel(false);
+                settings.discovery().close();
+            }
         }
         // The shared port closes once no peer uses it anymore, also when it is still opening, then
         // an owned engine releases its threads; a shared engine stays with its owner.
@@ -861,7 +900,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /**
      * What a join's answer announces: the advertised addresses (as relays behind PROXY protocol
-     * relays), or else the address the player typed, when the source knows it.
+     * relays), or else the fresh STUN mappings and the address the player typed, when the source
+     * knows it.
      */
     private static CandidateAnnouncement announcement(Join join, Bound settings, List<InetSocketAddress> advertised) {
         int icePort = settings.answers().icePort();
@@ -870,8 +910,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             typed = CandidateAnnouncement.typedEndpoint(addressed.host(), addressed.viaTrustedProxy(), icePort,
                     addressed.localPort() == icePort);
         }
-        // STUN discovery (ruling G-6, item 1) would add its fresh mappings here.
-        return CandidateAnnouncement.of(advertised, settings.answers().relayed(), List.of(), typed);
+        List<InetSocketAddress> discovered = settings.discovery() == null ? List.of() : settings.discovery().fresh();
+        return CandidateAnnouncement.of(advertised, settings.answers().relayed(), discovered, typed);
     }
 
     private void serverMetrics(Consumer<NetherServerMetrics> event) {

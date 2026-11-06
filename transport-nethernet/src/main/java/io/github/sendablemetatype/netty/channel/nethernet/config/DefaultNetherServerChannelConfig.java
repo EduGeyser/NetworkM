@@ -7,12 +7,14 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig {
     public static final int DEFAULT_OFFER_CHECK_TIMEOUT_MILLIS = 10_000;
     public static final int DEFAULT_MAX_PENDING_JOINS = 256;
+    public static final Duration DEFAULT_STUN_MAX_AGE = Duration.ofMinutes(5);
 
     private volatile int serverRtcHandshakeTimeoutSeconds = 30;
     private volatile NetherServerMetrics serverMetrics;
@@ -24,6 +26,8 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
     private volatile int maxPendingJoins = DEFAULT_MAX_PENDING_JOINS;
     private volatile boolean sharedIcePort = true;
     private volatile List<InetSocketAddress> advertisedAddresses = List.of();
+    private volatile List<InetSocketAddress> stunServers = List.of();
+    private volatile Duration stunMaxAge = DEFAULT_STUN_MAX_AGE;
     private volatile boolean inferPeerCandidates = true;
     private volatile TrustedProxies trustedProxies = TrustedProxies.NONE;
     private volatile boolean preferProxiedAddress;
@@ -46,6 +50,8 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
                 NetherChannelOption.NETHER_SERVER_MAX_PENDING_JOINS,
                 NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT,
                 NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES,
+                NetherChannelOption.NETHER_SERVER_STUN_SERVERS,
+                NetherChannelOption.NETHER_SERVER_STUN_MAX_AGE,
                 NetherChannelOption.NETHER_SERVER_INFER_PEER_CANDIDATES,
                 NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
                 NetherChannelOption.NETHER_SERVER_PREFER_PROXIED_ADDRESS
@@ -76,6 +82,10 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
             value = sharedIcePort;
         } else if (option == NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES) {
             value = advertisedAddresses;
+        } else if (option == NetherChannelOption.NETHER_SERVER_STUN_SERVERS) {
+            value = stunServers;
+        } else if (option == NetherChannelOption.NETHER_SERVER_STUN_MAX_AGE) {
+            value = stunMaxAge;
         } else if (option == NetherChannelOption.NETHER_SERVER_INFER_PEER_CANDIDATES) {
             value = inferPeerCandidates;
         } else if (option == NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES) {
@@ -113,6 +123,14 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
             this.sharedIcePort = (Boolean) value;
         } else if (option == NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES) {
             this.advertisedAddresses = List.copyOf((List<InetSocketAddress>) value);
+        } else if (option == NetherChannelOption.NETHER_SERVER_STUN_SERVERS) {
+            this.stunServers = stunServers((List<InetSocketAddress>) value);
+        } else if (option == NetherChannelOption.NETHER_SERVER_STUN_MAX_AGE) {
+            Duration maxAge = (Duration) value;
+            if (maxAge.isNegative() || maxAge.isZero()) {
+                throw new IllegalArgumentException("stunMaxAge must be positive");
+            }
+            this.stunMaxAge = maxAge;
         } else if (option == NetherChannelOption.NETHER_SERVER_INFER_PEER_CANDIDATES) {
             this.inferPeerCandidates = (Boolean) value;
         } else if (option == NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES) {
@@ -123,6 +141,16 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
             return super.setOption(option, value);
         }
         return true;
+    }
+
+    /** Distinct servers, each with a port; names stay unresolved until the channel binds. */
+    private static List<InetSocketAddress> stunServers(List<InetSocketAddress> servers) {
+        for (InetSocketAddress server : servers) {
+            if (server.getPort() < 1) {
+                throw new IllegalArgumentException("A STUN server needs a port: " + server);
+            }
+        }
+        return servers.stream().distinct().toList();
     }
 
     private static int positive(String name, int value) {
@@ -177,6 +205,14 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
 
     public List<InetSocketAddress> getAdvertisedAddresses() {
         return advertisedAddresses;
+    }
+
+    public List<InetSocketAddress> getStunServers() {
+        return stunServers;
+    }
+
+    public Duration getStunMaxAge() {
+        return stunMaxAge;
     }
 
     public boolean isInferPeerCandidates() {
