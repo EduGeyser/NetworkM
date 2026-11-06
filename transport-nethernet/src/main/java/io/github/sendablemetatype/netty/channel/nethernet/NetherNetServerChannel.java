@@ -348,6 +348,16 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
 
         @Override
+        public CompletionStage<List<InetSocketAddress>> gatherHostAddresses() {
+            NetherNetEngine current = engine.current();
+            if (current == null || !open || from.removed) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("The NetherNet endpoint or the join source is closed"));
+            }
+            return HostAddressProbe.gather(current, endpoint, config.getCandidatePolicy());
+        }
+
+        @Override
         public HeldChecks claimHeldChecks(Consumer<IceEndpoint.HeldCheck> handler) {
             Objects.requireNonNull(handler, "handler");
             HeldCheckClaim claim = new HeldCheckClaim(endpoint, handler);

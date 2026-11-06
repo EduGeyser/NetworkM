@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -143,6 +144,30 @@ class NetherNetServerAuthenticatedJoinTest {
         assertFalse(endpoint.holdsChecks(), "a removed source's claim ends with it");
         assertEquals(Map.of(), endpoint.derivedKeys());
         other.claimHeldChecks(check -> { }).close();
+    }
+
+    @Test
+    void gatheringOnTheSharedPortNamesItsHostAddressesAndLeavesNoPeer() throws Exception {
+        harness.bind();
+        FakeIceEndpoint endpoint = harness.engine.endpoints().getFirst();
+        int port = endpoint.port();
+        harness.engine.offerWith(EndpointHarness.ANSWER);
+        harness.engine.gatherWith(EndpointHarness.ANSWER
+                + "a=candidate:1 1 udp 2122260223 192.168.1.5 " + port + " typ host\r\n"
+                + "a=candidate:2 1 udp 2122260223 192.168.1.5 " + port + " typ host generation 0\r\n"
+                + "a=candidate:3 1 udp 2122194687 10.8.0.2 " + port + " typ host\r\n"
+                + "a=candidate:4 1 udp 2122260223 192.168.1.5 51000 typ host\r\n"
+                + "a=candidate:5 1 udp 1686052607 203.0.113.9 " + port + " typ srflx raddr 192.168.1.5 rport " + port
+                + "\r\na=end-of-candidates\r\n");
+        SharedIcePort shared = harness.source(false).sink.sharedIcePort().orElseThrow();
+
+        var addresses = shared.gatherHostAddresses().toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+        assertEquals(List.of(new InetSocketAddress("192.168.1.5", port), new InetSocketAddress("10.8.0.2", port)),
+                addresses, "the port's own host candidates, once each");
+        FakePeer probe = harness.engine.lastPeer();
+        assertEquals(endpoint, probe.config().endpoint(), "it gathers on the shared port, which binds it there");
+        assertTrue(probe.terminated(), "and leaves no peer behind");
     }
 
     @Test

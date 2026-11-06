@@ -7,6 +7,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionCodec;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionValidator;
@@ -53,6 +54,11 @@ final class HostFixture implements AutoCloseable {
     static final String CLIENT_UFRAG = "clnt";
     static final String CLIENT_PASSWORD = "clientpassword0123456789";
     static final String CLIENT_FINGERPRINT_HEX = "ab".repeat(32);
+    /** What the fake engine's peers offer, so the host's gathering on the shared port completes. */
+    static final String PROBE_OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
+            + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:prob\r\n"
+            + "a=ice-pwd:probepassword0123456789\r\na=fingerprint:sha-256 " + "CD:".repeat(31) + "CD\r\n"
+            + "a=setup:actpass\r\na=mid:0\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n";
 
     final MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     final FakeEngine engine = new FakeEngine();
@@ -76,6 +82,9 @@ final class HostFixture implements AutoCloseable {
                         children.add((NetherNetChildChannel) child);
                     }
                 });
+        engine.offerWith(PROBE_OFFER);
+        engine.gatherWith(PROBE_OFFER + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
+                + "a=end-of-candidates\r\n");
         identity = identity(CertificateBuilder.Algorithm.ecp256);
         KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
         generator.initialize(new ECGenParameterSpec("secp384r1"));
@@ -163,9 +172,15 @@ final class HostFixture implements AutoCloseable {
         return child;
     }
 
+    /** The peers created for joins, leaving out the one the host gathers with. */
+    List<FakePeer> answerers() {
+        return engine.peers().stream().filter(peer -> peer.config().role() == PeerConfig.Role.ANSWERER).toList();
+    }
+
+    /** The newest peer created for a join, waiting for one if there is none yet. */
     FakePeer lastPeer() throws InterruptedException {
-        await(() -> !engine.peers().isEmpty(), "a peer");
-        return engine.lastPeer();
+        await(() -> !answerers().isEmpty(), "a peer");
+        return answerers().getLast();
     }
 
     @Override

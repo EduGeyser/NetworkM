@@ -116,7 +116,7 @@ class HostTransportTest {
         HostFixture.Check replay = fixture.hold(ticket.localUfrag(), new InetSocketAddress("203.0.113.66", 50001));
         replay.rejected.get(5, TimeUnit.SECONDS);
         assertEquals(1, fixture.transport.ledgerStats().replayRejected());
-        assertEquals(1, fixture.engine.peers().size(), "neither got a peer");
+        assertEquals(1, fixture.answerers().size(), "neither got a peer");
     }
 
     @Test
@@ -130,11 +130,11 @@ class HostTransportTest {
         StatelessAdmissionCodec.Credentials second = fixture.mint(30);
         InetSocketAddress elsewhere = new InetSocketAddress("203.0.113.67", 50002);
         fixture.hold(second.localUfrag(), elsewhere).rejected.get(5, TimeUnit.SECONDS);
-        assertEquals(1, fixture.engine.peers().size(), "the endpoint's budget held for NXS too");
+        assertEquals(1, fixture.answerers().size(), "the endpoint's budget held for NXS too");
         await(() -> fixture.transport.ledgerStats().sessions() == 1, "the refused ticket's record to go");
 
         fixture.children.clear();
-        fixture.engine.lastPeer().closed(io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause.REMOTE_CLOSED);
+        fixture.lastPeer().closed(io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause.REMOTE_CLOSED);
         await(() -> fixture.transport.ledgerStats().sessions() == 0, "the first session to end");
         fixture.hold(second.localUfrag(), elsewhere);
         fixture.child();
@@ -249,7 +249,7 @@ class HostTransportTest {
         var answer = fixture.transport.assistedJoin(join, System.nanoTime() + TimeUnit.SECONDS.toNanos(10),
                 OwnershipGuard.ALWAYS).toCompletableFuture();
         assertTrue(answer.handle((value, failure) -> failure != null).get(5, TimeUnit.SECONDS));
-        assertTrue(fixture.engine.peers().isEmpty());
+        assertTrue(fixture.answerers().isEmpty());
     }
 
     private AssistedJoin assistedJoin() {

@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
@@ -18,11 +19,22 @@ public interface SharedIcePort {
     InetSocketAddress localAddress();
 
     /**
+     * Gathers once on the port and returns the host addresses gathered there, each with the port's number. The
+     * engine binds the port on a local address only once a peer gathers on it, so a source whose clients send their
+     * first check before any peer exists calls this before it publishes an address: from then on the port listens on
+     * every address returned, until it closes.
+     *
+     * @return completes with the addresses, or exceptionally if gathering failed or took longer than 10 seconds
+     */
+    CompletionStage<List<InetSocketAddress>> gatherHostAddresses();
+
+    /**
      * Takes the checks that arrive at the port for a local ufrag no peer has. A check reaches the handler only once
      * it authenticated with a password derived from a key the claim {@linkplain HeldChecks#admit admits}; until then,
      * and with no keys at all, none does. For each check the handler either delivers a {@link Join} whose
      * {@link Join.Authenticated} credentials are the check's local ufrag and that password, which the new peer then
-     * answers, or {@linkplain IceEndpoint.HeldCheck#reject rejects} it; a check it leaves alone expires.
+     * answers, or {@linkplain IceEndpoint.HeldCheck#reject rejects} it; a check it leaves alone expires. A check
+     * reaches the port only on an address it is bound on, see {@link #gatherHostAddresses}.
      *
      * @param handler receives the checks on the endpoint's event loop; must not block
      * @return the claim, which ends with its source; closing it hands the checks back

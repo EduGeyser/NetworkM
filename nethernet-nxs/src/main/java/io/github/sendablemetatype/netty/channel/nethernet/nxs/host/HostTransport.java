@@ -265,6 +265,8 @@ public final class HostTransport implements ProviderTransport {
     private boolean withdrawn;
     private long mappingRevision;
     private Set<HostCandidate> fixedCandidates;
+    /** The addresses the shared port listens on, gathered when NXS started. */
+    private List<InetAddress> hostAddresses = List.of();
 
     /**
      * @param loop The endpoint's event loop, which runs the source's handlers
@@ -319,14 +321,31 @@ public final class HostTransport implements ProviderTransport {
             this.heldChecks = port.claimHeldChecks(this::held);
             // Mirrors the installed keys now and after every change; none installed passes no check on.
             validator.mirrorKeys(heldChecks::admit);
+        } catch (RuntimeException e) {
+            failStart(e);
+            return;
+        }
+        // Binds the port on every address it publishes before any client can be told about one
+        port.gatherHostAddresses().whenComplete((addresses, failure) -> onLoop(() -> {
+            if (failure != null) {
+                log.warn("NXS could not gather on the shared ICE port, so it publishes only configured endpoints: {}",
+                        failure.toString());
+            }
+            finishStart(addresses == null ? List.of() : addresses);
+        }));
+    }
+
+    private void finishStart(List<InetSocketAddress> gathered) {
+        if (closing) {
+            return;
+        }
+        try {
+            hostAddresses = gathered.stream().map(InetSocketAddress::getAddress).toList();
             if (settings.publication() == Publication.MAINTAINED) {
-                startMaintained();
+                startMaintained(gathered);
             }
         } catch (IOException | RuntimeException e) {
-            log.error("NXS could not start on the NetherNet endpoint: {}", e.getMessage());
-            health(SignalingState.CLOSED, e);
-            started.completeExceptionally(e);
-            close();
+            failStart(e);
             return;
         }
         schedule(this::maintain, MAINTENANCE);
@@ -335,10 +354,21 @@ public final class HostTransport implements ProviderTransport {
         started.complete(null);
     }
 
-    private void startMaintained() throws IOException {
+    private void failStart(Exception e) {
+        log.error("NXS could not start on the NetherNet endpoint: {}", e.getMessage());
+        health(SignalingState.CLOSED, e);
+        started.completeExceptionally(e);
+        close();
+    }
+
+    private void startMaintained(List<InetSocketAddress> gathered) throws IOException {
         InetSocketAddress bind = port.localAddress();
+        // The addresses the endpoint gathered on are the ones its port listens on, unlike every interface's
+        List<EndpointSelection.Candidate> hosts = gathered.stream()
+                .map(address -> new EndpointSelection.Candidate(address, EndpointSelection.Provenance.NATIVE_HOST))
+                .toList();
         EndpointSelection selection = settings.advertised().isEmpty()
-                ? EndpointSelection.discover(bind, List.of(), List.of())
+                ? EndpointSelection.select(bind, List.of(), hosts)
                 : EndpointSelection.select(bind, settings.advertised(), List.of());
         // Assistance gathers a mapping per join instead of keeping one warm, as upstream does
         EndpointConnectivityController controller = selection.configured() || settings.assistedJoins()
@@ -952,12 +982,12 @@ public final class HostTransport implements ProviderTransport {
         return new HostProfileSnapshot(profile, probes, families, revision, version, guard);
     }
 
-    /** The bound addresses and configured endpoints, sampled at each capture. Event loop. */
+    /** The addresses the port listens on and the configured endpoints. Event loop. */
     private List<HostCandidate> fixedCandidates() throws IOException {
         InetSocketAddress bind = port.localAddress();
         ProviderEndpoint endpoint = settings.publication() == Publication.RELAYED
-                ? ProviderEndpoint.relayed(bind, settings.advertised(), settings.localDevelopment())
-                : ProviderEndpoint.resolve(bind, settings.advertised(), settings.localDevelopment());
+                ? ProviderEndpoint.relayed(bind, settings.advertised(), settings.localDevelopment(), hostAddresses)
+                : ProviderEndpoint.resolve(bind, settings.advertised(), settings.localDevelopment(), hostAddresses);
         List<HostCandidate> candidates = endpoint.advertised().stream().map(HostCandidate::host).toList();
         Set<HostCandidate> material = Set.copyOf(candidates);
         if (fixedCandidates != null && !fixedCandidates.equals(material)) {
