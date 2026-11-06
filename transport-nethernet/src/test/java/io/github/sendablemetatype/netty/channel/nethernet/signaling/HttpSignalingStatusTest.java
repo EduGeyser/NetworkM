@@ -188,13 +188,13 @@ class HttpSignalingStatusTest {
         assertEquals(FIRST.toJson(), response.body());
         assertFalse(response.closes(), "a fallback still serves NetherNet, so the join may follow");
 
-        // A late answer still updates what the next fallback serves
+        // A late answer was never served, so the next fallback still serves the last one that was
         calls.removeFirst().run();
         EmbeddedHttp next = new EmbeddedHttp(signaling);
         connections.add(next);
         next.send(get("/v1/join"));
         next.advance(500);
-        assertEquals(SECOND.toJson(), next.response().body());
+        assertEquals(FIRST.toJson(), next.response().body());
     }
 
     @Test

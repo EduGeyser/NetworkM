@@ -81,15 +81,18 @@ final class HttpStatusService {
             executor.execute(() -> {
                 try {
                     StatusAnswer answer = provider.status(request);
-                    reply.complete(switch (answer) {
+                    switch (answer) {
                         case StatusAnswer.Serve(var status) -> {
                             String json = status.toJson();
-                            remember(host, json);
-                            yield new Reply.Document(json);
+                            // Only the document that is served: an answer past its deadline was
+                            // never sent and may be older than the one sent since (E-6)
+                            if (reply.complete(new Reply.Document(json))) {
+                                remember(host, json);
+                            }
                         }
-                        case StatusAnswer.Decline _ -> new Reply.Declined();
+                        case StatusAnswer.Decline _ -> reply.complete(new Reply.Declined());
                         case null -> throw new NullPointerException("The status provider answered null");
-                    });
+                    }
                 } catch (Throwable e) {
                     // Throwable: an Error escaping here would leave the request to its deadline
                     if (!reply.isDone()) {
