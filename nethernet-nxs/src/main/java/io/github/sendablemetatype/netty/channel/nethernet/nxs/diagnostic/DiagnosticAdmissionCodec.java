@@ -26,6 +26,7 @@ public final class DiagnosticAdmissionCodec {
     public static final int MAX_ATTEMPT_MILLIS = 60_000, MAX_HANDSHAKE_MILLIS = 15_000;
     static final long SAFE = 9007199254740991L;
 
+    /** The host a diagnostic token is for: its provider, its registration, its profile and its lease. */
     public record Context(
             String providerOrigin, String hostId, String incarnation, long generation) {
         public Context {
@@ -41,6 +42,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** A diagnostic admission key, usable from {@code notBefore} for tokens that expire by {@code retireAfter}. */
     public record Key(String keyId, String secret, long notBefore, long retireAfter) {
         public Key {
             if (!keyId.matches("[A-Z0-9]{4}") || !AdmissionKey.validSecret(secret)) {
@@ -56,6 +58,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** What a diagnostic token carries: the probe's DTLS and ICE details and the endpoint it checks. */
     public record Claims(
             long expiresAt,
             String clientFingerprintHex,
@@ -98,6 +101,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** The wall clock for token deadlines, and the monotonic clock that measures time spent on one token. */
     public record Clock(LongSupplier wallMillis, LongSupplier nanoTime) {
         public Clock {
             Objects.requireNonNull(wallMillis);
@@ -109,6 +113,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** A diagnostic token that opened for this host, with the credentials to answer it. */
     public record Admission(
             Context context, Claims claims, Credentials credentials, String remoteUfrag) {
         @Override
@@ -117,6 +122,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** The host's ICE credentials for one diagnostic attempt. */
     public record Credentials(String localUfrag, String icePwd) {
         @Override
         public String toString() {

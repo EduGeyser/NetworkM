@@ -211,6 +211,7 @@ public final class ProviderRuntimeConfiguration {
             return "Settings[endpoint=" + endpoint + "]";
         }
 
+        /** Builds settings from what an operator configured. */
         public static final class Builder {
             private final String endpoint;
             private String token;

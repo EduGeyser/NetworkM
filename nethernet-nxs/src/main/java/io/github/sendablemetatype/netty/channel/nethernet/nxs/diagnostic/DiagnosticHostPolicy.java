@@ -22,6 +22,7 @@ public record DiagnosticHostPolicy(
         return result;
     }
 
+    /** An endpoint the policy lets diagnostics check, for one candidate revision; port 0 for assisted checks. */
     public record Endpoint(int family, String addressHex, int port, long candidateRevision) {
         public Endpoint {
             if ((family != 4 && family != 6)

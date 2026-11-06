@@ -22,6 +22,7 @@ public final class StatelessAdmissionCodec {
 
     private StatelessAdmissionCodec() {}
 
+    /** What a stateless admission token carries for the host, encrypted inside the ICE ufrag. */
     public record Claims(
             long expiresAt,
             String fingerprintHex,
@@ -69,6 +70,7 @@ public final class StatelessAdmissionCodec {
         }
     }
 
+    /** The host's ICE credentials for one admission: the token as ufrag and the password derived from it. */
     public record Credentials(String localUfrag, String icePwd) {
         @Override
         public String toString() {

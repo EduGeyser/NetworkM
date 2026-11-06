@@ -31,6 +31,8 @@ import java.util.*;
  */
 public final class AdmissionGate {
     /**
+     * The gate's bounds.
+     *
      * @param sessions        Reserved tuples, players connected or connecting
      * @param claims          Used-ticket records, kept until each ticket expires
      * @param pending         Reservations whose peer is not created yet
@@ -89,10 +91,12 @@ public final class AdmissionGate {
         }
     }
 
+    /** Counts for monitoring: what the gate holds now, and what it refused or accepted so far. */
     public record Stats(int sessions, int pending, int claims, long invalid, long replayRejected, long capacityRejected,
                         long accepted) {
     }
 
+    /** The refusals at the pending limit since the last warning; see {@link #pollPendingLimitWarning}. */
     public record PendingLimitWarning(int pending, int limit, long rejected) {
     }
 

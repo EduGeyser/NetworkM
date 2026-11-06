@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 
 /** A console observation with an explicit severity; contains no credentials or raw response bodies. */
 public record ProviderDiagnostic(Level level, String message) {
+    /** How much an operator needs to see it. */
     public enum Level {
         DEBUG,
         INFO,

@@ -68,6 +68,7 @@ import java.util.function.Function;
  * to it in order. The event loop group and the owner are borrowed and never shut down here.
  */
 public final class ControlSocket {
+    /** The bounds of one connection, in UTF-8 bytes, counts and deadlines, as the class description explains. */
     public record Limits(int maxMessageBytes, int maxReceiveParts, int maxPendingSends, long maxPendingBytes,
                          Duration connectTimeout, Duration receiveTimeout, Duration sendTimeout,
                          Duration closeTimeout) {

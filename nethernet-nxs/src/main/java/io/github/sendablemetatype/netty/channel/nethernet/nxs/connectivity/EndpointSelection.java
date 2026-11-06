@@ -8,6 +8,7 @@ import java.util.*;
 
 /** Opt-in endpoint policy. Address provenance never asserts inbound reachability. */
 public final class EndpointSelection {
+    /** Where an endpoint came from; when two sources name the same endpoint, the earlier constant wins. */
     public enum Provenance {
         CONFIGURED,
         LOCAL_BIND,
@@ -16,6 +17,7 @@ public final class EndpointSelection {
         NATIVE_HOST
     }
 
+    /** An endpoint with where it came from. */
     public record Candidate(InetSocketAddress endpoint, Provenance provenance) {
         public Candidate {
             requireEndpoint(endpoint);

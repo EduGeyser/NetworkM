@@ -11,6 +11,7 @@ import static io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.
 public final class DiagnosticExchange {
     public static final int FRAME_BYTES = 56, PING = 2, PONG = 3;
 
+    /** Writes a frame the exchange hands over and no longer touches. */
     @FunctionalInterface
     public interface Sender {
         void send(int channel, byte[] ownedFrame);

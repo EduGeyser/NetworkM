@@ -19,6 +19,8 @@ public enum AddressFamily {
     }
 
     /**
+     * The family with this wire number.
+     *
      * @throws IllegalArgumentException If the number is neither 4 nor 6
      */
     public static AddressFamily of(int number) {

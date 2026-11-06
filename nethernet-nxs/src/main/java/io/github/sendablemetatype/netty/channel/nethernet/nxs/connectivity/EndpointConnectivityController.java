@@ -14,6 +14,7 @@ import java.util.function.LongSupplier;
  * and close. The owner stops it before its listener and never uses a snapshot past its freshness deadline.
  */
 public final class EndpointConnectivityController implements AutoCloseable {
+    /** Where a family stands, from configuration through STUN discovery to closing. */
     public enum State {
         CONFIGURED,
         DISABLED_BY_CONFIG,
@@ -30,6 +31,8 @@ public final class EndpointConnectivityController implements AutoCloseable {
     }
 
     /**
+     * The latest STUN reading for a family, as the controller judged it.
+     *
      * @param lastSuccessAgeMillis -1 before the first answer
      * @param freshUntilNanos      On the controller's clock; freshness is never a reachability verdict
      */
@@ -48,6 +51,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
         }
     }
 
+    /** One family's state, its direct candidates and, while fresh, the endpoint STUN mapped. */
     public record FamilySnapshot(
             State state,
             List<EndpointSelection.Candidate> directCandidates,

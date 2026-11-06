@@ -171,6 +171,7 @@ public final class ProviderClient implements AutoCloseable {
             return "Configuration[provider=" + provider + ", authorizationScheme=" + authorizationScheme() + "]";
         }
 
+        /** Builds a configuration for one provider origin. */
         public static final class Builder {
             private final URI provider;
             private String label;
