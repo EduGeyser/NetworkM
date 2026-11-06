@@ -20,13 +20,15 @@ This status table is upstream's record for 1.26.50. NetworkM has not confirmed i
 capture yet. NetworkM's `JoinRefusal` statuses fit it as follows. Over Xbox RPC and LAN the
 refusal goes out as a `CONNECTERROR` signal with the NetherNet error code instead (positions in
 the client's signaling error enumeration, as go-nethernet's `signal.go` lists them); which reason
-the client shows for each code is not recorded either.
+the client shows for each code is not recorded either. NXS joins get neither: a refused
+stateless join's connectivity check is dropped, and a refused assisted join fails its answer to
+the provider.
 
 | `JoinRefusal` | Status | Client reason by the table above | Error code |
 |---|---|---|---|
 | `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) | 16, IncomingConnectionIgnored |
-| `HOST_REFUSED` | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored |
-| `CAPACITY` | 503 | ServerFull (25), also when the endpoint is not ready, is closing or the source was removed | 16, IncomingConnectionIgnored |
+| `HOST_REFUSED` (the host's join filter) | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored |
+| `CAPACITY` | 503 | ServerFull (25), also for the throttle, a full identity check executor, an endpoint that is not ready or is closing, and a removed source | 16, IncomingConnectionIgnored |
 | `BAD_OFFER` | 400 | not recorded | 13, FailedToSetRemoteDescription |
 | `DUPLICATE` | 409 | not recorded | 16, IncomingConnectionIgnored |
 | `TRUST_SOURCE_UNREACHABLE` | 500 | not recorded | 35, GenericFailure |
