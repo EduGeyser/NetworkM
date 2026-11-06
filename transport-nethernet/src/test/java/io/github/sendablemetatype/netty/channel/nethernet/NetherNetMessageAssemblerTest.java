@@ -66,6 +66,8 @@ class NetherNetMessageAssemblerTest {
         }
         assertNull(decode(ByteBuffer.allocateDirect(3).put(HexFormat.of().parseHex("020a0b")).flip()),
                 "a fragment with two more to come completes nothing");
+        assembler.close();
+        assertReleased();
     }
 
     @Test
