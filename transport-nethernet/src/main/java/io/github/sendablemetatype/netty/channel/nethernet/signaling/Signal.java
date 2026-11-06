@@ -25,10 +25,15 @@ public record Signal(String type, String connectionId, String payload) {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(Signal.class);
     private static final int MAX_CONNECTION_ID_LENGTH = 64;
 
+    /**
+     * @throws IllegalArgumentException if the connection ID is not valid (see
+     *                                  {@link #isValidConnectionId}); a custom signaling that builds
+     *                                  signals itself gets the same guarantee as the wire paths
+     */
     public Signal {
         Objects.requireNonNull(type, "type");
-        Objects.requireNonNull(connectionId, "connectionId");
         Objects.requireNonNull(payload, "payload");
+        requireValidConnectionId(connectionId);
     }
 
     /**
@@ -70,6 +75,15 @@ public record Signal(String type, String connectionId, String payload) {
             }
         }
         return true;
+    }
+
+    /** Refuses an invalid connection ID without echoing it, since it may hold control characters. */
+    static void requireValidConnectionId(String connectionId) {
+        Objects.requireNonNull(connectionId, "connectionId");
+        if (!isValidConnectionId(connectionId)) {
+            throw new IllegalArgumentException("A connection ID is 1 to " + MAX_CONNECTION_ID_LENGTH
+                    + " printable ASCII characters without spaces (got " + connectionId.length() + " chars)");
+        }
     }
 
     /**

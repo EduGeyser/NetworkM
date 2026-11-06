@@ -27,8 +27,13 @@ import java.util.function.Consumer;
 public record Join(String connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply,
                    Addressed addressed, Authenticated authenticated) {
 
+    /**
+     * @throws IllegalArgumentException if the connection ID is not one {@link Signal} accepts, so a
+     *                                  custom source cannot put an ID into logs and child attributes
+     *                                  that the built-in sources would refuse
+     */
     public Join {
-        Objects.requireNonNull(connectionId, "connectionId");
+        Signal.requireValidConnectionId(connectionId);
         Objects.requireNonNull(remoteNetworkId, "remoteNetworkId");
         Objects.requireNonNull(offer, "offer");
         Objects.requireNonNull(source, "source");
