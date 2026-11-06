@@ -643,11 +643,15 @@ final class WebRtcPeer implements Peer {
         return true;
     }
 
+    /** Makes a description call; a description webrtc-java cannot parse fails it with a plain Error. */
     private boolean step(String operation, Runnable call) {
         try {
             call.run();
             return true;
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
             negotiationFailed(operation, e.toString());
             return false;
         }
@@ -678,7 +682,7 @@ final class WebRtcPeer implements Peer {
         } catch (Error e) {
             // webrtc-java reports a native reference left behind with a plain
             // Error; the object is freed once its last holder lets go.
-            if (e.getClass() != Error.class) {
+            if (!NativeErrors.isCallFailure(e)) {
                 throw e;
             }
             log.warn("Error {}: {}", what, e.getMessage());

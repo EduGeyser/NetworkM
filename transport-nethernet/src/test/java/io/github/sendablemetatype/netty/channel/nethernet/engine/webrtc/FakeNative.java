@@ -139,10 +139,19 @@ final class FakeNative {
             record("close peer");
         }
 
+        /**
+         * Throws as webrtc-java does: a description it cannot parse is a C++
+         * exception, which reaches Java as a plain Error; creating a
+         * description fails with a runtime exception, such as the one for a
+         * disposed connection.
+         */
         private void step(Step step) {
             record(step.name());
             if (throwAt == step) {
-                throw new IllegalStateException("native " + step + " failed");
+                switch (step) {
+                    case SET_REMOTE, SET_LOCAL -> throw new Error("Create session description failed: native " + step);
+                    case CREATE_OFFER, CREATE_ANSWER -> throw new IllegalStateException("native " + step + " failed");
+                }
             }
         }
 
