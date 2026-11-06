@@ -8,8 +8,9 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.netty.buffer.AbstractByteBufAllocator;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -272,20 +273,31 @@ class NetherNetDisconnectReasonTest {
         }
     }
 
-    /** Hands out heap buffers until told to fail. */
-    private static final class FailingAllocator extends UnpooledByteBufAllocator {
+    /** Hands out unpooled buffers until told to fail. */
+    private static final class FailingAllocator extends AbstractByteBufAllocator {
         volatile boolean fail;
-
-        FailingAllocator() {
-            super(false);
-        }
 
         @Override
         protected ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity) {
+            check();
+            return Unpooled.buffer(initialCapacity, maxCapacity);
+        }
+
+        @Override
+        protected ByteBuf newDirectBuffer(int initialCapacity, int maxCapacity) {
+            check();
+            return Unpooled.directBuffer(initialCapacity, maxCapacity);
+        }
+
+        @Override
+        public boolean isDirectBufferPooled() {
+            return false;
+        }
+
+        private void check() {
             if (fail) {
                 throw new IllegalStateException("No buffer");
             }
-            return super.newHeapBuffer(initialCapacity, maxCapacity);
         }
     }
 }
