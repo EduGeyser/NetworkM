@@ -44,7 +44,9 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import javax.net.ssl.SSLException;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
@@ -456,11 +458,28 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /** Connects a new WebSocket to the service with this instance as its last handler. */
     ChannelFuture connectSocket(String token) throws SSLException {
+        return connectSocket(token, SERVICE_URI, InetSocketAddress.createUnresolved(SERVICE_URI.getHost(), 443), null);
+    }
+
+    /**
+     * Connects a new WebSocket to a service at an address, for tests that run their own service.
+     *
+     * @param service the service URI, whose host the certificate must name
+     * @param remote  where to connect; an unresolved address is resolved by the bootstrap
+     * @param trust   the trusted roots, null for the JDK's default ones
+     */
+    ChannelFuture connectSocket(String token, URI service, SocketAddress remote, TrustManagerFactory trust)
+            throws SSLException {
+        // The upgrade request carries the Xbox token, so the certificate must name the service host.
+        // Netty 4.2 already checks the name by default; it is set here so the check does not depend
+        // on a library default. XboxSignalingTlsTest fails if it is off.
         SslContext sslCtx = SslContextBuilder.forClient()
+                .trustManager(trust)
                 .endpointIdentificationAlgorithm("HTTPS")
                 .build();
+        int port = service.getPort() < 0 ? 443 : service.getPort();
         WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
-                SERVICE_URI, WebSocketVersion.V13, null, false,
+                service, WebSocketVersion.V13, null, false,
                 new DefaultHttpHeaders()
                         .add("Authorization", token)
                         .add("User-Agent", NetherNetConstants.SIGNALING_USER_AGENT)
@@ -474,7 +493,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline p = ch.pipeline();
-                        p.addLast(sslCtx.newHandler(ch.alloc(), SERVICE_URI.getHost(), 443));
+                        p.addLast(sslCtx.newHandler(ch.alloc(), service.getHost(), port));
                         p.addLast(new HttpClientCodec(), new HttpObjectAggregator(8192));
                         // dropPongFrames=false: pongs must reach channelRead, where they refresh
                         // the liveness clock. Close frames are handled there too, not by the
@@ -484,7 +503,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                         p.addLast("handler", NetherNetXboxRpcSignaling.this);
                     }
                 })
-                .connect(SERVICE_URI.getHost(), 443);
+                .connect(remote);
     }
 
     /** Drops the current socket without reporting it as lost. */
