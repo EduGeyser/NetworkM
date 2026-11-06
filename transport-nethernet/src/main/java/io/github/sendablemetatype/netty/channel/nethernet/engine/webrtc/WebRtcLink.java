@@ -215,30 +215,54 @@ final class WebRtcLink implements DataLink {
     }
 
     /**
-     * The listener heard that the channel closed: refusals that waited for it
-     * fail now, later ones at once.
-     */
-    /**
-     * The channel was still not CLOSED when the closing timeout passed after it was seen CLOSING:
-     * the remote peer started an orderly close that does not complete. It counts as closed by the
-     * remote, so the connection ends, with or without sends waiting for the close.
+     * The closing timeout passed after the channel was seen CLOSING, and the listener has not heard
+     * of the close: the remote peer started an orderly close that does not complete. It counts as
+     * closed by the remote, so the connection ends, with or without sends waiting for the close.
+     *
+     * <p>The channel may have closed meanwhile with its own cause, such as an abort, whose event has
+     * not been delivered yet (on natives that post events to the signaling thread, or while the
+     * network thread is between reading the state and reporting it). libwebrtc's state is read
+     * first, so that cause wins. Runs on the control thread, which also runs the teardown, so a
+     * stopped link is never read.
      */
     private void closingTimedOut() {
+        NativeLink current = channel;
+        synchronized (sends) {
+            if (stopped || current == null) {
+                return;
+            }
+        }
+        CloseCause cause = CloseCause.REMOTE_CLOSED;
+        try {
+            if (current.state() == RTCDataChannelState.CLOSED) {
+                cause = peer.linkCloseCause(current.error());
+            }
+        } catch (RuntimeException | Error e) {
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
+            // The channel is gone; nothing tells a better cause than the orderly close it started.
+        }
+        CloseCause closedWith = cause;
         boolean closedNow = false;
         synchronized (events) {
             if (reported != Reported.CLOSED) {
                 reported = Reported.CLOSED;
-                peer.dispatch(listener -> listener.onChannelClosed(this, CloseCause.REMOTE_CLOSED));
+                peer.dispatch(listener -> listener.onChannelClosed(this, closedWith));
                 closedNow = true;
             }
         }
         if (closedNow) {
-            log.debug("Data channel {} stayed closing past the closing timeout; it counts as closed by the remote peer",
-                    parameters.label());
-            closed(CloseCause.REMOTE_CLOSED);
+            log.debug("Data channel {} stayed closing past the closing timeout; it counts as closed: {}",
+                    parameters.label(), closedWith);
+            closed(closedWith);
         }
     }
 
+    /**
+     * The listener heard that the channel closed: refusals that waited for it
+     * fail now, later ones at once.
+     */
     private void closed(CloseCause cause) {
         List<PendingSend> waiting;
         synchronized (sends) {

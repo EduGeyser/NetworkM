@@ -488,6 +488,24 @@ class WebRtcPeerTest {
                 listener.snapshot());
     }
 
+    /**
+     * A channel left closing that aborts just before the closing timeout, with the CLOSED event not
+     * delivered yet when the timeout runs, reports the abort, not an orderly close.
+     */
+    @Test
+    void theClosingTimeoutReportsAnAbortWhoseEventIsStillOnItsWay() throws InterruptedException {
+        WebRtcPeer peer = peer(Duration.ZERO);
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+
+        reliable.changeState(RTCDataChannelState.CLOSING);
+        reliable.error = USER_INITIATED_ABORT;
+        reliable.state = RTCDataChannelState.CLOSED;
+        runControlUntil(() -> !listener.snapshot().isEmpty());
+        reliable.changeState(RTCDataChannelState.CLOSED);
+
+        assertEquals(List.of("channel closed ReliableDataChannel REMOTE_ABORTED"), listener.snapshot());
+    }
+
     /** An abrupt close passes CLOSING and CLOSED at once; the timeout that follows changes nothing. */
     @Test
     void aChannelThatClosesInTimeIsReportedOnce() throws InterruptedException {
