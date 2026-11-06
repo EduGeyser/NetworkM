@@ -253,6 +253,30 @@ class NetherNetServerChannelTest {
     }
 
     @Test
+    void anAnswerTheClientNeverGotClosesTheChildButAnActiveChildStays() throws Exception {
+        harness.engine.answerWith(ANSWER);
+        harness.engine.gatherWith(ANSWER);
+        harness.bind();
+        FakeJoinSource source = harness.source(false);
+
+        FakeJoinSource.Reply lost = source.offer(1, OFFER);
+        NetherNetChildChannel undelivered = harness.child();
+        lost.answer();
+        // The source took the answer but could not write it
+        lost.abandoned.complete(null);
+        harness.sync();
+        assertFalse(undelivered.isOpen());
+
+        FakeJoinSource.Reply delivered = source.offer(2, OFFER);
+        NetherNetChildChannel connected = harness.child();
+        delivered.answer();
+        harness.activate(harness.engine.lastPeer());
+        delivered.abandoned.complete(null);
+        harness.sync();
+        assertTrue(connected.isActive());
+    }
+
+    @Test
     void aConnectErrorFromTheClientClosesTheChild() throws Exception {
         harness.bind();
         FakeJoinSource.Reply reply = harness.source(true).offer(7, OFFER);

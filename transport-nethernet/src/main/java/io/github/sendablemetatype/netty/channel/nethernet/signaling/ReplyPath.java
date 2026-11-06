@@ -53,8 +53,11 @@ public interface ReplyPath {
     void onRemoteSignal(Consumer<RemoteSignal> handler);
 
     /**
-     * Completes when the client can no longer receive an answer: the HTTP request ended or
-     * passed its deadline, or an NXS attempt expired. Message based paths never complete it.
+     * Completes when the client can no longer receive an answer it does not have yet: the HTTP
+     * request ended or passed its deadline, the answer could not be delivered, or an NXS attempt
+     * expired. Never completes once the client got the answer. When it completes, the endpoint
+     * stops the join and closes its child, unless the child already went active. Message based
+     * paths never complete it.
      */
     CompletionStage<Void> abandoned();
 

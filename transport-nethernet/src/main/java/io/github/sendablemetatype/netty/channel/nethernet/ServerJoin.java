@@ -92,14 +92,16 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
 
     /**
      * The child exists and owns its peer: the client's later signals go to it from now on, on the
-     * endpoint's event loop. A client that can no longer receive the answer closes it.
+     * endpoint's event loop. A client that never got the answer closes it, also when the answer
+     * was handed on: the source could not deliver it, or its deadline passed while it was on its
+     * way. A child that went active stays, whatever the signaling says.
      */
     void attach(NetherNetChildChannel child, EventLoop endpointLoop) {
         this.child = child;
         join.reply().onRemoteSignal(signal -> onLoop(endpointLoop, () -> remoteSignal(signal)));
         join.reply().abandoned().whenComplete((ignored, failure) -> onLoop(endpointLoop, () -> {
-            if (!answerHandedOn && child.isOpen()) {
-                log.debug("Join {} was abandoned before its answer", id);
+            if (child.isOpen() && !child.isActive()) {
+                log.debug("Join {} was abandoned before the client got its answer", id);
                 child.close();
             }
         }));
