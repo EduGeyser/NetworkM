@@ -16,7 +16,7 @@
 
 package io.github.sendablemetatype.netty.util.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChildChannel;
+import io.github.sendablemetatype.netty.channel.nethernet.DetachedChildren;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding.Result;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding.State;
 import io.netty.channel.Channel;
@@ -37,7 +37,7 @@ class TransportIdentityBindingTest {
 
     /** A child opened by the given offer, carrying what the server channel installs. */
     private static Channel openedBy(String offer) {
-        Channel channel = new NetherNetChildChannel(null, null, null);
+        Channel channel = DetachedChildren.create();
         TransportIdentityBinding.install(channel, TransportIdentityBinding.forOffer(retailCheck().check(offer)));
         return channel;
     }
@@ -76,7 +76,7 @@ class TransportIdentityBindingTest {
     @Test
     void tellsUnboundNetherNetFromOtherTransports() {
         Channel noKey = openedBy(offer(null, DIGEST));
-        Channel neverInstalled = new NetherNetChildChannel(null, null, null);
+        Channel neverInstalled = DetachedChildren.create();
         EmbeddedChannel raknet = new EmbeddedChannel();
         try {
             assertEquals(State.NONE, TransportIdentityBinding.state(noKey));
@@ -191,7 +191,7 @@ class TransportIdentityBindingTest {
     }
 
     private static Channel boundTo(PublicKey key) {
-        Channel channel = new NetherNetChildChannel(null, null, null);
+        Channel channel = DetachedChildren.create();
         TransportIdentityBinding.install(channel, TransportIdentityBinding.forKey(key));
         return channel;
     }
