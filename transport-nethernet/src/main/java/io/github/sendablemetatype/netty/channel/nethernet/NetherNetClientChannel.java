@@ -14,6 +14,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
@@ -81,10 +82,11 @@ public class NetherNetClientChannel extends NetherNetChannel {
     // no longer mutate the replacement attempt's state.
     private volatile int attemptGeneration;
 
-    // Event loop confined, per attempt: local candidates wait until the offer is out.
+    // Event loop confined, per attempt: local candidates wait until the offer is out, and the
+    // server's candidates go through the attempt's intake, which exists once the offer does.
     private boolean offerSent;
     private List<String> pendingLocalCandidates = new ArrayList<>();
-    private String mid = "0";
+    private RemoteCandidateIntake intake;
 
     /**
      * Creates a client with an engine of its own, created when the first
@@ -364,6 +366,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             this.cycleConnectionId();
             offerSent = false;
             pendingLocalCandidates = new ArrayList<>();
+            intake = null;
             startHandshake();
         } catch (Exception e) {
             failHandshake(attemptGeneration, "Failed to retry WebRTC handshake", e);
@@ -391,7 +394,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 log.debug("Creating the offer failed: {}", failure.toString());
                 return;
             }
-            mid = NetherNetConstants.applicationMid(offer);
+            intake = RemoteCandidateIntake.client(offer);
             String signed;
             try {
                 signed = signed(offer);
@@ -463,6 +466,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 return;
             }
             if (!isOpen() || handshakeComplete) return;
+            RemoteCandidateIntake candidates = intake;
+            if (candidates == null) {
+                // The server learns the connection ID from the offer, so nothing can answer it yet.
+                log.debug("Ignored a signal for ID {} that came before the offer went out", idStr);
+                return;
+            }
             if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)) {
                 ServerTrust trust = clientConfig.getServerTrust();
                 if (trust != null) {
@@ -491,14 +500,15 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
             switch (type) {
                 case NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE ->
-                        current.applyAnswer(data).whenComplete((ignored, failure) -> {
+                        current.applyAnswer(candidates.remoteDescription(data)).whenComplete((ignored, failure) -> {
                             if (failure != null) {
                                 // The handshake timeout retries.
                                 log.debug("Applying the answer failed: {}", failure.toString());
                             }
                         });
                 // The engine holds candidates until the answer applied.
-                case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> current.addRemoteCandidate(data, mid);
+                case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> candidates.trickled(data)
+                        .ifPresent(taken -> current.addRemoteCandidate(taken.sdp(), taken.sdpMid()));
                 case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
                     log.error("Received SIGNAL_CONNECT_ERROR for {}.", this.connectionId);
                     connectionFailed(NetherConnectionFailure.CONNECT_ERROR);

@@ -48,10 +48,14 @@ import java.util.Set;
  * listens on the sender's network rather than the peer. Loopback and link-local stay, for peers
  * on the same host or link.
  * <p>
+ * A client applies UDP candidates, names included (see {@link #client}), with the same caps and
+ * TCP dropped: the server decides which addresses the client checks, so each client attempt runs
+ * the answer and every trickled candidate through an intake of its own.
+ * <p>
  * Trickled candidates carry no m-section, so they are tagged with the remote description's first
- * m-section and its {@code a=mid}: libwebrtc refuses a candidate whose mid matches no section.
- * Hand {@link #remoteDescription} the description before any trickled candidate. Safe to call
- * from any thread.
+ * m-section and its {@code a=mid}: libwebrtc refuses a candidate whose mid matches no section. A
+ * server hands {@link #remoteDescription} the offer before any trickled candidate; a client's
+ * intake starts from its own offer. Safe to call from any thread.
  */
 public final class RemoteCandidateIntake {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RemoteCandidateIntake.class);
@@ -69,13 +73,18 @@ public final class RemoteCandidateIntake {
      */
     private static final long INFERRED_PRIORITY = (long) CandidateType.SERVER_REFLEXIVE.typePreference() << 24 | 255;
     private static final byte[] LIMITED_BROADCAST = {(byte) 255, (byte) 255, (byte) 255, (byte) 255};
+    /**
+     * Whether a client applies UDP candidates that name a host, for the engine to look up. The
+     * one place the client's rule for names lives; a server never takes names.
+     */
+    private static final boolean CLIENT_TAKES_NAMES = true;
 
     private enum Mode {
         /** IP literals only, capped. */
         SERVER,
         /** Nothing applied, behind PROXY protocol relays. */
         RELAYED,
-        /** Names allowed, capped. */
+        /** Names allowed as {@link #CLIENT_TAKES_NAMES} says, capped. */
         CLIENT
     }
 
@@ -109,11 +118,20 @@ public final class RemoteCandidateIntake {
     }
 
     /**
-     * @return The intake for a client, which also applies names: a server may name a host inside
-     *         its own network, such as a cluster DNS name, for the engine to resolve
+     * The intake for one client attempt, which also applies names: a server may name a host inside
+     * its own network, such as a cluster DNS name, for the engine to resolve.
+     * <p>
+     * A server may trickle candidates ahead of its answer. An answer mirrors the offer's
+     * m-sections (RFC 9429 section 5.3.1), so until the answer is here, trickled candidates take
+     * the offer's first m-section.
+     *
+     * @param offer The attempt's own offer
+     * @return The intake for the attempt
      */
-    public static RemoteCandidateIntake client() {
-        return new RemoteCandidateIntake(Mode.CLIENT);
+    public static RemoteCandidateIntake client(String offer) {
+        RemoteCandidateIntake intake = new RemoteCandidateIntake(Mode.CLIENT);
+        intake.noteFirstSection(SdpText.lines(offer));
+        return intake;
     }
 
     /**
@@ -125,22 +143,10 @@ public final class RemoteCandidateIntake {
      */
     public synchronized String remoteDescription(String sdp) {
         List<String> lines = SdpText.lines(sdp);
+        noteFirstSection(lines);
         List<String> out = new ArrayList<>(lines.size());
-        boolean sectionFound = false;
-        boolean inFirstSection = false;
-        int section = -1;
         int kept = 0;
         for (String line : lines) {
-            if (line.startsWith("m=")) {
-                section++;
-                inFirstSection = !sectionFound;
-                if (!sectionFound) {
-                    sectionFound = true;
-                    this.mLineIndex = section;
-                }
-            } else if (inFirstSection && line.startsWith("a=mid:")) {
-                this.mid = line.substring("a=mid:".length()).strip();
-            }
             if (line.startsWith("a=candidate:")) {
                 Optional<CandidateLine> candidate = CandidateLine.parse(line);
                 if (candidate.isEmpty()) {
@@ -161,6 +167,24 @@ public final class RemoteCandidateIntake {
             out.add(line);
         }
         return SdpText.join(out);
+    }
+
+    /**
+     * Notes the first m-section and its {@code a=mid} for trickled candidates. A section without
+     * a mid keeps the one noted before.
+     */
+    private void noteFirstSection(List<String> lines) {
+        int section = -1;
+        for (String line : lines) {
+            if (line.startsWith("m=")) {
+                if (++section > 0) {
+                    return;
+                }
+                this.mLineIndex = section;
+            } else if (section == 0 && line.startsWith("a=mid:")) {
+                this.mid = line.substring("a=mid:".length()).strip();
+            }
+        }
     }
 
     /**
@@ -280,7 +304,7 @@ public final class RemoteCandidateIntake {
         return switch (this.mode) {
             case RELAYED -> false;
             case SERVER -> candidate.isUdp() && candidate.ipAddress().isPresent();
-            case CLIENT -> candidate.isUdp();
+            case CLIENT -> candidate.isUdp() && (CLIENT_TAKES_NAMES || candidate.ipAddress().isPresent());
         };
     }
 
