@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.host;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.provider.ProviderRuntimeConfiguration;
+import io.github.sendablemetatype.netty.util.nethernet.DtlsCertificate;
 
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -15,8 +16,9 @@ import java.util.concurrent.CompletionStage;
  * channel. The consumer wires the rest:
  * <pre>{@code
  * NetherNetServerChannel endpoint = ...; // bound, with the shared ICE port on the NXS UDP port
- * HostIdentity identity = HostIdentity.load(certificateFile, privateKeyFile);
- * NxsHost.Host host = NxsHost.open(endpoint, runtime, identity).toCompletableFuture().join();
+ * // Created on the first start next to the server identity key and kept; DtlsCertificate.load takes a supplied one
+ * DtlsCertificate certificate = DtlsCertificate.loadOrCreate(identityKeyFile.resolveSibling("dtls-certificate.pem"));
+ * NxsHost.Host host = NxsHost.open(endpoint, runtime, certificate).toCompletableFuture().join();
  * ProviderClient client = new ProviderClient(runtime.clientConfiguration(), store, host.transport(),
  *         status, health, diagnostics);
  * client.start();
@@ -52,13 +54,14 @@ public final class NxsHost {
      * plus the configured endpoints.
      *
      * @param endpoint A bound endpoint whose shared ICE port is the runtime's UDP port
-     * @param identity The DTLS identity every NXS peer presents
+     * @param certificate The DTLS certificate every NXS peer presents, whose fingerprint the profile publishes. Keep
+     *                    one per endpoint for good: clients that hold the published profile expect it.
      * @return Completes once the endpoint started NXS, or exceptionally if it cannot
      */
     public static CompletionStage<Host> open(NetherNetServerChannel endpoint, ProviderRuntimeConfiguration runtime,
-                                             HostIdentity identity) {
+                                             DtlsCertificate certificate) {
         Objects.requireNonNull(runtime, "runtime");
-        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(certificate, "certificate");
         if (!endpoint.isActive() || !endpoint.isRegistered()) {
             return CompletableFuture.failedFuture(new IllegalStateException("The NetherNet endpoint is not bound"));
         }
@@ -72,7 +75,7 @@ public final class NxsHost {
                 : runtime.relayed() ? HostTransport.Publication.RELAYED : HostTransport.Publication.FIXED;
         HostTransport transport = new HostTransport(new HostTransport.Settings(publication,
                 runtime.advertisedEndpoints(), runtime.localDevelopment(), runtime.assistedJoins(),
-                runtime.stunDiscovery(), TicketLedger.Limits.defaults()), identity, endpoint.eventLoop());
+                runtime.stunDiscovery(), TicketLedger.Limits.defaults()), certificate, endpoint.eventLoop());
         try {
             endpoint.addSource(transport.source());
         } catch (IllegalStateException closed) {

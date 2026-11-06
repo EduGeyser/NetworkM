@@ -9,9 +9,11 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.DtlsFingerprint;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionCodec;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionValidator;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger;
+import io.github.sendablemetatype.netty.util.nethernet.DtlsCertificate;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityPublicKey;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
@@ -64,7 +66,7 @@ final class HostFixture implements AutoCloseable {
     final FakeEngine engine = new FakeEngine();
     final LinkedBlockingQueue<NetherNetChildChannel> children = new LinkedBlockingQueue<>();
     final ServerBootstrap bootstrap;
-    final HostIdentity identity;
+    final DtlsCertificate certificate;
     final KeyPair clientKey;
     NetherNetServerChannel server;
     HostTransport transport;
@@ -85,23 +87,24 @@ final class HostFixture implements AutoCloseable {
         engine.offerWith(PROBE_OFFER);
         engine.gatherWith(PROBE_OFFER + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
                 + "a=end-of-candidates\r\n");
-        identity = identity(CertificateBuilder.Algorithm.ecp256);
+        X509Bundle bundle = new CertificateBuilder().subject("CN=NetherNet Host")
+                .algorithm(CertificateBuilder.Algorithm.ecp256).setIsCertificateAuthority(true).buildSelfSigned();
+        certificate = DtlsCertificate.of(bundle.getCertificatePEM(), bundle.getPrivateKeyPEM());
         KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
         generator.initialize(new ECGenParameterSpec("secp384r1"));
         clientKey = generator.generateKeyPair();
     }
 
-    static HostIdentity identity(CertificateBuilder.Algorithm algorithm) throws Exception {
-        X509Bundle bundle = new CertificateBuilder().subject("CN=NetherNet Host").algorithm(algorithm)
-                .setIsCertificateAuthority(true).buildSelfSigned();
-        return HostIdentity.of(bundle.getCertificatePEM(), bundle.getPrivateKeyPEM());
+    /** The host certificate's fingerprint, as the profile publishes it. */
+    DtlsFingerprint fingerprint() {
+        return DtlsFingerprint.of(certificate.sha256());
     }
 
     /** Binds the endpoint and starts NXS on it with these settings. */
     HostTransport start(HostTransport.Settings settings) throws Exception {
         server = (NetherNetServerChannel) bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
         endpoint = engine.endpoints().getFirst();
-        transport = new HostTransport(settings, identity, server.eventLoop());
+        transport = new HostTransport(settings, certificate, server.eventLoop());
         server.addSource(transport.source());
         transport.started().toCompletableFuture().get(5, TimeUnit.SECONDS);
         return transport;
