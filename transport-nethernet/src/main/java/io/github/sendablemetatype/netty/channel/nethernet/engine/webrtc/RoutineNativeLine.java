@@ -80,6 +80,26 @@ enum RoutineNativeLine {
      */
     TURN_PERMISSION_PRUNED("turn_port.cc",
             Pattern.compile("^Received TURN CreatePermission error response, code=403; pruned connection"),
+            false),
+    /**
+     * {@code pc/sdp_munging_detector.cc:54}, WARNING:
+     * {@code SDP munging: ice-ufrag does not match last created description.}, or the same for
+     * {@code ice-pwd} ({@code :59}). It is expected for host-chosen ICE credentials, which NXS
+     * stateless and authenticated joins bring: the adapter sets them by editing the local
+     * description before it applies it ({@code SdpEdits.withCredentials}), so every such join logs
+     * one of these. Other kinds of munging keep their level.
+     *
+     * <p>The risk: libwebrtc accepts the edit only while field trial
+     * {@code WebRTC-NoSdpMangleUfrag} is off and {@code WebRTC-NoSdpMangleReject} does not list
+     * munging type 22 ({@code kIceUfrag}) or 21 ({@code kIcePwd}) ({@code DoSetLocalDescription},
+     * {@code pc/sdp_offer_answer.cc:3074}). With either, every join with host-chosen credentials
+     * fails its negotiation; with {@code WebRTC-NoSdpMangleUfragRestrictedAddresses} such a join
+     * refuses remote candidates at the listed addresses. A host can turn them on through
+     * {@link WebRtcEngine.Builder#fieldTrials}, and the trials exist to roll the rejection out,
+     * so a later WebRTC may reject the edit by default.
+     */
+    HOST_CHOSEN_ICE_CREDENTIALS("sdp_munging_detector.cc",
+            Pattern.compile("^SDP munging: ice-(?:ufrag|pwd) does not match last created description\\.$"),
             false);
 
     /** The prefix libwebrtc writes before a message: the source file name and line. */
