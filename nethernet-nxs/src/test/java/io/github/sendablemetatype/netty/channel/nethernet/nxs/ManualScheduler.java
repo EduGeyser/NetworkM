@@ -84,7 +84,10 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
         }
     }
 
-    /** Runs work until the condition holds, failing when nothing arrives for a long time. */
+    /**
+     * Runs work until the condition holds, failing when nothing arrives for a long time. The condition may also turn
+     * true on another thread, such as the stub receiving a frame, so it is checked between short waits.
+     */
     void until(BooleanSupplier condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + EXTERNAL_WAIT_MILLIS;
         while (true) {
@@ -92,14 +95,14 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
             if (condition.getAsBoolean()) {
                 return;
             }
-            Runnable task = ready.poll(Math.max(1, deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
-            if (task == null) {
-                if (condition.getAsBoolean()) {
-                    return;
-                }
+            if (System.currentTimeMillis() > deadline) {
                 throw new AssertionError("Nothing happened for " + EXTERNAL_WAIT_MILLIS + " ms");
             }
-            task.run();
+            Runnable task = ready.poll(10, TimeUnit.MILLISECONDS);
+            if (task != null) {
+                task.run();
+                deadline = System.currentTimeMillis() + EXTERNAL_WAIT_MILLIS;
+            }
         }
     }
 
@@ -127,6 +130,21 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
                 throw new AssertionError("Nothing happened and no timer is due");
             }
             advance(Duration.ofNanos(Math.max(1, Math.min(next.at - nanos, TimeUnit.SECONDS.toNanos(1)))));
+        }
+    }
+
+    /**
+     * Runs work until none has arrived from another thread for {@code millis}, so replies already on their way, such
+     * as a pong, land before the clock moves on.
+     */
+    void quiet(long millis) throws InterruptedException {
+        while (true) {
+            runReady();
+            Runnable task = ready.poll(millis, TimeUnit.MILLISECONDS);
+            if (task == null) {
+                return;
+            }
+            task.run();
         }
     }
 

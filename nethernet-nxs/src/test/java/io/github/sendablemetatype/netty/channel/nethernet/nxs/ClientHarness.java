@@ -24,7 +24,8 @@ final class ClientHarness implements AutoCloseable {
     final ManualScheduler scheduler = new ManualScheduler();
     final IndependentProviderStub stub;
     final List<ProviderDiagnostic> logs = new CopyOnWriteArrayList<>();
-    private final EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+    /** The groups the clients created for their WebSockets; each client shuts its own down when it stops. */
+    private final List<EventLoopGroup> groups = new CopyOnWriteArrayList<>();
     private final List<ProviderClient> clients = new ArrayList<>();
     private final HttpClient http;
     private final SslContext tls;
@@ -50,7 +51,11 @@ final class ClientHarness implements AutoCloseable {
     ProviderClient client(ProviderClient.Configuration configuration, Path state, ProviderTransport transport,
                           Supplier<ServerStatus> status, Supplier<ProviderClient.Health> health) throws Exception {
         var client = new ProviderClient(configuration, new ProviderStateStore(state), transport, status, health,
-                logs::add, new ProviderClient.Environment(scheduler, scheduler, false, http, () -> group, tls));
+                logs::add, new ProviderClient.Environment(scheduler, scheduler, false, http, () -> {
+                    var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+                    groups.add(group);
+                    return group;
+                }, tls));
         clients.add(client);
         return client;
     }
@@ -76,15 +81,28 @@ final class ClientHarness implements AutoCloseable {
         return await(future);
     }
 
+    /** Like {@link #failure}, moving the clock to the client's own timers when it waits. */
+    Throwable settledFailure(CompletionStage<?> stage) throws Exception {
+        var future = stage.toCompletableFuture();
+        scheduler.settle(future::isDone);
+        return failure(future);
+    }
+
     void advance(Duration duration) {
         scheduler.advance(duration);
     }
 
-    /** Lets the clients' ticks run for a while of virtual time, a second at a time, each to completion. */
+    /**
+     * Lets the clients' ticks run for a while of virtual time, a second at a time, each to completion. While a
+     * WebSocket is open, each second also waits for its frames in flight, so a pong is never outrun by the clock.
+     */
     void run(Duration duration) throws InterruptedException {
         for (long second = 0; second < duration.toSeconds(); second++) {
             scheduler.advance(Duration.ofSeconds(1));
             settle();
+            if (stub.socket != null) {
+                scheduler.quiet(10);
+            }
         }
     }
 
@@ -113,6 +131,8 @@ final class ClientHarness implements AutoCloseable {
             }
         }
         stub.close();
-        group.shutdownGracefully(0, 1, java.util.concurrent.TimeUnit.SECONDS).syncUninterruptibly();
+        for (EventLoopGroup group : groups) {
+            group.shutdownGracefully(0, 1, java.util.concurrent.TimeUnit.SECONDS);
+        }
     }
 }

@@ -94,13 +94,35 @@ final class IndependentProviderStub implements AutoCloseable {
     // WebSocket control
     volatile boolean websocket;
     volatile boolean rejectUpgrade, ignorePings;
-    /** Close the socket instead of answering the next operation, after the stub applied it. */
-    volatile boolean dropAfterCommit;
-    final AtomicInteger upgrades = new AtomicInteger(), pings = new AtomicInteger();
+    /** The operation, such as {@code rotate}, whose next WebSocket attempt is applied and then left unanswered. */
+    volatile String dropAfterCommit;
+    /** Sent instead of the next WebSocket reply, after the operation was applied. */
+    volatile String brokenReply;
+    /** Sent before each WebSocket reply. */
+    volatile String pushBeforeReply;
+    /** Headers added to each WebSocket reply. */
+    final JsonObject responseHeaders = new JsonObject();
+    /** Answers the next signed operation instead of applying it. */
+    volatile Refusal rejectNext;
+    /** Answers every replay of the dropped operation instead of the receipt. */
+    volatile Refusal rejectAfterDrop;
+    /** Answers every replay of the dropped operation with 503. */
+    volatile boolean refuseAfterDrop;
+    final AtomicInteger upgrades = new AtomicInteger(), pings = new AtomicInteger(), fallbacks = new AtomicInteger();
     final List<Map<String, String>> upgradeHeaders = new CopyOnWriteArrayList<>();
+    /** The generation each accepted upgrade was signed for. */
+    final List<Long> generations = new CopyOnWriteArrayList<>();
+    /** The paths of operations that arrived over HTTPS, as sent. */
+    final List<String> httpOperations = new CopyOnWriteArrayList<>();
+    /** What the front door found wrong with a client's frames or fallbacks; a passing test leaves it empty. */
+    final List<String> faults = new CopyOnWriteArrayList<>();
     final LinkedBlockingQueue<JsonObject> assistedResults = new LinkedBlockingQueue<>();
     final LinkedBlockingQueue<Integer> closeCodes = new LinkedBlockingQueue<>();
     volatile Channel socket;
+    /** Successful replies by idempotency key, so a replayed operation is answered without being applied twice. */
+    private final Map<String, Reply> receipts = new HashMap<>();
+    private Map<String, String> droppedHeaders;
+    private String droppedBody;
 
     IndependentProviderStub(LongSupplier clock) throws InterruptedException {
         this(clock, null);
@@ -160,6 +182,68 @@ final class IndependentProviderStub implements AutoCloseable {
 
     private long now() {
         return clock.getAsLong() + clockOffsetMillis;
+    }
+
+    /**
+     * The provider's front door around {@link #handle}: an operation replayed with its idempotency key gets the
+     * first reply instead of being applied twice, and the fault knobs act here. An HTTPS replay of a dropped
+     * WebSocket operation must carry the very bytes that were signed for it.
+     */
+    private synchronized Reply front(String method, String path, Map<String, String> headers, String raw,
+                                     boolean overWebSocket) {
+        String id = headers.get("idempotency-key");
+        boolean replay = id != null && droppedHeaders != null && id.equals(droppedHeaders.get("idempotency-key"));
+        if (!overWebSocket) {
+            httpOperations.add(path);
+            if (replay) {
+                if (!raw.equals(droppedBody)) {
+                    faults.add("HTTPS fallback rewrote the signed body");
+                }
+                if (fallbacks.getAndIncrement() == 0 && !signed(headers).equals(droppedHeaders)) {
+                    faults.add("HTTPS fallback changed the signed headers");
+                }
+            }
+        }
+        if (replay && rejectAfterDrop != null) {
+            return refused(rejectAfterDrop);
+        }
+        Refusal next = rejectNext;
+        if (id != null && next != null) {
+            rejectNext = null;
+            return refused(next);
+        }
+        if (replay && refuseAfterDrop) {
+            JsonObject error = new JsonObject();
+            error.addProperty("code", "fixture_unavailable");
+            return new Reply(503, error, Map.of());
+        }
+        if (id != null && receipts.containsKey(id)) {
+            return receipts.get(id);
+        }
+        Reply reply = handle(method, path, headers, raw, overWebSocket);
+        if (id != null && reply.status() / 100 == 2) {
+            receipts.put(id, reply);
+        }
+        return reply;
+    }
+
+    private synchronized void dropped(Map<String, String> headers, String body) {
+        droppedHeaders = signed(headers);
+        droppedBody = body;
+    }
+
+    private static Map<String, String> signed(Map<String, String> headers) {
+        Map<String, String> signed = new HashMap<>();
+        for (String name : ProviderWebSocket.AUTH_HEADERS) {
+            signed.put(name, headers.get(name));
+        }
+        return signed;
+    }
+
+    private static Reply refused(Refusal refusal) {
+        refusal.answered.incrementAndGet();
+        return new Reply(refusal.status, refusal.body,
+                refusal.retryAfter == null ? Map.of() : Map.of("retry-after", refusal.retryAfter));
     }
 
     private synchronized Reply handle(String method, String path, Map<String, String> headers, String raw,
@@ -570,6 +654,10 @@ final class IndependentProviderStub implements AutoCloseable {
                     context.writeAndFlush(denied).addListener(ChannelFutureListener.CLOSE);
                     return;
                 }
+                if (!ProviderCrypto.PROTOCOL.equals(headers.get("sec-websocket-protocol"))) {
+                    faults.add("Upgrade without the NXS subprotocol");
+                }
+                generations.add(Long.parseLong(headers.get("nxs-generation")));
                 var handshaker = new WebSocketServerHandshakerFactory(origin.replace("http", "ws") + request.uri(),
                         ProviderCrypto.PROTOCOL, false, ProviderWebSocket.MAX_FRAME_BYTES).newHandshaker(request);
                 context.pipeline().addLast(new WebSocketFrameAggregator(ProviderWebSocket.MAX_FRAME_BYTES),
@@ -579,7 +667,7 @@ final class IndependentProviderStub implements AutoCloseable {
                 return;
             }
             String raw = request.content().toString(StandardCharsets.UTF_8);
-            Reply reply = handle(request.method().name(), request.uri(), headers, raw, false);
+            Reply reply = front(request.method().name(), request.uri(), headers, raw, false);
             byte[] bytes = reply.body().toString().getBytes(StandardCharsets.UTF_8);
             var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
                     HttpResponseStatus.valueOf(reply.status()), Unpooled.wrappedBuffer(bytes));
@@ -613,25 +701,47 @@ final class IndependentProviderStub implements AutoCloseable {
             JsonObject json = JsonParser.parseString(message).getAsJsonObject();
             switch (json.get("kind").getAsString()) {
                 case "operation" -> {
+                    if (!json.keySet().equals(Set.of("kind", "operation", "headers", "body"))) {
+                        faults.add("Operation frame members " + json.keySet());
+                    }
                     Map<String, String> headers = new HashMap<>();
                     json.getAsJsonObject("headers").entrySet()
                             .forEach(entry -> headers.put(entry.getKey(), entry.getValue().getAsString()));
-                    Reply reply = handle("POST", "/v1/nxs/" + json.get("operation").getAsString(), headers,
-                            json.get("body").getAsString(), true);
-                    if (dropAfterCommit) {
-                        dropAfterCommit = false;
+                    if (!headers.keySet().equals(Set.copyOf(ProviderWebSocket.AUTH_HEADERS))) {
+                        faults.add("Operation frame headers " + headers.keySet());
+                    }
+                    String operation = json.get("operation").getAsString(), body = json.get("body").getAsString();
+                    Reply reply = front("POST", "/v1/nxs/" + operation, headers, body, true);
+                    if (operation.equals(dropAfterCommit)) {
+                        dropAfterCommit = null;
+                        dropped(headers, body);
                         context.close();
                         return;
+                    }
+                    String broken = brokenReply;
+                    if (broken != null) {
+                        brokenReply = null;
+                        dropped(headers, body);
+                        context.writeAndFlush(new TextWebSocketFrame(broken));
+                        return;
+                    }
+                    String push = pushBeforeReply;
+                    if (push != null) {
+                        context.writeAndFlush(new TextWebSocketFrame(push));
                     }
                     JsonObject response = new JsonObject();
                     response.addProperty("kind", "response");
                     response.addProperty("id", headers.get("idempotency-key"));
                     response.addProperty("status", reply.status());
-                    JsonObject replyHeaders = new JsonObject();
+                    JsonObject replyHeaders = responseHeaders.deepCopy();
                     reply.headers().forEach(replyHeaders::addProperty);
                     response.add("headers", replyHeaders);
                     response.addProperty("body", reply.body().toString());
-                    context.writeAndFlush(new TextWebSocketFrame(response.toString()));
+                    // Fragmented, so the client's reassembly is part of every exchange
+                    String wire = response.toString();
+                    int split = wire.length() / 2;
+                    context.write(new TextWebSocketFrame(false, 0, wire.substring(0, split)));
+                    context.writeAndFlush(new ContinuationWebSocketFrame(true, 0, wire.substring(split)));
                 }
                 case "assisted-join-result" -> assistedResults.add(json);
                 default -> {

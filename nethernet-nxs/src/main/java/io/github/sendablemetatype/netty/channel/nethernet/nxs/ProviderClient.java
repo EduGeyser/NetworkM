@@ -472,6 +472,9 @@ public final class ProviderClient implements AutoCloseable {
     /**
      * Where the client runs and how it reaches the network. A production client owns all of it; tests substitute a
      * manual clock and executor.
+     *
+     * @param eventLoops Creates the event loop group for the WebSocket on first use; the client owns the group it
+     *                   gets and shuts it down when it stops
      */
     record Environment(ProviderClock clock, ScheduledExecutorService executor, boolean ownsExecutor,
                        HttpClient http, Supplier<EventLoopGroup> eventLoops, SslContext tls) {
