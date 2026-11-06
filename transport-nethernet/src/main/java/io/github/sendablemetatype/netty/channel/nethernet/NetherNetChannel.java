@@ -573,6 +573,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
                 metrics.bytesIn(packet.content().readableBytes());
             } catch (RuntimeException e) {
                 log.debug("NetherNet metrics failed", e);
+            } catch (Error e) {
+                // Nothing owns the message yet, so it would leak with the error.
+                packet.release();
+                throw e;
             }
         }
         enqueueInbound(packet);

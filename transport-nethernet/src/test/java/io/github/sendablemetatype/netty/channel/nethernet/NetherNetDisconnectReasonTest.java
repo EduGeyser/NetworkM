@@ -273,6 +273,44 @@ class NetherNetDisconnectReasonTest {
         }
     }
 
+    @Test
+    void aMetricThatThrowsAnErrorDoesNotLeakTheMessage() {
+        List<ByteBuf> allocated = new ArrayList<>();
+        AbstractByteBufAllocator recording = new AbstractByteBufAllocator() {
+            @Override
+            protected ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity) {
+                ByteBuf buffer = Unpooled.buffer(initialCapacity, maxCapacity);
+                allocated.add(buffer);
+                return buffer;
+            }
+
+            @Override
+            protected ByteBuf newDirectBuffer(int initialCapacity, int maxCapacity) {
+                ByteBuf buffer = Unpooled.directBuffer(initialCapacity, maxCapacity);
+                allocated.add(buffer);
+                return buffer;
+            }
+
+            @Override
+            public boolean isDirectBufferPooled() {
+                return false;
+            }
+        };
+        try (ActiveChild h = new ActiveChild(child -> {
+            child.config().setAllocator(recording);
+            child.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void messagesIn(int count) {
+                    throw new AssertionError("a broken metric");
+                }
+            });
+        })) {
+            assertThrows(AssertionError.class, () -> h.fixture.reliable(0, 9));
+            assertFalse(allocated.isEmpty());
+            allocated.forEach(buffer -> assertEquals(0, buffer.refCnt(), "the message leaked"));
+        }
+    }
+
     /** Hands out unpooled buffers until told to fail. */
     private static final class FailingAllocator extends AbstractByteBufAllocator {
         volatile boolean fail;
