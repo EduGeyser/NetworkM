@@ -8,6 +8,8 @@ import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
 import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelSendObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelState;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -51,12 +53,15 @@ import java.util.function.Consumer;
  * close: on those natives, 13 of 40 aborts during a burst of sends had a
  * refusal arrive first (measured 2026-11-06). Such a refusal waits for the
  * close. A channel that is open never connects again, so for these sends
- * "not open" means closing or closed. A send made earlier, which the
+ * "not open" means closing or closed. A channel that stays CLOSING past
+ * {@link WebRtcPeer#CLOSING_TIMEOUT} counts as closed by the remote peer, so
+ * no refusal waits for good. A send made earlier, which the
  * {@link DataLink} contract does not allow, can meet a channel still
  * connecting, which libwebrtc refuses the same way; its refusal fails at
  * once.
  */
 final class WebRtcLink implements DataLink {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(WebRtcLink.class);
 
     /**
      * The start of webrtc-java's failure for every send libwebrtc refused
@@ -108,6 +113,8 @@ final class WebRtcLink implements DataLink {
     // Written under events; read outside it to skip reading the error again,
     // and by each send, to know whether the listener had heard the open.
     private volatile Reported reported = Reported.NOTHING;
+    // Guarded by events: whether the channel was seen CLOSING, which starts the closing timeout.
+    private boolean closingSeen;
 
     WebRtcLink(WebRtcPeer peer, ChannelParameters parameters, NativeLink channel) {
         this.peer = peer;
@@ -211,6 +218,27 @@ final class WebRtcLink implements DataLink {
      * The listener heard that the channel closed: refusals that waited for it
      * fail now, later ones at once.
      */
+    /**
+     * The channel was still not CLOSED when the closing timeout passed after it was seen CLOSING:
+     * the remote peer started an orderly close that does not complete. It counts as closed by the
+     * remote, so the connection ends, with or without sends waiting for the close.
+     */
+    private void closingTimedOut() {
+        boolean closedNow = false;
+        synchronized (events) {
+            if (reported != Reported.CLOSED) {
+                reported = Reported.CLOSED;
+                peer.dispatch(listener -> listener.onChannelClosed(this, CloseCause.REMOTE_CLOSED));
+                closedNow = true;
+            }
+        }
+        if (closedNow) {
+            log.debug("Data channel {} stayed closing past the closing timeout; it counts as closed by the remote peer",
+                    parameters.label());
+            closed(CloseCause.REMOTE_CLOSED);
+        }
+    }
+
     private void closed(CloseCause cause) {
         List<PendingSend> waiting;
         synchronized (sends) {
@@ -366,6 +394,7 @@ final class WebRtcLink implements DataLink {
             CloseCause cause = state == RTCDataChannelState.CLOSED && reported != Reported.CLOSED
                     ? peer.linkCloseCause(current.error()) : null;
             boolean closedNow = false;
+            boolean closingNow = false;
             synchronized (events) {
                 if (state == RTCDataChannelState.OPEN && reported == Reported.NOTHING) {
                     reported = Reported.OPEN;
@@ -374,10 +403,15 @@ final class WebRtcLink implements DataLink {
                     reported = Reported.CLOSED;
                     peer.dispatch(listener -> listener.onChannelClosed(WebRtcLink.this, cause));
                     closedNow = true;
+                } else if (state == RTCDataChannelState.CLOSING && reported != Reported.CLOSED && !closingSeen) {
+                    closingSeen = true;
+                    closingNow = true;
                 }
             }
             if (closedNow) {
                 closed(cause);
+            } else if (closingNow) {
+                peer.afterClosingTimeout(WebRtcLink.this::closingTimedOut);
             }
         }
 
