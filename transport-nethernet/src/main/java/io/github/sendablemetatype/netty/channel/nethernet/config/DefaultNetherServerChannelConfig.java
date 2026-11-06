@@ -21,6 +21,7 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
     private volatile ServerIdentity serverIdentity;
     private volatile OfferCheck offerCheck;
     private volatile int offerCheckTimeoutMillis = DEFAULT_OFFER_CHECK_TIMEOUT_MILLIS;
+    private volatile NetherServerJoinFilter joinFilter;
     private volatile NetherServerThrottle throttle = new DefaultNetherServerThrottle();
     private volatile int maxSessions = Integer.MAX_VALUE;
     private volatile int maxPendingJoins = DEFAULT_MAX_PENDING_JOINS;
@@ -45,6 +46,7 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
                 NetherChannelOption.NETHER_SERVER_IDENTITY,
                 NetherChannelOption.NETHER_SERVER_OFFER_CHECK,
                 NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS,
+                NetherChannelOption.NETHER_SERVER_JOIN_FILTER,
                 NetherChannelOption.NETHER_SERVER_THROTTLE,
                 NetherChannelOption.NETHER_SERVER_MAX_SESSIONS,
                 NetherChannelOption.NETHER_SERVER_MAX_PENDING_JOINS,
@@ -72,6 +74,8 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
             value = getOfferCheck();
         } else if (option == NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS) {
             value = offerCheckTimeoutMillis;
+        } else if (option == NetherChannelOption.NETHER_SERVER_JOIN_FILTER) {
+            value = joinFilter;
         } else if (option == NetherChannelOption.NETHER_SERVER_THROTTLE) {
             value = throttle;
         } else if (option == NetherChannelOption.NETHER_SERVER_MAX_SESSIONS) {
@@ -113,6 +117,8 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
             this.offerCheck = (OfferCheck) value;
         } else if (option == NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS) {
             this.offerCheckTimeoutMillis = positive("offerCheckTimeoutMillis", (Integer) value);
+        } else if (option == NetherChannelOption.NETHER_SERVER_JOIN_FILTER) {
+            this.joinFilter = (NetherServerJoinFilter) value;
         } else if (option == NetherChannelOption.NETHER_SERVER_THROTTLE) {
             this.throttle = (NetherServerThrottle) value;
         } else if (option == NetherChannelOption.NETHER_SERVER_MAX_SESSIONS) {
@@ -185,6 +191,11 @@ public class DefaultNetherServerChannelConfig extends DefaultNetherChannelConfig
 
     public int getOfferCheckTimeoutMillis() {
         return offerCheckTimeoutMillis;
+    }
+
+    /** The host's join filter, or null for none. */
+    public NetherServerJoinFilter getJoinFilter() {
+        return joinFilter;
     }
 
     public NetherServerThrottle getThrottle() {

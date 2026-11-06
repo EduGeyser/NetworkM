@@ -60,7 +60,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     private final CandidateAnnouncement announcement;
     private final TrickledAnswerCandidates trickled;
     private final Runnable handshakeDone;
-    private final Consumer<JoinRefusal> refused;
+    private final Consumer<JoinRefusal> onRefused;
     private volatile NetherNetChildChannel child;
     private volatile JoinProgress progress = JoinProgress.NONE;
     private volatile boolean answerHandedOn;
@@ -75,10 +75,10 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
 
     /**
      * @param handshakeDone gives the join's pending handshake back, once it went active
-     * @param refused told about the refusal this join sends, if it sends one
+     * @param onRefused told about the refusal this join sends, if it sends one
      */
     ServerJoin(Join join, Settings settings, RemoteCandidateIntake intake, CandidateAnnouncement announcement,
-               Runnable handshakeDone, Consumer<JoinRefusal> refused) {
+               Runnable handshakeDone, Consumer<JoinRefusal> onRefused) {
         this.join = join;
         this.id = Long.toUnsignedString(join.connectionId());
         this.settings = settings;
@@ -89,7 +89,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         this.announcement = announcement;
         this.trickled = join.reply().trickles() ? AnswerCandidates.trickled(announcement) : null;
         this.handshakeDone = handshakeDone;
-        this.refused = refused;
+        this.onRefused = onRefused;
     }
 
     String id() {
@@ -281,7 +281,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         if (!refused.compareAndSet(false, true) || (trickled == null && answerHandedOn)) {
             return;
         }
-        refused.accept(refusal);
+        onRefused.accept(refusal);
         try {
             sent(join.reply().refuse(refusal), "refusal");
         } catch (RuntimeException e) {

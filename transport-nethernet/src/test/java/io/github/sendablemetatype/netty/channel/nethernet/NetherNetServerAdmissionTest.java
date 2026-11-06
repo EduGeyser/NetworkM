@@ -4,10 +4,15 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherServerThrottle;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerJoinFilter;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerThrottle;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
@@ -31,6 +36,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.ANSWER;
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.OFFER;
@@ -308,6 +314,106 @@ class NetherNetServerAdmissionTest {
         harness.sync();
         assertTrue(harness.engine.peers().isEmpty());
         assertEquals(1, reply.finished.get());
+    }
+
+    // The host's join filter.
+
+    @Test
+    void theFilterSeesTheJoinOffTheLoopAfterItsCheckAndCanRefuseIt() throws Exception {
+        List<NetherServerJoinFilter.Request> asked = new CopyOnWriteArrayList<>();
+        List<Boolean> onLoop = new CopyOnWriteArrayList<>();
+        reportRefusals();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_JOIN_FILTER, join -> {
+            asked.add(join);
+            onLoop.add(harness.server.eventLoop().inEventLoop());
+            return false;
+        });
+        harness.bind();
+        FakeJoinSource source = harness.source(false, OfferPolicy.REQUIRE_KEY_PROVEN);
+        SourcedAddress client = new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.SIGNALING, null);
+        ClientInfo info = new ClientInfo("1.26.62", 2225, 8);
+
+        source.offer(1, educationOffer(), client, new Join.Addressed("play.example.com:19132", 19132, false, info))
+                .assertRefused(JoinRefusal.HOST_REFUSED);
+        source.offer(2, OFFER).assertRefused(JoinRefusal.IDENTITY_MISSING);
+
+        assertEquals(1, asked.size(), "a join the identity policy refused never reaches the filter");
+        NetherServerJoinFilter.Request request = asked.getFirst();
+        assertSame(source, request.source());
+        assertEquals("remote-1", request.remoteNetworkId());
+        assertEquals(client, request.address());
+        assertEquals("play.example.com:19132", request.host());
+        assertEquals(info, request.client());
+        assertEquals(OfferCheckResult.Level.KEY_PROVEN, request.check().level());
+        assertEquals(List.of(false), onLoop);
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(List.of(403, 401), refusedStatuses);
+        assertEquals(0, harness.server.gate().pending());
+    }
+
+    @Test
+    void aJoinTheFilterAllowsIsAdmitted() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_JOIN_FILTER,
+                join -> join.check().keyProven() && join.host() == null);
+        harness.bind();
+        harness.source(true).offer(1, educationOffer());
+        assertEquals(OfferCheckResult.Level.KEY_PROVEN, harness.child().getOfferCheck().level());
+    }
+
+    @Test
+    void aFilterThatThrowsRefusesTheJoinLikeAFailedCheck() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_JOIN_FILTER, join -> {
+            throw new IllegalStateException("the ban list is unreachable");
+        });
+        harness.bind();
+        harness.source(true).offer(1, educationOffer()).assertRefused(JoinRefusal.INTERNAL);
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(0, harness.server.gate().sessions());
+    }
+
+    @Test
+    void aFilterPastTheDeadlineRefusesTheJoinAndAdmitsNothingLater() throws Exception {
+        useManualChecks();
+        AtomicInteger calls = new AtomicInteger();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS, 300)
+                .option(NetherChannelOption.NETHER_SERVER_JOIN_FILTER, join -> {
+                    calls.incrementAndGet();
+                    return true;
+                });
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(1, educationOffer());
+        checks.awaitQueued();
+        checks.runNext();
+        checks.awaitQueued();
+
+        reply.assertRefused(JoinRefusal.NO_ANSWER_IN_TIME);
+        checks.runNext();
+        harness.sync();
+        assertEquals(0, calls.get(), "a withdrawn filter call never runs");
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(0, harness.server.gate().sessions());
+    }
+
+    @Test
+    void anAuthenticatedJoinPassesTheFilterWithoutACheckResult() throws Exception {
+        List<NetherServerJoinFilter.Request> asked = new CopyOnWriteArrayList<>();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_JOIN_FILTER, join -> {
+            asked.add(join);
+            return false;
+        });
+        harness.bind();
+        FakeJoinSource nxs = harness.source(false);
+        SourcedAddress address = new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.NXS_ADMISSION, null);
+        TransportIdentityBinding binding = TransportIdentityBinding.unbound();
+
+        nxs.authenticated(1, OFFER, address, new Join.Authenticated(
+                new IceCredentials("NXS1K001token", "derivedpassword0123456789"),
+                new DtlsIdentity("certificate", "key"), binding, child -> fail("a refused join has no child")))
+                .assertRefused(JoinRefusal.HOST_REFUSED);
+        assertEquals(1, asked.size());
+        assertNull(asked.getFirst().check());
+        assertEquals(address, asked.getFirst().address());
+        assertTrue(harness.engine.peers().isEmpty());
     }
 
     // The shared budget.

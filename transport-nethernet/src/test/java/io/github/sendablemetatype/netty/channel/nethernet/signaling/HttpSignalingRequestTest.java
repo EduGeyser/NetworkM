@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
 import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.EmbeddedHttp.Response;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusAnswer;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.EventLoopGroup;
@@ -354,10 +355,20 @@ class HttpSignalingRequestTest {
         Join join = sink.next();
         assertEquals(EmbeddedHttp.CLIENT, join.source().address());
         assertEquals(AddressSource.SIGNALING, join.source().source());
-        assertEquals(new Join.Addressed("127.0.0.1:19132", EmbeddedHttp.LOCAL.getPort(), false), join.addressed());
+        assertEquals(new Join.Addressed("127.0.0.1:19132", EmbeddedHttp.LOCAL.getPort(), false, null), join.addressed());
         assertFalse(join.reply().trickles());
         assertThrows(UnsupportedOperationException.class, () -> join.reply().candidate("candidate:1"));
         assertTrue(join.connectionId() > 0);
+    }
+
+    @Test
+    void anOfferCarriesWhatItsQuerySaysAboutTheClient() throws Exception {
+        EmbeddedHttp http = connect();
+        http.send(post("42?version=1.26.62&protocol=2225&platform=8", OFFER));
+
+        Join join = sink.next();
+        assertEquals("42", join.remoteNetworkId());
+        assertEquals(new ClientInfo("1.26.62", 2225, 8), join.addressed().client());
     }
 
     @Test

@@ -140,7 +140,10 @@ class NetherNetServerChannelTest {
             ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
                     .awaitUninterruptibly();
             assertInstanceOf(BindException.class, bind.cause());
-            assertFalse(bind.channel().isOpen());
+            // Netty closes a channel whose bind failed from a listener, which can run after the
+            // bind future woke this thread.
+            assertTrue(bind.channel().closeFuture().awaitUninterruptibly(2, TimeUnit.SECONDS),
+                    "the channel closes after its bind failed");
         }
     }
 
