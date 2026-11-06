@@ -285,13 +285,19 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         this.offerHandler = handler;
     }
 
+    // Offers carry the client's identity token, so logs name a signal by its type only.
+    private static String signalType(String signal) {
+        int space = signal.indexOf(' ');
+        return space < 0 ? "malformed" : signal.substring(0, Math.min(space, 16));
+    }
+
     /**
      * Sends a signal immediately and schedules it to be resent periodically
      * until the returned ScheduledFuture is cancelled.
      */
     public ScheduledFuture<?> sendSignalRetrying(InetSocketAddress recipient, long targetNetworkId, String data, long delayMs) {
         return channel.eventLoop().scheduleAtFixedRate(() -> {
-            log.debug("Resending signal to {}: {}", recipient, data);
+            log.debug("Resending a {} signal to {}", signalType(data), recipient);
             sendSignal(recipient, targetNetworkId, data);
         }, 0, delayMs, TimeUnit.MILLISECONDS);
     }
@@ -495,7 +501,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 log.debug("Unhandled signal type: {}", type);
             }
         } catch (NumberFormatException e) {
-            log.debug("Invalid connection ID format in message: {}", messageData);
+            log.debug("Ignoring a {} signal with an invalid connection ID ({} chars)", signalType(messageData), messageData.length());
         }
     }
 

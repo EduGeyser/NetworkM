@@ -1029,7 +1029,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                 log.debug("No handler found for connection ID: {} (Type: {})", connectionId, parts[0]);
             }
         } catch (Exception e) {
-            log.error("Failed to dispatch signal: {}", rawMsg, e);
+            // The signal can be an offer with the client's identity token in it, so it is not logged.
+            int space = rawMsg.indexOf(' ');
+            log.error("Failed to dispatch a {} signal ({} chars)",
+                    space < 0 ? "malformed" : rawMsg.substring(0, Math.min(space, 16)), rawMsg.length(), e);
         }
     }
 
