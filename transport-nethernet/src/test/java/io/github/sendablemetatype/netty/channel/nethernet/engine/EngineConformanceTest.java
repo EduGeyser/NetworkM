@@ -233,6 +233,41 @@ public abstract class EngineConformanceTest {
         assertTrue(EnumSet.of(CloseCause.REMOTE_CLOSED, CloseCause.REMOTE_ABORTED).contains(closed.cause()), closed.toString());
     }
 
+    /**
+     * A client quits while the server sends: every send its close refuses fails with the cause
+     * the close reports, however the refusals and the close race on the engine's threads. The
+     * sends run on while the client closes, as a server's do.
+     */
+    @Test
+    void sendsTheRemoteCloseRefusedNameItsCause() throws Exception {
+        Pair pair = connect(true, answererConfig());
+        DataLink link = pair.server.links.get(RELIABLE);
+        Set<String> refusals = ConcurrentHashMap.newKeySet();
+        AtomicInteger settled = new AtomicInteger();
+        Consumer<Throwable> result = failure -> {
+            if (failure != null) {
+                refusals.add(failure instanceof DataLinkClosedException closed
+                        ? closed.closeCause().name() : failure.toString());
+            }
+            settled.incrementAndGet();
+        };
+
+        CompletionStage<Void> quitting = pair.client.peer.close();
+        int sends = 0;
+        long burstEnd = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(50);
+        while (System.nanoTime() < burstEnd || !quitting.toCompletableFuture().isDone()) {
+            link.send(ByteBuffer.allocate(8), result);
+            sends++;
+        }
+        CloseCause reported = pair.server.channelClosed(RELIABLE).cause();
+        // Sent after the close was reported, so at least this one is refused.
+        link.send(ByteBuffer.allocate(8), result);
+        int expected = sends + 1;
+        awaitCondition(() -> settled.get() == expected, "Not every send settled");
+
+        assertEquals(Set.of(reported.name()), Set.copyOf(refusals));
+    }
+
     @Test
     void aRefusedRemoteLinkIsClosed() throws Exception {
         Side client = new Side("client");

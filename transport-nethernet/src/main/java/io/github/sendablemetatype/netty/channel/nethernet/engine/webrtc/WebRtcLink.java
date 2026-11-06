@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLinkClosedException;
 import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
 import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelSendObserver;
@@ -10,6 +11,7 @@ import io.github.sendablemetatype.webrtc.RTCDataChannelState;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -38,16 +40,37 @@ import java.util.function.Consumer;
  * answers on that thread at once, and hands the events to the listener, which
  * must not block either. It never calls a peer connection method: that would
  * wait for the signaling thread, which may be waiting for the network thread.
+ *
+ * <p>A send libwebrtc refuses because the channel is not open fails with a
+ * {@link DataLinkClosedException} naming why the channel closed, and only
+ * after the listener heard of that close. Send results arrive on webrtc-java's
+ * callback thread, the close on the network thread, or on the signaling
+ * thread with natives that make libwebrtc post data channel events there, so
+ * the refusal of a send made just after a client quit can arrive before the
+ * close: on those natives, 13 of 40 aborts during a burst of sends had a
+ * refusal arrive first (measured 2026-11-06). Such a refusal waits for the
+ * close.
  */
 final class WebRtcLink implements DataLink {
 
     /**
-     * webrtc-java's failure for a send whose result libwebrtc dropped without
-     * calling it ({@code RTCDataChannelSendObserver}'s destructor): libwebrtc
-     * found no transport, or its network thread stopped, before it tried the
-     * send, so its buffered amount never counted it.
+     * The start of webrtc-java's failure for every send libwebrtc refused
+     * because the channel was not open. While the remote peer closes the
+     * channel in an orderly way, for a round trip, libwebrtc tries the send
+     * and refuses it ({@code SctpDataChannel::SendImpl}); once the channel
+     * closed, for any cause, such as a client's quit, it refuses the send
+     * without trying it ({@code SctpDataChannel::SendAsync}). Other refusals
+     * carry other error types.
      */
-    static final String DISCARDED = "[INVALID_STATE] Send operation was discarded before completion";
+    static final String NOT_OPEN = "[INVALID_STATE] ";
+
+    /**
+     * webrtc-java's failure for a send whose result libwebrtc dropped without
+     * calling it ({@code RTCDataChannelSendObserver}'s destructor): its
+     * network thread stopped before it ran the send, so its buffered amount
+     * never counted it.
+     */
+    static final String DISCARDED = NOT_OPEN + "Send operation was discarded before completion";
 
     private final WebRtcPeer peer;
     private final ChannelParameters parameters;
@@ -64,6 +87,10 @@ final class WebRtcLink implements DataLink {
     private final Set<PendingSend> pending = new HashSet<>();
     private boolean stopped;
     private final CompletableFuture<Void> settled = new CompletableFuture<>();
+    // Guarded by sends: why the channel closed, once the listener heard of it,
+    // and the sends refused as not open that wait for that. They stay pending.
+    private CloseCause closedBecause;
+    private final List<PendingSend> refusedBeforeClose = new ArrayList<>();
 
     /**
      * Held for each event handed to the listener, so the events of this link
@@ -158,14 +185,33 @@ final class WebRtcLink implements DataLink {
      */
     CompletableFuture<Void> stopSending() {
         boolean idle;
+        List<PendingSend> waiting;
         synchronized (sends) {
             stopped = true;
             idle = pending.isEmpty();
+            waiting = List.copyOf(refusedBeforeClose);
+            refusedBeforeClose.clear();
         }
+        // No close event follows the teardown, and their results are in.
+        waiting.forEach(PendingSend::settleRefusal);
         if (idle) {
             settled.complete(null);
         }
         return settled;
+    }
+
+    /**
+     * The listener heard that the channel closed: refusals that waited for it
+     * fail now, later ones at once.
+     */
+    private void closed(CloseCause cause) {
+        List<PendingSend> waiting;
+        synchronized (sends) {
+            closedBecause = cause;
+            waiting = List.copyOf(refusedBeforeClose);
+            refusedBeforeClose.clear();
+        }
+        waiting.forEach(send -> send.settle(new DataLinkClosedException(cause), send.uncountedRefusal));
     }
 
     /**
@@ -198,6 +244,9 @@ final class WebRtcLink implements DataLink {
         private final Consumer<Throwable> completion;
         // Guarded by sends.
         private boolean claimed;
+        // Set under sends before the send waits in refusedBeforeClose, read after it left.
+        private String refusal;
+        private boolean uncountedRefusal;
 
         PendingSend(int size, Consumer<Throwable> completion) {
             this.size = size;
@@ -211,7 +260,28 @@ final class WebRtcLink implements DataLink {
 
         @Override
         public void onFailure(String error) {
-            settle(new IOException("Native send failed: " + error), DISCARDED.equals(error));
+            boolean uncounted = DISCARDED.equals(error);
+            if (!error.startsWith(NOT_OPEN)) {
+                settle(new IOException("Native send failed: " + error), uncounted);
+                return;
+            }
+            CloseCause cause;
+            synchronized (sends) {
+                cause = closedBecause;
+                if (cause == null && !stopped) {
+                    refusal = error;
+                    uncountedRefusal = uncounted;
+                    refusedBeforeClose.add(this);
+                    return;
+                }
+            }
+            settle(cause != null ? new DataLinkClosedException(cause)
+                    : new IOException("Native send failed: " + error), uncounted);
+        }
+
+        /** Fails a refusal that waited for a close the listener will not hear of. */
+        void settleRefusal() {
+            settle(new IOException("Native send failed: " + refusal), uncountedRefusal);
         }
 
         /**
@@ -286,6 +356,7 @@ final class WebRtcLink implements DataLink {
             RTCDataChannelState state = current.state();
             CloseCause cause = state == RTCDataChannelState.CLOSED && reported != Reported.CLOSED
                     ? peer.linkCloseCause(current.error()) : null;
+            boolean closedNow = false;
             synchronized (events) {
                 if (state == RTCDataChannelState.OPEN && reported == Reported.NOTHING) {
                     reported = Reported.OPEN;
@@ -293,7 +364,11 @@ final class WebRtcLink implements DataLink {
                 } else if (cause != null && reported != Reported.CLOSED) {
                     reported = Reported.CLOSED;
                     peer.dispatch(listener -> listener.onChannelClosed(WebRtcLink.this, cause));
+                    closedNow = true;
                 }
+            }
+            if (closedNow) {
+                closed(cause);
             }
         }
 

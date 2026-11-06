@@ -6,6 +6,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer.InFlightSends;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
@@ -65,6 +66,54 @@ class NetherNetDisconnectReasonTest {
             h.peer.closed(cause);
             h.run();
             assertEquals(List.of("active", reason.name(), "inactive"), h.events);
+        }
+    }
+
+    /**
+     * A client quits while a write is in flight, and the engine fails that write before it reports
+     * why the reliable channel closed: libwebrtc can report them in that order.
+     */
+    @ParameterizedTest
+    @CsvSource({"REMOTE_ABORTED, ABORTED_BY_REMOTE_PEER", "REMOTE_CLOSED, CLOSED_BY_REMOTE_PEER"})
+    void aWriteFailedByTheQuitBeforeTheCloseKeepsTheQuitsReason(CloseCause cause, TransportDisconnectReason reason) {
+        try (ActiveChild h = new ActiveChild()) {
+            h.channel.writeAndFlush(payload(1));
+            h.peer.linkClosed(h.reliable(), cause);
+            h.run();
+            assertEquals(List.of("active", reason.name(), "inactive"), h.events);
+        }
+    }
+
+    /**
+     * A quit as the captures show it: the client aborts, both data channels close (the unreliable
+     * one first) and ICE disconnects, while a write is in flight on one of the links. The engine
+     * fails the write before or after the link's close event; the reason is the quit's either way.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "true, FAIL_BEFORE_THE_EVENT", "true, FAIL_AFTER_THE_EVENT",
+            "false, FAIL_BEFORE_THE_EVENT", "false, FAIL_AFTER_THE_EVENT"})
+    void aQuitWithAWriteInFlightEndsAsAbortedByTheClientInEveryOrder(boolean reliableWrite, InFlightSends order) {
+        try (ActiveChild h = new ActiveChild()) {
+            h.channel.writeAndFlush(reliableWrite ? payload(1) : new NetherNetPacket(payload(1), false));
+            h.peer.linkClosed(h.unreliable(), CloseCause.REMOTE_ABORTED, order);
+            h.peer.linkClosed(h.reliable(), CloseCause.REMOTE_ABORTED, order);
+            h.peer.iceState(IceState.DISCONNECTED);
+            h.peer.state(PeerState.DISCONNECTED);
+            h.run();
+            assertEquals(List.of("active", "ABORTED_BY_REMOTE_PEER", "inactive"), h.events);
+        }
+    }
+
+    /** The first ending wins: a peer failing after the quit, before the loop closed, changes nothing. */
+    @Test
+    void aPeerFailingAfterTheQuitKeepsTheQuitsReason() {
+        try (ActiveChild h = new ActiveChild()) {
+            h.channel.writeAndFlush(payload(1));
+            h.peer.linkClosed(h.reliable(), CloseCause.REMOTE_ABORTED);
+            h.peer.closed(CloseCause.ICE_FAILED);
+            h.run();
+            assertEquals(List.of("active", "ABORTED_BY_REMOTE_PEER", "inactive"), h.events);
         }
     }
 

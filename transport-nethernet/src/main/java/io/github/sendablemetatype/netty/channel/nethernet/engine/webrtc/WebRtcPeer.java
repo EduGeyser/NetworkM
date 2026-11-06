@@ -466,7 +466,7 @@ final class WebRtcPeer implements Peer {
 
     /** Why a data channel that libwebrtc reports CLOSED ended; a local close never reaches here. */
     CloseCause linkCloseCause(NativeLink.LinkError error) {
-        if (error == null || error.type() == RTCErrorType.NONE) {
+        if (error == null || error.type() == RTCErrorType.NONE || isRefusedSend(error)) {
             return CloseCause.REMOTE_CLOSED;
         }
         log.debug("Data channel closed with {}", error);
@@ -479,6 +479,22 @@ final class WebRtcPeer implements Peer {
             return failed;
         }
         return iceState == IceState.FAILED ? CloseCause.ICE_FAILED : CloseCause.TRANSPORT_FAILED;
+    }
+
+    /**
+     * Whether a closed channel's error is only the refusal of a send made while the remote peer
+     * closed it in an orderly way. libwebrtc keeps the result of the channel's last send attempt
+     * as its error. While the channel is closing it refuses a send with a bare
+     * {@code INVALID_STATE} ({@code SctpDataChannel::SendImpl}), which the end of the closing
+     * procedure leaves in place ({@code OnClosingProcedureComplete}). Once the channel closed it
+     * refuses sends without touching the error ({@code SendAsync}), so an abrupt close keeps its
+     * own. The one close that sets {@code INVALID_STATE} itself, a failed open handshake message,
+     * carries a message ({@code SendControlMessage}).
+     */
+    private static boolean isRefusedSend(NativeLink.LinkError error) {
+        return error.type() == RTCErrorType.INVALID_STATE
+                && (error.detail() == null || error.detail() == RTCErrorDetailType.NONE)
+                && (error.message() == null || error.message().isEmpty());
     }
 
     void onLocalCandidate(String candidate, String mid) {

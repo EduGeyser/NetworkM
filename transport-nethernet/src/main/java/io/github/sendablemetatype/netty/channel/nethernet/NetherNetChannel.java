@@ -8,6 +8,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLinkClosedException;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
@@ -392,6 +393,19 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     final void transportEnded(CloseCause cause, boolean reliableChannel) {
         endTransport(disconnectReason(cause, reliableChannel), new IOException("The NetherNet "
                 + (reliableChannel ? "reliable data channel" : "peer") + " ended: " + cause));
+    }
+
+    /**
+     * The engine refused a segment, so the stream cannot go on. A segment refused because the
+     * remote peer closed the data channel it went to ends the connection with the reason of that
+     * close: when a client quits while a write is in flight, the write can fail before the close
+     * event arrives, and the reason must not depend on which comes first. Any other refusal is a
+     * transport failure. Any thread.
+     */
+    private void sendRefused(IOException failure) {
+        TransportDisconnectReason reason = failure instanceof DataLinkClosedException closed
+                ? disconnectReason(closed.closeCause(), true) : TransportDisconnectReason.TRANSPORT_FAILED;
+        endTransport(reason, failure);
     }
 
     /**
@@ -1237,7 +1251,7 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
                 IOException io = cause instanceof IOException e ? e
                         : new IOException("Failed to send NetherNet message", cause);
                 if (FAILURE.compareAndSet(this, null, io)) {
-                    channel.endTransport(TransportDisconnectReason.TRANSPORT_FAILED, io);
+                    channel.sendRefused(io);
                 }
             }
             if (unsettled.decrementAndGet() != 0) {

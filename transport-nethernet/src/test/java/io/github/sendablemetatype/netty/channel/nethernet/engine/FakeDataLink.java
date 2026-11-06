@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
@@ -12,7 +13,9 @@ import java.util.function.Consumer;
  * to {@link #queuedBytes()} when it is made, a refusal takes it out again,
  * and otherwise it stays until the test drains it, or on a loopback engine
  * until the other side received it. Each send settles exactly once, and its
- * peer's close stage waits for a completion still running.
+ * peer's close stage waits for a completion still running. Once the remote
+ * peer closed the link, sends fail with a {@link DataLinkClosedException}
+ * naming why.
  */
 public final class FakeDataLink implements DataLink {
     private final FakePeer peer;
@@ -22,6 +25,8 @@ public final class FakeDataLink implements DataLink {
     private long watermark; // guarded by this
     private boolean announced;
     private volatile boolean closed;
+    // Why the remote peer closed the link; null while open and after a local close. Written before closed.
+    private volatile CloseCause remoteCause;
     // Loopback only: the other side's link, once the peers connected.
     private volatile FakeDataLink counterpart;
     private volatile Throwable refusal;
@@ -85,7 +90,7 @@ public final class FakeDataLink implements DataLink {
             synchronized (this) {
                 sends.add(send);
                 queued += bytes.length;
-                refused = closed ? new IOException("The data link is closed")
+                refused = closed ? closedFailure()
                         : refusal != null ? refusal
                         : peer.isLoopback() && far == null ? new IOException("The data link is not open")
                         : null;
@@ -218,20 +223,46 @@ public final class FakeDataLink implements DataLink {
         });
     }
 
-    /** Closes the link and refuses its unsettled sends. Returns false if it was closed already. */
+    /** Closes the link for a local close and refuses its unsettled sends. Returns false if it was closed already. */
     boolean closeByEngine() {
-        List<Send> unsettled;
+        List<Send> unsettled = markClosed(null);
+        if (unsettled == null) {
+            return false;
+        }
+        failSends(unsettled);
+        return true;
+    }
+
+    /**
+     * Closes the link as the remote peer did, without settling anything yet.
+     *
+     * @return the sends still unsettled, for {@link #failSends}, or null if the link was closed already
+     */
+    List<Send> closeByRemote(CloseCause cause) {
+        return markClosed(Objects.requireNonNull(cause, "cause"));
+    }
+
+    /** Refuses sends of a closed link that are still unsettled, as its close does. */
+    void failSends(List<Send> unsettled) {
+        for (Send send : unsettled) {
+            settle(send, closedFailure(), false);
+        }
+    }
+
+    private List<Send> markClosed(CloseCause cause) {
         synchronized (this) {
             if (closed) {
-                return false;
+                return null;
             }
+            remoteCause = cause;
             closed = true;
-            unsettled = sends.stream().filter(send -> !send.settled).toList();
+            return sends.stream().filter(send -> !send.settled).toList();
         }
-        for (Send send : unsettled) {
-            settle(send, new IOException("The data link closed"), false);
-        }
-        return true;
+    }
+
+    private IOException closedFailure() {
+        CloseCause cause = remoteCause;
+        return cause != null ? new DataLinkClosedException(cause) : new IOException("The data link is closed");
     }
 
     private synchronized Send send(int index) {

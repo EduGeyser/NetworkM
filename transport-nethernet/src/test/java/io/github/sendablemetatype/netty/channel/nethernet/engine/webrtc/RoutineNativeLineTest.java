@@ -18,6 +18,8 @@ class RoutineNativeLineTest {
             "(turn_port.cc:943): Port[1f2e3d4c:0:1:0:relay:Net[Wi-Fi:2001:db8:1:x:x:x:x:x/64:Wifi:id=3]]: TURN host lookup received error 0",
             "(turn_port.cc:1736): Port[1f2e3d4c:0:1:0:relay:Net[eth0:192.168.1.x/24:Ethernet:id=1]]: Received TURN create permission error response, id=4a6f2c9d01b3e5f7a8c0d2e4, code=403, rtt=31",
             "(turn_port.cc:1933): Received TURN CreatePermission error response, code=403; pruned connection.",
+            "(sdp_munging_detector.cc:54): SDP munging: ice-ufrag does not match last created description.",
+            "(sdp_munging_detector.cc:59): SDP munging: ice-pwd does not match last created description.",
     })
     void routineLinesMatch(String line) {
         assertTrue(RoutineNativeLine.matches(line, () -> true), line);
@@ -37,6 +39,9 @@ class RoutineNativeLineTest {
             // Permission errors other than 403
             "(turn_port.cc:1736): Port[1f2e3d4c:0:1:0:relay:Net[eth0:192.168.1.x/24:Ethernet:id=1]]: Received TURN create permission error response, id=4a6f2c9d01b3e5f7a8c0d2e4, code=508, rtt=31",
             "(turn_port.cc:1933): Received TURN CreatePermission error response, code=401; pruned connection.",
+            // Other kinds of munging, which the adapter never makes
+            "(sdp_munging_detector.cc:64): SDP munging: ice mode does not match last created description.",
+            "(sdp_munging_detector.cc:69): SDP munging: DTLS role does not match last created description.",
             // A routine message from another source file, and a line without a source prefix
             "(turn_port.cc:561): DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=Close called).",
             "DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=Close called).",
