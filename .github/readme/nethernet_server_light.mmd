@@ -4,37 +4,54 @@ config:
   theme: redux
 ---
 flowchart LR
- subgraph TransportLayer["<b>NetherNet Transport</b>"]
-    direction TB
-    Native["<b>WebRTC Native</b><br><i>libdatachannel</i>"]
-    DataChannel["<b>RTCDataChannel</b><br><i>Reliability & Ordering</i>"]
-    ChildChannel["<b>NetherNetChildChannel</b><br><i>Netty Adapter</i>"]
+    Client(("Bedrock client"))
+
+ subgraph Sources["<b>Join sources</b>"]
+    Http["<b>NetherNetHttpSignaling</b><br><i>HTTP on TCP</i>"]
+    Xbox["<b>NetherNetXboxRpcSignaling</b><br><i>Xbox Live WebSocket</i>"]
+    Lan["<b>NetherNetDiscoverySignaling</b><br><i>LAN discovery on UDP</i>"]
+    Nxs["<b>NXS host</b><br><i>nethernet-nxs module</i>"]
+ end
+ subgraph Endpoint["<b>NetherNetServerChannel</b>"]
+    Admission["<b>Admission stage</b><br><i>Throttle, budget, OfferCheck, OfferPolicy</i>"]
+    Child["<b>NetherNetChildChannel</b><br><i>One per admitted join</i>"]
+ end
+ subgraph Engine["<b>NetherNetEngine</b><br><i>WebRtcEngine: libwebrtc through webrtc-java</i>"]
+    Ice["<b>IceEndpoint</b><br><i>Shared ICE port on UDP</i>"]
+    Peer["<b>Peer</b><br><i>One per child</i>"]
+    Reliable["<b>ReliableDataChannel</b>"]
+    Unreliable["<b>UnreliableDataChannel</b>"]
  end
  subgraph UserPipeline["<b>User ChannelPipeline</b>"]
     UserLogic["<b>User Handlers</b><br><i>Application Logic</i>"]
  end
 
-    Network(("Network (DTLS/UDP)"))
-    Network == Encrypted Frame ==> Native
-    Native == Reassembled Message ==> DataChannel
-    DataChannel == <i>RTCDataChannelBuffer</i> ==> ChildChannel
-    ChildChannel == <i>ByteBuf</i> ==> UserLogic
-    UserLogic == <i>ByteBuf</i> ==> ChildChannel
-    ChildChannel == <i>RTCDataChannelBuffer</i> ==> DataChannel
-    DataChannel == Message ==> Native
-    Native == Encrypted Frame ==> Network
-    Native:::shared
-    DataChannel:::shared
-    ChildChannel:::shared
+    %% Signaling
+    Client <-. Offer, answer, candidates .-> Sources
+    Sources -. Join with ReplyPath .-> Admission
+    Sources <-. JoinRefusal .- Admission
+    Admission -. Admitted .-> Child
+    Sources <-. Signed answer, candidates .- Child
+    Peer <-. Creates .- Child
+
+    %% Data
+    Client <== DTLS and SCTP over UDP ==> Ice
+    Ice <==> Peer
+    Peer <== Segments ==> Reliable
+    Peer <== Segments ==> Unreliable
+    Reliable <== Segments ==> Child
+    Unreliable <== Segments ==> Child
+    Child <== <i>ByteBuf</i>, <i>NetherNetPacket</i> ==> UserLogic
+
+    %% Styling
+    Admission:::shared
+    Child:::shared
+    Ice:::shared
+    Peer:::shared
+    Reliable:::shared
+    Unreliable:::shared
 
     classDef shared fill:#e67e22,stroke:#333,stroke-width:2px
 
-    linkStyle 0 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
-    linkStyle 1 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
-    linkStyle 2 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
-    linkStyle 3 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
-
-    linkStyle 4 stroke:#3498db,stroke-width:4px,color:#3498db
-    linkStyle 5 stroke:#3498db,stroke-width:4px,color:#3498db
-    linkStyle 6 stroke:#3498db,stroke-width:4px,color:#3498db
-    linkStyle 7 stroke:#3498db,stroke-width:4px,color:#3498db
+    linkStyle 0,1,2,3,4,5 stroke:#9b59b6,stroke-width:2px,color:#9b59b6
+    linkStyle 6,7,8,9,10,11,12 stroke:#2ecc71,stroke-width:4px,color:#2ecc71

@@ -15,7 +15,10 @@ congestion window. Changing the setting invalidates pending automatic flushes.
 
 ACKs release queued data promptly. Retransmission, idle timeout, and incomplete
 split expiry have separate deadlines. Split and ordering buffers retain the
-configurable byte limits, and a split message is limited to 8192 fragments.
+configurable byte limits. A received split message may have up to 8192 fragments,
+a sent one at most 2048. `maxMessageSize()` returns the largest message a write
+may carry; a larger write fails before anything is sent, and the session carries
+on.
 
 ## Compatible clients
 
