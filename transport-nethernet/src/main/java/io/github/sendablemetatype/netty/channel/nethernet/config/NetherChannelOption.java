@@ -47,7 +47,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      * How many bytes may wait in a data channel's engine queue before the
      * channel stops handing segments to the engine, 2 MiB by default. Segments
      * then wait in Java and the channel turns unwritable until the engine queue
-     * drained to a quarter of this.
+     * drained to a quarter of this. A change applies from the next pause.
      */
     public static final ChannelOption<Integer> NETHER_SEND_PAUSE_BYTES =
             valueOf(NetherChannelOption.class, "NETHER_SEND_PAUSE_BYTES");

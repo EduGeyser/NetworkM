@@ -146,6 +146,11 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     // The writer rechecks the queue after setting the flag so a concurrent
     // drain cannot lose the wakeup.
     private volatile boolean writesPaused;
+    // The engine queue level the paused writes wait for. Set on the pausing
+    // link together with its engine watermark, from the pause level in force
+    // at that moment: comparing against the option itself could ignore the
+    // engine's only report once the option changed.
+    private volatile long resumeMark;
 
     private volatile boolean transportOpen;
     private volatile TransportPath latestPath;
@@ -221,12 +226,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         if (previous != null) {
             previous.close();
         }
-        link.lowWatermark(resumeMark());
         reliableLink = link;
     }
 
     final void bindUnreliable(DataLink link) {
-        link.lowWatermark(resumeMark());
         unreliableLink = link;
     }
 
@@ -845,11 +848,6 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         }
     }
 
-    /** The engine queue level below which a paused channel resumes: a quarter of the pause level. */
-    private int resumeMark() {
-        return config.getSendPauseBytes() / 4;
-    }
-
     /**
      * True while the data channel's engine queue holds too much to take
      * another segment. The rest stays in Netty's outbound buffer until the
@@ -857,11 +855,16 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      * the Java backlog also passes its cap ends the connection.
      */
     private boolean sendPaused(DataLink link, ChannelOutboundBuffer in) {
-        if (link.queuedBytes() < config.getSendPauseBytes()) {
+        int pauseBytes = config.getSendPauseBytes();
+        if (link.queuedBytes() < pauseBytes) {
             return false;
         }
+        // Resume at a quarter of the pause level.
+        long mark = pauseBytes / 4;
+        link.lowWatermark(mark);
+        resumeMark = mark;
         writesPaused = true;
-        if (link.queuedBytes() <= resumeMark()) {
+        if (link.queuedBytes() <= mark) {
             writesPaused = false;
             return false;
         }
@@ -878,7 +881,7 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
 
     /** Engine thread: a data channel's engine queue fell to its low watermark. */
     final void queueLow(DataLink link) {
-        if (writesPaused && link.queuedBytes() <= resumeMark()) {
+        if (writesPaused && link.queuedBytes() <= resumeMark) {
             writesPaused = false;
             wakeUp();
         }

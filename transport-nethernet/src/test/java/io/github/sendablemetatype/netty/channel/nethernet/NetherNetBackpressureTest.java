@@ -59,6 +59,20 @@ class NetherNetBackpressureTest {
     }
 
     @Test
+    void aPauseLevelChangedAfterTheLinksBoundStillResumes() {
+        try (ActiveChild h = new ActiveChild()) {
+            h.channel.config().setOption(NetherChannelOption.NETHER_SEND_PAUSE_BYTES, 100);
+            h.reliable().setQueuedBytes(100);
+            h.channel.writeAndFlush(payload(1));
+            assertFalse(h.channel.isWritable());
+            h.reliable().drain(100);
+            h.run();
+            assertTrue(h.channel.isWritable());
+            assertEquals(1, h.reliable().sendCount());
+        }
+    }
+
+    @Test
     void aBacklogPastItsCapEndsTheConnectionWithQueueTooLong() {
         try (ActiveChild h = new ActiveChild(child -> {
             child.config().setOption(NetherChannelOption.NETHER_SEND_PAUSE_BYTES, 100);
