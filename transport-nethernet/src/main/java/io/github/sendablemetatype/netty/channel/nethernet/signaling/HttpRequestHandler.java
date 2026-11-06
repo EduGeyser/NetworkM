@@ -160,8 +160,13 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                 return;
             }
             switch (reply) {
-                case HttpStatusService.Reply.Document(String json) ->
-                        write(response(HttpResponseStatus.OK, "application/json", json), keep);
+                case HttpStatusService.Reply.Document document ->
+                        write(response(HttpResponseStatus.OK, "application/json", document.json()), keep)
+                                .addListener(written -> {
+                                    if (written.isSuccess()) {
+                                        service.served(statusRequest, document);
+                                    }
+                                });
                 case HttpStatusService.Reply.Declined _ -> respond(HttpResponseStatus.NOT_FOUND, false);
                 case HttpStatusService.Reply.Empty _ -> respond(HttpResponseStatus.OK, keep);
                 case null -> respond(HttpResponseStatus.OK, keep);
