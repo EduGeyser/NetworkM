@@ -201,7 +201,9 @@ also carries `NetherNetChildChannel.CONNECTION_ID`, the client's connection ID.
 **Refusals.** A refused join creates nothing. Its source tells the client with a
 `JoinRefusal`: an HTTP status with an empty body over HTTP, a `CONNECTERROR`
 signal with a NetherNet error code over Xbox RPC and LAN. Which message each makes
-the client show is not captured yet.
+the client show is not captured yet. Upstream Network's record of the reasons
+clients pick for 401, 403 and 503, and where each status here fits it, is in
+[docs/client-disconnect-reasons.md](docs/client-disconnect-reasons.md).
 
 | `JoinRefusal` | HTTP | Error code | When |
 | --- | --- | --- | --- |
@@ -449,7 +451,9 @@ connection ends with `QUEUE_TOO_LONG`.
 **Disconnect reasons.** When the transport ends a connection, the channel fires
 one `TransportDisconnectReason` as a user event on its event loop just before it
 closes, and only if `channelActive` fired. Closing from the application fires
-nothing.
+nothing. These are the transport's own reasons; the number a client shows on its
+disconnect screen is a Bedrock `DisconnectFailReason`, decoded in
+[docs/client-disconnect-reasons.md](docs/client-disconnect-reasons.md).
 
 | Reason | Cause |
 | --- | --- |
