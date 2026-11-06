@@ -386,7 +386,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         EncapsulatedPacket[] packets = this.createEncapsulated(message);
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
-            metrics.encapsulatedOut(1);
+            try {
+                metrics.encapsulatedOut(1);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("encapsulatedOut", cause);
+            }
         }
         if (message.priority() == RakPriority.IMMEDIATE) {
             this.sendImmediate(ctx, packets);
@@ -438,7 +442,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.touch();
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
-            metrics.rakDatagramsIn(1);
+            try {
+                metrics.rakDatagramsIn(1);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("rakDatagramsIn", cause);
+            }
         }
 
         this.slidingWindow.onPacketReceived(packet.getSendTime());
@@ -517,7 +525,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                     continue;
                 }
                 if (metrics != null) {
-                    metrics.encapsulatedIn(1);
+                    try {
+                        metrics.encapsulatedIn(1);
+                    } catch (RuntimeException cause) {
+                        this.metricsFailed("encapsulatedIn", cause);
+                    }
                 }
                 try {
                     this.checkForOrdered(ctx, reassembled);
@@ -526,7 +538,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 }
             } else {
                 if (metrics != null) {
-                    metrics.encapsulatedIn(1);
+                    try {
+                        metrics.encapsulatedIn(1);
+                    } catch (RuntimeException cause) {
+                        this.metricsFailed("encapsulatedIn", cause);
+                    }
                 }
                 this.checkForOrdered(ctx, encapsulated);
             }
@@ -875,7 +891,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.internalFlush(this.ctx());
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null && resent != 0) {
-            metrics.rakStaleDatagrams(resent);
+            try {
+                metrics.rakStaleDatagrams(resent);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("rakStaleDatagrams", cause);
+            }
         }
     }
 
@@ -933,9 +953,21 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
-            metrics.nackOut(writtenNacks);
-            metrics.ackOut(writtenAcks);
-            metrics.queuedPacketBytes(this.queuedBytes);
+            try {
+                metrics.nackOut(writtenNacks);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("nackOut", cause);
+            }
+            try {
+                metrics.ackOut(writtenAcks);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("ackOut", cause);
+            }
+            try {
+                metrics.queuedPacketBytes(this.queuedBytes);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("queuedPacketBytes", cause);
+            }
         }
     }
 
@@ -1146,7 +1178,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
-            metrics.rakDatagramsOut(1);
+            try {
+                metrics.rakDatagramsOut(1);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("rakDatagramsOut", cause);
+            }
         }
 
         int oldIndex = datagram.getSequenceIndex();
@@ -1365,7 +1401,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
-            metrics.stateChange(state);
+            try {
+                metrics.stateChange(state);
+            } catch (RuntimeException cause) {
+                this.metricsFailed("stateChange", cause);
+            }
         }
     }
 
@@ -1431,6 +1471,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     public RakChannelMetrics getMetrics() {
         return this.channel.config().getMetrics();
+    }
+
+    /** Logs a {@link RakChannelMetrics} hook that threw; the session carries on. */
+    private void metricsFailed(String hook, RuntimeException cause) {
+        MetricsFailureLog.failed(log, "RakChannelMetrics." + hook, this.channel.remoteAddress(), cause);
     }
 
     public InetSocketAddress getRemoteAddress() {

@@ -19,12 +19,17 @@ package io.github.sendablemetatype.netty.handler.codec.raknet.server;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakChildChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 
 import java.nio.channels.ClosedChannelException;
 
 public class RakChildDatagramHandler extends ChannelOutboundHandlerAdapter {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakChildDatagramHandler.class);
+
 
     public static final String NAME = "rak-child-datagram-handler";
     private final RakChildChannel channel;
@@ -49,7 +54,11 @@ public class RakChildDatagramHandler extends ChannelOutboundHandlerAdapter {
 
         RakChannelMetrics metrics = this.channel.config().getMetrics();
         if (metrics != null) {
-            metrics.bytesOut(datagram.content().readableBytes());
+            try {
+                metrics.bytesOut(datagram.content().readableBytes());
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakChannelMetrics.bytesOut", this.channel.remoteAddress(), cause);
+            }
         }
 
         Channel parent = this.channel.parent().parent();

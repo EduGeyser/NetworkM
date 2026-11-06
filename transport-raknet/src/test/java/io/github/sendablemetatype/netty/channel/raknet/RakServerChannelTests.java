@@ -10,11 +10,14 @@ import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.local.LocalIoHandler;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.github.sendablemetatype.netty.ThrowingMetrics;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakServerThrottle;
+import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelOption;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerCookieMode;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerMetrics;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerThrottle;
+import io.github.sendablemetatype.netty.handler.codec.raknet.server.RakServerRateLimiter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -22,6 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -261,6 +265,60 @@ class RakServerChannelTests {
         replacement.close().syncUninterruptibly();
         replacement.eventLoop().submit(() -> { }).syncUninterruptibly();
         createInitializedChild(OTHER_REMOTE, 3);
+    }
+
+    @Test
+    void aChildsMetricsContainThrowingServerHooks() throws Exception {
+        bind(null);
+        ThrowingMetrics<RakServerMetrics> metrics = ThrowingMetrics.of(RakServerMetrics.class);
+        server.config().setMetrics(metrics.hooks());
+        RakChannelMetrics child = createInitializedChild(REMOTE, 1).config().getMetrics();
+
+        child.bytesIn(1);
+        child.bytesOut(1);
+        child.rakDatagramsIn(1);
+        child.rakDatagramsOut(1);
+        child.encapsulatedIn(1);
+        child.encapsulatedOut(1);
+        child.rakStaleDatagrams(1);
+        child.ackIn(1);
+        child.ackOut(1);
+        child.nackIn(1);
+        child.nackOut(1);
+        child.stateChange(RakState.CONNECTED);
+        child.queuedPacketBytes(1);
+
+        assertTrue(metrics.called().containsAll(Set.of("bytesIn", "bytesOut", "rakDatagramsIn", "rakDatagramsOut",
+                "encapsulatedIn", "encapsulatedOut", "rakStaleDatagrams", "ackIn", "ackOut", "nackIn", "nackOut",
+                "stateChange", "queuedPacketBytes")), metrics.called().toString());
+    }
+
+    @Test
+    void throwingBlockHooksStillBlockAndUnblockAddresses() throws Exception {
+        bind(null);
+        ThrowingMetrics<RakServerMetrics> metrics = ThrowingMetrics.of(RakServerMetrics.class);
+        server.config().setMetrics(metrics.hooks());
+        RakServerRateLimiter limiter = server.pipeline().get(RakServerRateLimiter.class);
+
+        assertTrue(server.tryBlockAddress(REMOTE, 1, TimeUnit.MINUTES));
+        assertTrue(limiter.isAddressBlocked(REMOTE));
+        limiter.unblockAddress(REMOTE);
+        assertFalse(limiter.isAddressBlocked(REMOTE));
+        // Blocks expire on a periodic task, which a throwing hook would cancel; the second expiry shows it still runs
+        assertTrue(server.tryBlockAddress(REMOTE, 1, TimeUnit.MILLISECONDS));
+        awaitUnblocked(limiter, REMOTE);
+        assertTrue(server.tryBlockAddress(OTHER_REMOTE, 1, TimeUnit.MILLISECONDS));
+        awaitUnblocked(limiter, OTHER_REMOTE);
+
+        assertEquals(Set.of("addressBlocked", "addressUnblocked"), metrics.called());
+    }
+
+    private static void awaitUnblocked(RakServerRateLimiter limiter, InetSocketAddress address) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (limiter.isAddressBlocked(address)) {
+            assertTrue(System.nanoTime() < deadline, "The block on " + address + " expires");
+            Thread.sleep(20);
+        }
     }
 
     @Test

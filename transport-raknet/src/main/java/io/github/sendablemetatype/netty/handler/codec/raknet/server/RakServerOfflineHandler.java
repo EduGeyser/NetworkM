@@ -29,6 +29,7 @@ import io.github.sendablemetatype.netty.channel.raknet.config.RakServerChannelCo
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerCookieMode;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerMetrics;
 import io.github.sendablemetatype.netty.handler.codec.raknet.AdvancedChannelInboundHandler;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 import io.github.sendablemetatype.netty.util.RakUtils;
 import io.github.sendablemetatype.netty.util.SipHash;
 
@@ -98,7 +99,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
                     try {
                         metrics.unconnectedPing(packet.sender());
                     } catch (RuntimeException cause) {
-                        log.warn("Failed to report an unconnected ping from {}", packet.sender(), cause);
+                        MetricsFailureLog.failed(log, "RakServerMetrics.unconnectedPing", packet.sender(), cause);
                     }
                 }
                 this.onUnconnectedPing(ctx, packet, magicBuf, guid);
@@ -119,7 +120,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
             try {
                 metrics.connectionInitPacket(sender, packetId);
             } catch (RuntimeException cause) {
-                log.warn("Failed to report connection packet {} from {}", packetId, sender, cause);
+                MetricsFailureLog.failed(log, "RakServerMetrics.connectionInitPacket", sender, cause);
             }
         }
     }
@@ -177,7 +178,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
                 try {
                     metrics.incompatibleVersion(sender, protocolVersion);
                 } catch (RuntimeException cause) {
-                    log.warn("Failed to report an incompatible protocol version for {}", sender, cause);
+                    MetricsFailureLog.failed(log, "RakServerMetrics.incompatibleVersion", sender, cause);
                 }
             }
             int latestVersion = supportedProtocols[supportedProtocols.length - 1];
@@ -231,7 +232,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
                     try {
                         metrics.invalidCookie(sender);
                     } catch (RuntimeException cause) {
-                        log.warn("Failed to report an invalid cookie from {}", sender, cause);
+                        MetricsFailureLog.failed(log, "RakServerMetrics.invalidCookie", sender, cause);
                     }
                 }
 
@@ -270,7 +271,7 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
                 try {
                     metrics.invalidMtu(sender, mtu);
                 } catch (RuntimeException cause) {
-                    log.warn("Failed to report an invalid MTU for {}", sender, cause);
+                    MetricsFailureLog.failed(log, "RakServerMetrics.invalidMtu", sender, cause);
                 }
             }
             // The client should have already negotiated a valid MTU

@@ -24,6 +24,7 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakServerChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerMetrics;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -82,9 +83,7 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
             if (entry.getValue() != 0 && currTime > entry.getValue()) {
                 iterator.remove();
                 log.info("Unblocked address {}", entry.getKey());
-                if (metrics != null) {
-                    metrics.addressUnblocked(entry.getKey());
-                }
+                reportUnblocked(metrics, entry.getKey());
             }
         }
     }
@@ -97,8 +96,13 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
         long millis = unit.toMillis(time);
         this.blockedConnections.put(address, System.currentTimeMillis() + millis);
 
-        if (this.channel.config().getMetrics() != null) {
-            this.channel.config().getMetrics().addressBlocked(address);
+        RakServerMetrics metrics = this.channel.config().getMetrics();
+        if (metrics != null) {
+            try {
+                metrics.addressBlocked(address);
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakServerMetrics.addressBlocked", address, cause);
+            }
         }
         return true;
     }
@@ -109,9 +113,16 @@ public class RakServerRateLimiter extends SimpleChannelInboundHandler<DatagramPa
         }
 
         log.info("Unblocked address {}", address);
+        reportUnblocked(this.channel.config().getMetrics(), address);
+    }
 
-        if (this.channel.config().getMetrics() != null) {
-            this.channel.config().getMetrics().addressUnblocked(address);
+    private static void reportUnblocked(RakServerMetrics metrics, InetSocketAddress address) {
+        if (metrics != null) {
+            try {
+                metrics.addressUnblocked(address);
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakServerMetrics.addressUnblocked", address, cause);
+            }
         }
     }
 

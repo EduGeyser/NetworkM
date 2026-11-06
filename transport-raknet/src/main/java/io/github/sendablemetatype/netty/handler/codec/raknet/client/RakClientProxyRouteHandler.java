@@ -21,10 +21,15 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakClientChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 
 public class RakClientProxyRouteHandler extends ChannelDuplexHandler {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakClientProxyRouteHandler.class);
+
     public static final String NAME = "rak-client-proxy-route-handler";
 
     private final RakClientChannel channel;
@@ -43,7 +48,11 @@ public class RakClientProxyRouteHandler extends ChannelDuplexHandler {
         DatagramPacket packet = (DatagramPacket) msg;
         RakChannelMetrics metrics = this.channel.config().getMetrics();
         if (metrics != null) {
-            metrics.bytesIn(packet.content().readableBytes());
+            try {
+                metrics.bytesIn(packet.content().readableBytes());
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakChannelMetrics.bytesIn", this.channel.remoteAddress(), cause);
+            }
         }
 
         DatagramPacket datagram = packet.retain();
@@ -69,7 +78,11 @@ public class RakClientProxyRouteHandler extends ChannelDuplexHandler {
         DatagramPacket datagram = isDatagram ? (DatagramPacket) msg : new DatagramPacket((ByteBuf) msg, this.channel.remoteAddress());
         RakChannelMetrics metrics = this.channel.config().getMetrics();
         if (metrics != null) {
-            metrics.bytesOut(datagram.content().readableBytes());
+            try {
+                metrics.bytesOut(datagram.content().readableBytes());
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakChannelMetrics.bytesOut", this.channel.remoteAddress(), cause);
+            }
         }
 
         ctx.write(datagram, promise);

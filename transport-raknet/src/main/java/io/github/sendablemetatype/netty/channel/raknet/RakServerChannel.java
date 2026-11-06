@@ -40,6 +40,7 @@ import io.github.sendablemetatype.netty.handler.codec.raknet.server.RakServerOff
 import io.github.sendablemetatype.netty.handler.codec.raknet.server.RakServerRateLimiter;
 import io.github.sendablemetatype.netty.handler.codec.raknet.server.RakServerRouteHandler;
 import io.github.sendablemetatype.netty.handler.codec.raknet.server.RakServerTailHandler;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 import io.github.sendablemetatype.netty.util.RakUtils;
 
 import java.net.InetSocketAddress;
@@ -179,7 +180,7 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
             try {
                 metrics.channelOpen(clientAddress);
             } catch (RuntimeException cause) {
-                log.warn("Failed to report channel open for {}", clientAddress, cause);
+                MetricsFailureLog.failed(log, "RakServerMetrics.channelOpen", clientAddress, cause);
             }
         }
         if (existingChannel != null) {
@@ -195,7 +196,7 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
             try {
                 metrics.alreadyConnected(address);
             } catch (RuntimeException cause) {
-                log.warn("Failed to report a connection refused as already connected for {}", address, cause);
+                MetricsFailureLog.failed(log, "RakServerMetrics.alreadyConnected", address, cause);
             }
         }
     }
@@ -206,7 +207,7 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
             try {
                 metrics.connectionThrottled(address);
             } catch (RuntimeException cause) {
-                log.warn("Failed to report a throttled connection for {}", address, cause);
+                MetricsFailureLog.failed(log, "RakServerMetrics.connectionThrottled", address, cause);
             }
         }
     }
@@ -226,7 +227,7 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
                 try {
                     metrics.channelClose(channel.remoteAddress());
                 } catch (RuntimeException cause) {
-                    log.warn("Failed to report channel close for {}", channel.remoteAddress(), cause);
+                    MetricsFailureLog.failed(log, "RakServerMetrics.channelClose", channel.remoteAddress(), cause);
                 }
             }
 

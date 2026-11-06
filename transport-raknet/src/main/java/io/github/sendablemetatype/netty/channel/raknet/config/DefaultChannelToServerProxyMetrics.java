@@ -19,9 +19,17 @@ package io.github.sendablemetatype.netty.channel.raknet.config;
 import io.github.sendablemetatype.netty.channel.raknet.RakChildChannel;
 import io.github.sendablemetatype.netty.channel.raknet.RakServerChannel;
 import io.github.sendablemetatype.netty.channel.raknet.RakState;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
+/**
+ * A child channel's metrics: hands each event to the server's {@link RakServerMetrics} with the
+ * child, if the server has metrics. A server hook that throws is logged and ignored.
+ */
 public class DefaultChannelToServerProxyMetrics implements RakChannelMetrics {
-    
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(DefaultChannelToServerProxyMetrics.class);
+
     public RakServerChannel parent;
     public RakChildChannel channel;
 
@@ -30,94 +38,96 @@ public class DefaultChannelToServerProxyMetrics implements RakChannelMetrics {
         this.channel = channel;
     }
 
+    @Override
     public void bytesIn(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.bytesIn(channel, count);
-        }
+        this.report(RakServerMetrics::bytesIn, "bytesIn", count);
     }
 
+    @Override
     public void bytesOut(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.bytesOut(channel, count);
-        }
+        this.report(RakServerMetrics::bytesOut, "bytesOut", count);
     }
 
+    @Override
     public void rakDatagramsIn(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.rakDatagramsIn(channel, count);
-        }
+        this.report(RakServerMetrics::rakDatagramsIn, "rakDatagramsIn", count);
     }
 
+    @Override
     public void rakDatagramsOut(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.rakDatagramsOut(channel, count);
-        }
+        this.report(RakServerMetrics::rakDatagramsOut, "rakDatagramsOut", count);
     }
 
+    @Override
     public void encapsulatedIn(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.encapsulatedIn(channel, count);
-        }
+        this.report(RakServerMetrics::encapsulatedIn, "encapsulatedIn", count);
     }
 
+    @Override
     public void encapsulatedOut(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.encapsulatedOut(channel, count);
-        }
+        this.report(RakServerMetrics::encapsulatedOut, "encapsulatedOut", count);
     }
 
+    @Override
     public void rakStaleDatagrams(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.rakStaleDatagrams(channel, count);
-        }
+        this.report(RakServerMetrics::rakStaleDatagrams, "rakStaleDatagrams", count);
     }
 
+    @Override
     public void ackIn(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.ackIn(channel, count);
-        }
+        this.report(RakServerMetrics::ackIn, "ackIn", count);
     }
 
+    @Override
     public void ackOut(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.ackOut(channel, count);
-        }
+        this.report(RakServerMetrics::ackOut, "ackOut", count);
     }
 
+    @Override
     public void nackOut(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.nackOut(channel, count);
-        }
+        this.report(RakServerMetrics::nackOut, "nackOut", count);
     }
 
+    @Override
     public void nackIn(int count) {
-        RakServerMetrics metrics = this.parent.config().getMetrics();
-        if (metrics != null) {
-            metrics.nackIn(channel, count);
-        }
+        this.report(RakServerMetrics::nackIn, "nackIn", count);
     }
 
+    @Override
     public void stateChange(RakState state) {
         RakServerMetrics metrics = this.parent.config().getMetrics();
         if (metrics != null) {
-            metrics.stateChange(channel, state);
+            try {
+                metrics.stateChange(this.channel, state);
+            } catch (RuntimeException cause) {
+                this.failed("stateChange", cause);
+            }
         }
     }
 
+    @Override
     public void queuedPacketBytes(int count) {
+        this.report(RakServerMetrics::queuedPacketBytes, "queuedPacketBytes", count);
+    }
+
+    // Unbound method references capture nothing, so a per-packet report allocates nothing.
+    private void report(CountHook hook, String name, int count) {
         RakServerMetrics metrics = this.parent.config().getMetrics();
         if (metrics != null) {
-            metrics.queuedPacketBytes(channel, count);
+            try {
+                hook.report(metrics, this.channel, count);
+            } catch (RuntimeException cause) {
+                this.failed(name, cause);
+            }
         }
+    }
+
+    private void failed(String hook, RuntimeException cause) {
+        MetricsFailureLog.failed(log, "RakServerMetrics." + hook, this.channel.remoteAddress(), cause);
+    }
+
+    @FunctionalInterface
+    private interface CountHook {
+        void report(RakServerMetrics metrics, RakChildChannel channel, int count);
     }
 }

@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.github.sendablemetatype.netty.channel.raknet.packet.EncapsulatedPacket;
 import io.github.sendablemetatype.netty.channel.raknet.packet.RakDatagramPacket;
 import io.github.sendablemetatype.netty.channel.raknet.packet.RakMessage;
+import io.github.sendablemetatype.netty.ThrowingMetrics;
 import io.github.sendablemetatype.netty.util.RakSequence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -32,6 +33,7 @@ import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static io.github.sendablemetatype.netty.channel.raknet.RakConstants.*;
@@ -605,6 +607,46 @@ class RakSessionCodecTests {
             assertEquals(1, s.readData().size(), "Later writes must still be flushed automatically");
             assertEquals(2, flushes.get());
         }
+    }
+
+    @Test
+    void throwingMetricsHooksDoNotBreakTheSession() {
+        ThrowingMetrics<RakChannelMetrics> metrics = ThrowingMetrics.of(RakChannelMetrics.class);
+        try (Session s = new Session(false, 10000)) {
+            s.config.setOption(RakChannelOption.RAK_METRICS, metrics.hooks());
+            s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            s.advance(2000);
+            assertEquals(original.reliabilityIndex, s.readData().get(0).reliabilityIndex, "The stale datagram is resent");
+
+            s.receive(ordered(0, 0));
+            s.receive(part(0, 0));
+            s.receive(part(0, 1));
+            // The ordered packet, then the reassembled split packet
+            assertEquals(2, s.readOrdered().size());
+            s.advance(10);
+            s.transport.close();
+            s.transport.checkException();
+        }
+        assertEquals(Set.of("encapsulatedOut", "rakDatagramsOut", "rakStaleDatagrams", "rakDatagramsIn",
+                "encapsulatedIn", "nackOut", "ackOut", "queuedPacketBytes", "stateChange"), metrics.called());
+    }
+
+    @Test
+    void throwingAcknowledgementHooksStillApplyTheAcknowledgements() {
+        ThrowingMetrics<RakChannelMetrics> metrics = ThrowingMetrics.of(RakChannelMetrics.class);
+        try (Session s = new Session(false, 10000)) {
+            s.config.setOption(RakChannelOption.RAK_METRICS, metrics.hooks());
+            ByteBuf payload = s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            s.ack(original.sequence, true);
+            Sent resent = s.readData().get(0);
+            assertEquals(original.reliabilityIndex, resent.reliabilityIndex, "The NACK still resends at once");
+            s.ack(resent.sequence, false);
+            assertEquals(0, payload.refCnt(), "The ACK still releases the payload");
+            s.transport.checkException();
+        }
+        assertTrue(metrics.called().containsAll(Set.of("nackIn", "ackIn")), metrics.called().toString());
     }
 
     @Test
