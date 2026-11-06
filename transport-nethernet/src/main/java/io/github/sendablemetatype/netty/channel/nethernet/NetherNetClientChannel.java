@@ -188,15 +188,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         log.debug("Starting Handshake with Connection ID: {}", Long.toUnsignedString(this.connectionId));
 
-        cancelHandshakeTimeout();
-
-        int handshakeTimeout = this.config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
-        handshakeTimeoutTask = eventLoop().schedule(() -> {
-            if (isCurrentHandshake(gen)) {
-                connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
-                resetAndRetryHandshake();
-            }
-        }, handshakeTimeout, TimeUnit.MILLISECONDS);
+        armHandshakeTimeout(gen, handshakeTimeoutMillis() + signalingWaitMillis());
 
         try {
             signaling.setNotFoundHandler(reason -> executeForAttempt(gen, () ->
@@ -258,6 +250,30 @@ public class NetherNetClientChannel extends NetherNetChannel {
         connectPromise.tryFailure(failure);
         cancelHandshakeTimeout();
         close();
+    }
+
+    /** Starts the attempt's deadline over: past it, the attempt is retried. */
+    private void armHandshakeTimeout(int gen, long millis) {
+        cancelHandshakeTimeout();
+        handshakeTimeoutTask = eventLoop().schedule(() -> {
+            if (isCurrentHandshake(gen)) {
+                connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
+                resetAndRetryHandshake();
+            }
+        }, millis, TimeUnit.MILLISECONDS);
+    }
+
+    private long handshakeTimeoutMillis() {
+        return config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
+    }
+
+    /**
+     * How long the signaling may wait for an answer of its own. Until the answer is here, an
+     * attempt's deadline makes room for it: HTTP waits 20 s for an answer by default, and a retry
+     * would probe and post again while that answer can still arrive.
+     */
+    private long signalingWaitMillis() {
+        return signaling.answerTimeout().toMillis();
     }
 
     private void cancelHandshakeTimeout() {
@@ -346,6 +362,9 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 return;
             }
             offerSent = true;
+            if (signalingWaitMillis() > 0) {
+                armHandshakeTimeout(gen, handshakeTimeoutMillis() + signalingWaitMillis());
+            }
             List<String> pending = pendingLocalCandidates;
             pendingLocalCandidates = new ArrayList<>();
             for (String candidate : pending) {
@@ -411,6 +430,10 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 } catch (IllegalArgumentException e) {
                     failHandshake(generation, "Invalid remote max-message-size", e);
                     return;
+                }
+                if (signalingWaitMillis() > 0) {
+                    // The answer is here: what is left is the handshake itself
+                    armHandshakeTimeout(generation, handshakeTimeoutMillis());
                 }
             }
             Peer current = peer();

@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -25,6 +26,18 @@ public interface NetherNetClientSignaling extends NetherNetSignaling {
      */
     default boolean trickles() {
         return true;
+    }
+
+    /**
+     * How long the signaling itself waits for the server to answer one of its requests, a status
+     * request or the offer, before it reports a failure of its own. The client channel gives each
+     * attempt this much on top of its handshake timeout, until the answer arrives, so that it does
+     * not start over while the signaling can still deliver one.
+     *
+     * @return {@link Duration#ZERO} unless the signaling has such a wait
+     */
+    default Duration answerTimeout() {
+        return Duration.ZERO;
     }
 
     /**

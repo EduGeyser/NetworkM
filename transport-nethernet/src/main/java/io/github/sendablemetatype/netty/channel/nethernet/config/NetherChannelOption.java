@@ -161,6 +161,8 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * The timeout in milliseconds for completing the WebRTC handshake on the client before retrying.
+     * Over signaling that waits for its server's answers itself (HTTP), each attempt also gets that
+     * wait until the answer arrived.
      */
     public static final ChannelOption<Integer> NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS");

@@ -229,6 +229,13 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         return false;
     }
 
+    /** The longer of the status request's wait and the settings' answer wait. */
+    @Override
+    public Duration answerTimeout() {
+        Duration answer = settings.answerTimeout();
+        return answer.compareTo(STATUS_TIMEOUT) >= 0 ? answer : STATUS_TIMEOUT;
+    }
+
     /**
      * Posts the offer of a {@code CONNECTREQUEST}. Candidate and error signals are dropped: HTTP
      * carries nothing after the offer.

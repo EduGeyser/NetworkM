@@ -31,6 +31,7 @@ import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
 import java.security.KeyPair;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -95,6 +96,32 @@ class NetherNetClientChannelTest {
             peer.gatheringComplete(gathered);
             h.pump();
             assertEquals(List.of("CONNECTREQUEST " + h.connectionId() + " " + gathered), h.signaling.sent);
+        }
+    }
+
+    @Test
+    void anAttemptMakesRoomForTheSignalingsAnswerWaitUntilTheAnswerArrives() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            h.signaling.answerTimeout = Duration.ofMillis(1000);
+            h.connect();
+            h.advance(1099);
+            assertEquals(1, h.signaling.connections.size(), "no retry while the signaling connects");
+
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            peer.gatheringComplete(OFFER);
+            h.pump();
+            h.advance(1099);
+            assertEquals(1, h.signaling.connections.size(), "no retry while the answer can still arrive");
+
+            h.signaling.signalHandlers.getLast().onSignal(
+                    NetherNetConstants.buildSignalConnectResponse(h.connectionId(), ANSWER));
+            h.pump();
+            h.advance(99);
+            assertEquals(1, h.signaling.connections.size());
+            h.advance(1);
+            assertEquals(2, h.signaling.connections.size(), "once answered, the handshake timeout applies");
         }
     }
 
@@ -543,6 +570,7 @@ class NetherNetClientChannelTest {
         private RuntimeException removeFailure;
         private int closes;
         private boolean trickles = true;
+        private Duration answerTimeout = Duration.ZERO;
 
         @Override
         public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
@@ -566,6 +594,7 @@ class NetherNetClientChannelTest {
             }
         }
         @Override public boolean trickles() { return trickles; }
+        @Override public Duration answerTimeout() { return answerTimeout; }
         @Override public String getLocalNetworkId() { return "local"; }
         @Override public void close() { closes++; }
     }
