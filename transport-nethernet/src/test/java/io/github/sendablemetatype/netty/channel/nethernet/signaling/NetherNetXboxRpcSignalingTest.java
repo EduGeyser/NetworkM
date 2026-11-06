@@ -360,7 +360,7 @@ class NetherNetXboxRpcSignalingTest {
         receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
         drain(socket);
 
-        Join join = sink.joins.getFirst();
+        Join join = sink.delivered.getFirst();
         assertEquals(9, join.connectionId());
         assertEquals("peer", join.remoteNetworkId());
         assertEquals("offer", join.offer());
@@ -389,7 +389,7 @@ class NetherNetXboxRpcSignalingTest {
         receiveWebRtc(socket, "CANDIDATEADD 9 early", false);
         receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
         receiveWebRtc(socket, "CANDIDATEADD 9 before-the-endpoint-listens", false);
-        Join join = sink.joins.getFirst();
+        Join join = sink.delivered.getFirst();
         List<String> signals = RecordingSink.signalsOf(join);
 
         receive(socket, "intruder", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC,
@@ -397,13 +397,13 @@ class NetherNetXboxRpcSignalingTest {
         receiveWebRtc(socket, "CONNECTREQUEST 9 again", false);
         receiveWebRtc(socket, "CONNECTERROR 9 2", false);
         assertEquals(List.of("candidate before-the-endpoint-listens", "error 2"), signals);
-        assertEquals(1, sink.joins.size(), "A repeated offer is no new join");
+        assertEquals(1, sink.delivered.size(), "A repeated offer is no new join");
 
         join.reply().finished();
         receiveWebRtc(socket, "CANDIDATEADD 9 late", false);
         assertEquals(2, signals.size());
         receiveWebRtc(socket, "CONNECTREQUEST 9 retry", false);
-        assertEquals("retry", sink.joins.getLast().offer());
+        assertEquals("retry", sink.delivered.getLast().offer());
     }
 
     // Requests.

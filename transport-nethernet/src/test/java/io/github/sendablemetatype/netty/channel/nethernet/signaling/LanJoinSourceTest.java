@@ -100,7 +100,7 @@ class LanJoinSourceTest {
         send("CONNECTERROR 42 2");
         awaitSize(signals, 2);
         assertEquals(List.of("candidate candidate:1 1 udp 1 192.168.1.20 5000 typ host", "error 2"), signals);
-        assertEquals(1, sink.joins.size(), "A repeated offer is no new join");
+        assertEquals(1, sink.delivered.size(), "A repeated offer is no new join");
 
         join.reply().finished();
         send("CANDIDATEADD 42 late");
@@ -169,8 +169,8 @@ class LanJoinSourceTest {
     }
 
     private Join awaitJoin(int count) throws InterruptedException {
-        awaitSize(sink.joins, count);
-        return sink.joins.get(count - 1);
+        awaitSize(sink.delivered, count);
+        return sink.delivered.get(count - 1);
     }
 
     private static void awaitSize(List<?> list, int size) throws InterruptedException {

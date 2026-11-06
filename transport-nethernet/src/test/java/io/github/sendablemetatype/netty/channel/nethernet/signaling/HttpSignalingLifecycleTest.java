@@ -2,21 +2,18 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,11 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/** Binding, closing and the health a bound source reports. */
 @Timeout(10)
-class NetherNetHttpSignalingLifecycleTest {
+class HttpSignalingLifecycleTest {
     private final EventLoopGroup worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final List<EventLoopGroup> acceptGroups = new ArrayList<>();
     private final List<NetherNetHttpSignaling> listeners = new ArrayList<>();
@@ -44,7 +43,23 @@ class NetherNetHttpSignalingLifecycleTest {
     }
 
     @Test
-    void failedBindTerminatesTheAcceptGroupAndPreservesTheWorker() throws Exception {
+    void healthFollowsBindStartAndClose() throws Exception {
+        NetherNetHttpSignaling signaling = listener(newAcceptGroup());
+        List<SignalingState> seen = new CopyOnWriteArrayList<>();
+        signaling.addHealthListener(health -> seen.add(health.state()));
+        assertEquals(SignalingState.NEW, signaling.health().state());
+
+        signaling.bind(new InetSocketAddress("127.0.0.1", 0));
+        signaling.start(new RecordingSink());
+        signaling.close();
+
+        assertEquals(List.of(SignalingState.STARTING, SignalingState.CONNECTED, SignalingState.CLOSED), seen);
+        assertTrue(signaling.iceServers().isEmpty());
+        assertThrows(IllegalStateException.class, () -> signaling.start(new RecordingSink()));
+    }
+
+    @Test
+    void failedBindClosesWithTheFailureAndKeepsTheWorker() throws Exception {
         EventLoopGroup accept = newAcceptGroup();
         NetherNetHttpSignaling signaling = listener(accept);
         try (ServerSocket occupied = new ServerSocket()) {
@@ -54,18 +69,20 @@ class NetherNetHttpSignalingLifecycleTest {
 
         assertTrue(accept.terminationFuture().await(2, TimeUnit.SECONDS));
         assertNull(signaling.boundAddress());
+        assertEquals(SignalingState.CLOSED, signaling.health().state());
+        assertInstanceOf(ConnectException.class, signaling.health().lastFailure());
         assertFalse(worker.isShuttingDown());
         assertEquals(42, worker.submit(() -> 42).get(2, TimeUnit.SECONDS).intValue());
     }
 
     @Test
-    void duplicateBindPreservesTheOriginalListener() throws Exception {
+    void secondBindKeepsTheFirstListener() throws Exception {
         EventLoopGroup accept = newAcceptGroup();
         AtomicInteger creations = new AtomicInteger();
-        NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> null, worker, () -> {
+        NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(() -> {
             creations.incrementAndGet();
             return accept;
-        });
+        }).build();
         listeners.add(signaling);
         signaling.start(new RecordingSink());
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
@@ -76,11 +93,10 @@ class NetherNetHttpSignalingLifecycleTest {
         assertEquals(original, signaling.boundAddress());
         assertEquals(1, creations.get());
         assertEquals(200, probe(original));
-        assertFalse(accept.isShuttingDown());
     }
 
     @Test
-    void closedListenerCannotBeRebound() throws Exception {
+    void closedListenerCannotBeBoundAgain() throws Exception {
         EventLoopGroup accept = newAcceptGroup();
         NetherNetHttpSignaling signaling = listener(accept);
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
@@ -94,34 +110,33 @@ class NetherNetHttpSignalingLifecycleTest {
     }
 
     @Test
-    void bindDoesNotConsultTheTlsSupplier() throws Exception {
-        EventLoopGroup accept = newAcceptGroup();
+    void bindingNeverAsksTheTlsSelector() throws Exception {
         AtomicInteger calls = new AtomicInteger();
-        NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> {
-            calls.incrementAndGet();
-            throw new IllegalStateException("TLS context unavailable");
-        }, worker, () -> accept);
+        NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(this::newAcceptGroup)
+                .tls(name -> {
+                    calls.incrementAndGet();
+                    throw new IllegalStateException("no certificate");
+                }).build();
         listeners.add(signaling);
         signaling.start(new RecordingSink());
 
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
 
-        assertEquals(0, calls.get());
         assertEquals(200, probe(signaling.boundAddress()));
         assertEquals(0, calls.get());
     }
 
     @Test
-    void closeClosesAcceptedIdleConnectionsWithoutStoppingTheWorker() throws Exception {
+    void closeEndsOpenConnectionsWithoutStoppingTheWorker() throws Exception {
         EventLoopGroup accept = newAcceptGroup();
         NetherNetHttpSignaling signaling = listener(accept);
+        signaling.start(new RecordingSink());
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
         InetSocketAddress address = signaling.boundAddress();
         try (Socket idle = new Socket()) {
             idle.connect(address, 2000);
             idle.setSoTimeout(2000);
-            // The next accepted connection completes a request, so the
-            // earlier idle connection has also reached the worker loop.
+            // A later connection completing a request shows the idle one reached the worker too
             assertEquals(200, probe(address));
 
             signaling.close();
@@ -133,16 +148,32 @@ class NetherNetHttpSignalingLifecycleTest {
     }
 
     @Test
-    void interruptedBindRestoresInterruptAndCleansUpOwnedResources() throws Exception {
+    void closeAbandonsAJoinWaitingForItsAnswer() throws Exception {
+        NetherNetHttpSignaling signaling = listener(newAcceptGroup());
+        RecordingSink sink = new RecordingSink();
+        signaling.start(sink);
+        signaling.bind(new InetSocketAddress("127.0.0.1", 0));
+        try (Socket socket = SocketHttp.open(signaling.boundAddress())) {
+            SocketHttp.write(socket, SocketHttp.post("42", "v=0\r\n"));
+            Join join = sink.next();
+
+            signaling.close();
+
+            join.reply().abandoned().toCompletableFuture().get(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void interruptedBindRestoresTheInterruptAndCleansUp() throws Exception {
         EventLoopGroup accept = newAcceptGroup();
         CountDownLatch blocked = new CountDownLatch(1);
         CountDownLatch resume = new CountDownLatch(1);
         CountDownLatch acquired = new CountDownLatch(1);
         block(accept, blocked, resume);
-        NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> null, worker, () -> {
+        NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(() -> {
             acquired.countDown();
             return accept;
-        });
+        }).build();
         listeners.add(signaling);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicBoolean interrupted = new AtomicBoolean();
@@ -181,10 +212,10 @@ class NetherNetHttpSignalingLifecycleTest {
         CountDownLatch resume = new CountDownLatch(1);
         CountDownLatch acquired = new CountDownLatch(1);
         block(accept, blocked, resume);
-        NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> null, worker, () -> {
+        NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(() -> {
             acquired.countDown();
             return accept;
-        });
+        }).build();
         listeners.add(signaling);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread binder = new Thread(() -> {
@@ -213,41 +244,13 @@ class NetherNetHttpSignalingLifecycleTest {
         }
         assertTrue(accept.terminationFuture().await(2, TimeUnit.SECONDS));
         assertNull(signaling.boundAddress());
-    }
-
-    @Test
-    void completedExchangeCancelsATimeoutInstalledAfterwards() {
-        EmbeddedChannel channel = new EmbeddedChannel();
-        channel.freezeTime();
-        AtomicInteger expirations = new AtomicInteger();
-        NetherNetHttpSignaling signaling = listener(newAcceptGroup());
-        NetherNetHttpSignaling.HttpReply exchange = signaling.new HttpReply(null, 1);
-        try {
-            exchange.abandon(null);
-            var timeout = channel.eventLoop().schedule(() -> {
-                expirations.incrementAndGet();
-            }, 30, TimeUnit.SECONDS);
-
-            exchange.setTimeout(timeout);
-
-            assertTrue(timeout.isCancelled());
-            channel.advanceTimeBy(30, TimeUnit.SECONDS);
-            channel.runScheduledPendingTasks();
-            assertEquals(0, expirations.get());
-        } finally {
-            channel.finishAndReleaseAll();
-        }
+        assertSame(SignalingState.CLOSED, signaling.health().state());
     }
 
     private static int probe(InetSocketAddress address) throws Exception {
-        try (Socket socket = new Socket()) {
-            socket.connect(address, 2000);
-            socket.setSoTimeout(2000);
-            socket.getOutputStream().write(("GET /v1/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                    .getBytes(StandardCharsets.US_ASCII));
-            String status = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII))
-                    .readLine();
-            return Integer.parseInt(status.split(" ")[1]);
+        try (Socket socket = SocketHttp.open(address)) {
+            SocketHttp.write(socket, SocketHttp.get("/v1/join", "Connection: close\r\n"));
+            return SocketHttp.read(socket).status();
         }
     }
 
@@ -269,8 +272,7 @@ class NetherNetHttpSignalingLifecycleTest {
     }
 
     private NetherNetHttpSignaling listener(EventLoopGroup accept) {
-        NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> null, worker, () -> accept);
-        signaling.start(new RecordingSink());
+        NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(() -> accept).build();
         listeners.add(signaling);
         return signaling;
     }

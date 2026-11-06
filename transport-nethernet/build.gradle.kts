@@ -12,6 +12,8 @@ dependencies {
     api(project(":transport-common"))
     api(libs.bundles.netty)
     api(libs.netty.codec.http)
+    // PROXY protocol headers in front of HTTP signaling
+    implementation(libs.netty.codec.haproxy)
     api(libs.webrtc.java)
 
     implementation(libs.gson)
@@ -24,6 +26,7 @@ dependencies {
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.bundles.junit)
+    testImplementation(libs.netty.pkitesting)
     testRuntimeOnly(libs.junit.platform.launcher)
     testRuntimeOnly(libs.slf4j.jdk14)
 
