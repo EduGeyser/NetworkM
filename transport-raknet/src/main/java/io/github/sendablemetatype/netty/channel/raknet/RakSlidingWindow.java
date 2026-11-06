@@ -76,10 +76,17 @@ public class RakSlidingWindow {
         }
     }
 
-    public void onAck(long curTime, RakDatagramPacket datagram, long curSequenceIndex) {
-        long rtt = curTime - datagram.getSendTime();
+    /**
+     * Applies the acknowledgement of a reliable datagram.
+     *
+     * @param rtt              time since the acknowledged transmission was sent
+     * @param size             the datagram's size, as counted by {@link #onReliableSend}
+     * @param sequenceIndex    the datagram number the ACK named
+     * @param curSequenceIndex the next datagram number to be sent
+     */
+    public void onAck(long rtt, int size, int sequenceIndex, long curSequenceIndex) {
         this.lastRTT = rtt;
-        this.unackedBytes -= datagram.getSize();
+        this.unackedBytes -= size;
 
         if (this.estimatedRTT == -1) {
             this.estimatedRTT = rtt;
@@ -91,7 +98,7 @@ public class RakSlidingWindow {
             this.deviationRTT += d * (Math.abs(difference) - this.deviationRTT);
         }
 
-        boolean isNewCongestionControlPeriod = RakSequence.difference(datagram.getSequenceIndex(),
+        boolean isNewCongestionControlPeriod = RakSequence.difference(sequenceIndex,
                 (int) this.nextCongestionControlBlock) > 0;
 
         if (isNewCongestionControlPeriod) {

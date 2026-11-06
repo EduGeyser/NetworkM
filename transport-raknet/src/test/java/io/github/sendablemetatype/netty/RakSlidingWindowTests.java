@@ -33,10 +33,9 @@ class RakSlidingWindowTests {
         packet.setReliability(RakReliability.RELIABLE);
         packet.setBuffer(Unpooled.buffer(1).writeByte(1));
         datagram.getPackets().add(packet);
-        datagram.setSequenceIndex(sequenceIndex);
         try {
             window.onReliableSend(datagram);
-            window.onAck(1, datagram, nextSequenceIndex);
+            window.onAck(1, datagram.getSize(), sequenceIndex, nextSequenceIndex);
         } finally {
             datagram.release();
         }
