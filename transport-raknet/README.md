@@ -41,13 +41,45 @@ use the compatible handshake. The mode defaults to false.
   use the session clock in both modes.
 
 The normal handshake, bounded transient-denial retries, stateless cookie modes,
-HAProxy support, and per-channel/server metrics remain available. Channel
-factories accept either a datagram channel class or a `ChannelFactory`.
+HAProxy support, and per-channel/server metrics remain available. A
+`RakServerMetrics` hook that throws is logged as a warning and ignored, so it
+never breaks the handshake or packet handling. Channel factories accept either a
+datagram channel class or a `ChannelFactory`.
 
 Cookie signatures now match SipHash-2-4 for IPv6 addresses. IPv4 signatures are
 unchanged. An IPv6 `OFFLOADED_PSK` deployment must update the offloader and server
 together if the offloader used the earlier Network implementation. `ACTIVE`
 clients simply echo the cookie; `OFFLOADED` does not validate its signature.
 
-The packet-flow diagrams under `.github/readme` are retained from
-NetworkCompatible as descriptions of the client and server pipelines.
+## Packet flow
+
+### Server
+
+1. `RakServerChannel` binds the UDP socket, answers the offline handshake and
+   routes each datagram from a connected sender to that sender's
+   `RakChildChannel`.
+2. In the child's internal pipeline, `RakDatagramCodec` decodes datagrams and
+   passes ACKs and NACKs to `RakAcknowledgeHandler`, which applies them to the
+   session.
+3. `RakSessionCodec` handles reliability, ordering and split messages, and
+   hands each message to the user pipeline as a `RakMessage`.
+4. Writes (`ByteBuf` or `RakMessage`) go back through the session codec and the
+   datagram codec; `RakChildDatagramHandler` addresses them to the client and
+   the server channel sends them.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/raknet_server_dark.svg">
+  <img alt="RakNet server packet flow" src="../.github/readme/raknet_server_light.svg">
+</picture>
+
+### Client
+
+The client's internal pipeline is its parent datagram channel's pipeline.
+`RakClientProxyRouteHandler` sits next to the socket: it unwraps datagrams from
+the server and addresses outgoing ones. Between it and the user pipeline, the
+datagram codec, acknowledge handler and session codec work as on the server.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/raknet_client_dark.svg">
+  <img alt="RakNet client packet flow" src="../.github/readme/raknet_client_light.svg">
+</picture>
