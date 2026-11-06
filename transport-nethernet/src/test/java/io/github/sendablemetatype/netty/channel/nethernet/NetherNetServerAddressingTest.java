@@ -118,11 +118,14 @@ class NetherNetServerAddressingTest {
         NetherNetServerChannel server = harness.bind();
         int icePort = ((InetSocketAddress) server.localAddress()).getPort();
 
-        String answer = harness.source(false).offer(1, OFFER,
-                new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
-                new Join.Reached("8.8.8.8:19132", 19132)).answer();
+        FakeJoinSource source = harness.source(false);
+        String answer = source.offer(1, OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
+                new Join.Addressed("8.8.8.8:19132", 19132, false)).answer();
+        String proxied = source.offer(2, OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
+                new Join.Addressed("8.8.8.8:19132", 19132, true)).answer();
 
         assertTrue(answer.contains(" 8.8.8.8 " + icePort + " typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
+        assertFalse(proxied.contains(" 8.8.8.8 "), "A trusted proxy's Host names the proxy: " + proxied);
     }
 
     @Test

@@ -93,7 +93,9 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      * The proxies a server channel trusts, parsed once at startup with
      * {@link TrustedProxies#parseList}. The PROXY protocol list also names the relays whose PROXY
      * protocol version 2 headers the shared ICE port reads; answers then announce only the relays
-     * and TURN, and no remote candidate is applied. {@link TrustedProxies#NONE} by default.
+     * and TURN, and no remote candidate is applied. HTTP signaling reads its own list
+     * ({@code NetherNetHttpSignaling.Builder#trustedProxies}); give it the same parsed set.
+     * {@link TrustedProxies#NONE} by default.
      */
     public static final ChannelOption<TrustedProxies> NETHER_SERVER_TRUSTED_PROXIES =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_TRUSTED_PROXIES");

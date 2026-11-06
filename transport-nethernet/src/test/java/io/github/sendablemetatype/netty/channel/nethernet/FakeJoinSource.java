@@ -75,9 +75,9 @@ final class FakeJoinSource implements JoinSource {
         return offer(connectionId, offer, new SourcedAddress(CLIENT, AddressSource.SIGNALING, null), null);
     }
 
-    Reply offer(long connectionId, String offer, SourcedAddress source, Join.Reached reached) {
+    Reply offer(long connectionId, String offer, SourcedAddress source, Join.Addressed addressed) {
         Reply reply = new Reply(trickles);
-        sink.join(new Join(connectionId, "remote-" + connectionId, offer, source, reply, reached));
+        sink.join(new Join(connectionId, "remote-" + connectionId, offer, source, reply, addressed));
         return reply;
     }
 

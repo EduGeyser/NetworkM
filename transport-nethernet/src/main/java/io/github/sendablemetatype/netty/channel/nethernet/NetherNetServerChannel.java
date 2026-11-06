@@ -159,12 +159,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param answers what every join answers with
      * @param iceEndpoint the shared ICE port, or null when each session takes its own
      * @param advertised the advertised addresses, resolved
-     * @param trustedProxies the proxies trusted in front of signaling and the ICE port
      * @param offerCheck checks every join's identity
      * @param checkExecutor runs the checks, off the event loop
      */
     private record Bound(ServerJoin.Settings answers, IceEndpoint iceEndpoint, List<InetSocketAddress> advertised,
-                         TrustedProxies trustedProxies, OfferCheck offerCheck, ExecutorService checkExecutor) {
+                         OfferCheck offerCheck, ExecutorService checkExecutor) {
     }
 
     // ---- Sources ----
@@ -314,7 +313,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
         ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(),
                 iceEndpoint == null ? 0 : iceEndpoint.port(), relayed);
-        this.bound = new Bound(answers, iceEndpoint, advertised, proxies, offerCheck, checkExecutor);
+        this.bound = new Bound(answers, iceEndpoint, advertised, offerCheck, checkExecutor);
         this.localAddress = local;
         log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", local,
                 shared ? "shared ICE port" : "ICE ports per session", identity.fingerprint());
@@ -662,11 +661,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private static CandidateAnnouncement announcement(Join join, Bound settings) {
         int icePort = settings.answers().icePort();
         Optional<InetSocketAddress> typed = Optional.empty();
-        if (join.reached() != null) {
-            SourcedAddress source = join.source();
-            boolean viaProxy = source.proxied() || settings.trustedProxies().isProxy(source.address());
-            typed = CandidateAnnouncement.typedEndpoint(join.reached().host(), viaProxy, icePort,
-                    icePort != 0 && join.reached().localPort() == icePort);
+        if (join.addressed() instanceof Join.Addressed addressed) {
+            typed = CandidateAnnouncement.typedEndpoint(addressed.host(), addressed.viaTrustedProxy(), icePort,
+                    addressed.localPort() == icePort);
         }
         // STUN discovery (ruling G-6, item 1) would add its fresh mappings here.
         return CandidateAnnouncement.of(settings.advertised(), settings.answers().relayed(), List.of(), typed);
