@@ -27,7 +27,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
@@ -57,8 +59,17 @@ public final class EchoBenchmark {
     private EchoBenchmark() {
     }
 
-    public static void main(String[] args) throws Exception {
-        Settings settings = Settings.parse(args);
+    public static void main(String[] args) {
+        try {
+            run(Settings.parse(args));
+        } catch (Exception e) {
+            e.printStackTrace();
+            // The threads of an engine that did not close could keep the JVM alive.
+            System.exit(1);
+        }
+    }
+
+    private static void run(Settings settings) throws Exception {
         int pairCount = Arrays.stream(settings.pairs).max().orElse(1);
 
         NetherNetEngine clientEngine = WebRtcEngine.builder().factories(1).build();
@@ -92,33 +103,54 @@ public final class EchoBenchmark {
                             round, count, count == 1 ? "" : "s", settings.window, perSecond);
                 }
             }
-            long failed = pairs.stream()
-                    .mapToLong(pair -> pair.client.failedSends.get() + pair.server.failedSends.get())
-                    .sum();
-            if (failed > 0) {
-                System.out.println("failed sends: " + failed);
-            }
         } finally {
             for (Pair pair : pairs) {
                 pair.close();
             }
-            await(clientEngine.close());
-            await(serverEngine.close());
+            quietly("Closing the client engine", () -> await(clientEngine.close()));
+            quietly("Closing the server engine", () -> await(serverEngine.close()));
         }
     }
 
     /** Messages per second the pairs echo together, each with a window of messages in flight. */
-    private static double windowed(List<Pair> pairs, int messagesPerPair, int window) throws InterruptedException {
+    private static double windowed(List<Pair> pairs, int messagesPerPair, int window) throws Exception {
         CountDownLatch done = new CountDownLatch(pairs.size());
         long start = System.nanoTime();
         for (Pair pair : pairs) {
             pair.startWindow(messagesPerPair, window, done);
         }
-        if (!done.await(WAIT_SECONDS * 10, TimeUnit.SECONDS)) {
-            throw new IllegalStateException("Echoes stopped coming back");
-        }
+        awaitWindows(done, pairs);
         long elapsed = System.nanoTime() - start;
         return (double) messagesPerPair * pairs.size() / elapsed * 1e9;
+    }
+
+    /**
+     * Waits until every pair's window came back. Ends early when a pair
+     * failed, and after ten times {@link #WAIT_SECONDS} at the latest.
+     */
+    private static void awaitWindows(CountDownLatch done, List<Pair> pairs) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS * 10);
+        while (!done.await(50, TimeUnit.MILLISECONDS)) {
+            for (Pair pair : pairs) {
+                pair.waiter.check();
+            }
+            if (System.nanoTime() - deadline > 0) {
+                throw new TimeoutException("Echoes stopped coming back");
+            }
+        }
+    }
+
+    /** Runs a cleanup step, reporting its failure without ending the cleanup. */
+    private static void quietly(String what, Step step) {
+        try {
+            step.run();
+        } catch (Exception e) {
+            System.err.println(what + " failed: " + e);
+        }
+    }
+
+    private interface Step {
+        void run() throws Exception;
     }
 
     private static double percentile(long[] sorted, int percent) {
@@ -195,11 +227,12 @@ public final class EchoBenchmark {
     }
 
     /** A connected client and server peer. */
-    private record Pair(Peer offerer, Peer answerer, Side client, Side server) {
+    private record Pair(Peer offerer, Peer answerer, Side client, Side server, Waiter waiter) {
 
         static Pair connect(NetherNetEngine clientEngine, NetherNetEngine serverEngine, int size) throws Exception {
-            Side client = new Side(false, size);
-            Side server = new Side(true, size);
+            Waiter waiter = new Waiter();
+            Side client = new Side(false, size, waiter);
+            Side server = new Side(true, size, waiter);
             Peer offerer = clientEngine.createPeer(config(Role.OFFERER), client);
             Peer answerer = serverEngine.createPeer(config(Role.ANSWERER), server);
             offerer.openChannel(ChannelParameters.reliable(RELIABLE));
@@ -211,33 +244,47 @@ public final class EchoBenchmark {
             await(offerer.applyAnswer(answer));
             await(client.reliable);
             await(server.reliable);
-            return new Pair(offerer, answerer, client, server);
+            return new Pair(offerer, answerer, client, server, waiter);
         }
 
         /** Round trips of one message at a time, in nanoseconds. */
         long[] latency(int count) throws Exception {
             DataLink link = await(client.reliable);
-            client.waiter = Thread.currentThread();
-            long[] times = new long[count];
-            for (int i = 0; i < count; i++) {
-                long target = client.received.get() + 1;
-                long start = System.nanoTime();
-                link.send(client.message, client.sendResult);
-                while (client.received.get() < target) {
-                    LockSupport.park(this);
+            waiter.thread = Thread.currentThread();
+            try {
+                long[] times = new long[count];
+                for (int i = 0; i < count; i++) {
+                    long target = client.received.get() + 1;
+                    long start = System.nanoTime();
+                    link.send(client.message, client.sendResult);
+                    awaitEcho(target, start + TimeUnit.SECONDS.toNanos(WAIT_SECONDS));
+                    times[i] = System.nanoTime() - start;
                 }
-                times[i] = System.nanoTime() - start;
+                return times;
+            } finally {
+                waiter.thread = null;
             }
-            client.waiter = null;
-            return times;
+        }
+
+        /** Parks until the echoes reach the target; ends on a failure, an interrupt or the deadline. */
+        private void awaitEcho(long target, long deadline) throws Exception {
+            while (client.received.get() < target) {
+                waiter.check();
+                if (Thread.interrupted()) {
+                    throw new InterruptedException("Interrupted while waiting for an echo");
+                }
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    throw new TimeoutException("No echo within " + WAIT_SECONDS + " s");
+                }
+                LockSupport.parkNanos(this, left);
+            }
         }
 
         void window(int messages, int window) throws Exception {
             CountDownLatch done = new CountDownLatch(1);
             startWindow(messages, window, done);
-            if (!done.await(WAIT_SECONDS * 10, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("Echoes stopped coming back");
-            }
+            awaitWindows(done, List.of(this));
         }
 
         void startWindow(int messages, int window, CountDownLatch done) throws InterruptedException {
@@ -253,9 +300,39 @@ public final class EchoBenchmark {
             }
         }
 
-        void close() throws Exception {
-            await(offerer.close());
-            await(answerer.close());
+        void close() {
+            quietly("Closing a client peer", () -> await(offerer.close()));
+            quietly("Closing a server peer", () -> await(answerer.close()));
+        }
+    }
+
+    /**
+     * The measuring thread of a pair, woken by each echo and by the pair's
+     * first failure on either side: a refused send, a closed reliable channel
+     * or an ended peer means the echoes it waits for never come.
+     */
+    private static final class Waiter {
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+        volatile Thread thread;
+
+        void wake() {
+            Thread waiting = thread;
+            if (waiting != null) {
+                LockSupport.unpark(waiting);
+            }
+        }
+
+        void fail(Throwable cause) {
+            if (failure.compareAndSet(null, cause)) {
+                wake();
+            }
+        }
+
+        void check() throws IOException {
+            Throwable cause = failure.get();
+            if (cause != null) {
+                throw new IOException("The echo failed", cause);
+            }
         }
     }
 
@@ -265,16 +342,11 @@ public final class EchoBenchmark {
      */
     private static final class Side implements PeerListener {
         private final boolean server;
+        private final Waiter waiter;
         final ByteBuffer message;
         final CompletableFuture<DataLink> reliable = new CompletableFuture<>();
         final AtomicLong received = new AtomicLong();
-        final AtomicLong failedSends = new AtomicLong();
-        final Consumer<Throwable> sendResult = failure -> {
-            if (failure != null) {
-                failedSends.incrementAndGet();
-            }
-        };
-        volatile Thread waiter;
+        final Consumer<Throwable> sendResult;
         volatile TransportPath path;
         private volatile Thread peerThread;
         private volatile Thread linkThread;
@@ -291,13 +363,23 @@ public final class EchoBenchmark {
         private Peer forwardTarget;
         private final List<String[]> pending = new ArrayList<>();
 
-        Side(boolean server, int size) {
+        Side(boolean server, int size, Waiter waiter) {
             this.server = server;
+            this.waiter = waiter;
+            sendResult = failure -> {
+                if (failure != null) {
+                    waiter.fail(new IOException("The engine refused a send of the " + name(), failure));
+                }
+            };
             // Never changed after this, so threads may send it at once: sends only read it.
             message = ByteBuffer.allocateDirect(size);
             for (int i = 0; i < size; i++) {
                 message.put(i, (byte) i);
             }
+        }
+
+        private String name() {
+            return server ? "server" : "client";
         }
 
         /** Where the data channel's messages arrived, next to the peer connection's events. */
@@ -345,10 +427,7 @@ public final class EchoBenchmark {
                 return;
             }
             received.incrementAndGet();
-            Thread waiting = waiter;
-            if (waiting != null) {
-                LockSupport.unpark(waiting);
-            }
+            waiter.wake();
             if (windowLink != null) {
                 long count = windowReceived + 1;
                 windowReceived = count;
@@ -396,6 +475,9 @@ public final class EchoBenchmark {
 
         @Override
         public void onChannelClosed(DataLink link, CloseCause cause) {
+            if (link.parameters().label().equals(RELIABLE)) {
+                waiter.fail(new IOException("The reliable channel of the " + name() + " closed: " + cause));
+            }
         }
 
         @Override
@@ -416,6 +498,7 @@ public final class EchoBenchmark {
 
         @Override
         public void onClosed(CloseCause cause) {
+            waiter.fail(new IOException("The " + name() + " peer ended: " + cause));
         }
     }
 }
