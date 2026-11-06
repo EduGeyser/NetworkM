@@ -110,6 +110,28 @@ class ProviderRefusalsTest {
     }
 
     @Test
+    void aFirstHeartbeatRefusedForNowIsTriedAgainWithTheWholeStart(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var refusal = new IndependentProviderStub.Refusal(429,
+                    "{\"code\":\"rate_limited\",\"message\":\"Slow down.\"}", "30");
+            h.stub.heartbeatRefusal = refusal;
+            var client = h.client(path, new FakeTransport());
+            var started = client.start();
+            h.until(() -> !h.logged(ProviderDiagnostic.Level.WARN,
+                    "Slow down. (429 rate_limited). Trying again in 30 seconds.").isEmpty());
+            h.stub.heartbeatRefusal = null;
+            h.advance(Duration.ofSeconds(30));
+            assertEquals("example-machine-1", h.await(started).instanceId());
+            assertEquals(1, refusal.answered.get());
+            assertEquals(2, h.stub.generation, "The retry recovers the registration the first attempt made");
+            assertTrue(client.publishedEndpoints().isPresent());
+            int heartbeats = h.stub.heartbeats;
+            h.run(Duration.ofSeconds(3));
+            assertTrue(h.stub.heartbeats > heartbeats, "The started client keeps checking in");
+        }
+    }
+
+    @Test
     void warningsNameWhatFailedWithoutQuotingResponses() {
         assertEquals("ConnectException: Connection refused",
                 ProviderFailures.describe(new java.net.ConnectException("Connection refused")));

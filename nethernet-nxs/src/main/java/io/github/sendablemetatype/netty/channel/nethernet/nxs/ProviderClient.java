@@ -645,8 +645,9 @@ public final class ProviderClient implements AutoCloseable {
                     return keys.install();
                 }))
                 .thenCompose(ignored -> {
+                    // Already set for the first heartbeat, so a socket lost during it reconnects
                     runtime.started = true;
-                    return heartbeats.beat();
+                    return heartbeats.beat().exceptionallyCompose(this::abandonAttempt);
                 })
                 .thenApply(ignored -> {
                     if (timer != null) {
@@ -655,6 +656,18 @@ public final class ProviderClient implements AutoCloseable {
                     timer = runtime.executor.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
                     return registrar.view();
                 });
+    }
+
+    /**
+     * Undoes an attempt whose first heartbeat failed: a later attempt starts over, and until then nothing this one
+     * published may serve, since no timer keeps it checking in.
+     */
+    private CompletableFuture<Void> abandonAttempt(Throwable failure) {
+        runtime.started = false;
+        control.close();
+        return heartbeats.invalidatePublished()
+                .handle((ignored, withdrawal) -> null)
+                .thenCompose(ignored -> CompletableFuture.failedFuture(failure));
     }
 
     /** Looks every second for a heartbeat or an outcome batch that is due. */

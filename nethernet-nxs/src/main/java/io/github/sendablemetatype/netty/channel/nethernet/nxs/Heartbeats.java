@@ -440,7 +440,8 @@ final class Heartbeats {
         });
     }
 
-    private CompletableFuture<Void> invalidatePublished() {
+    /** Withdraws the published profile and the authority and diagnostics it carried. */
+    CompletableFuture<Void> invalidatePublished() {
         publishedSnapshot = null;
         lastProfile = null;
         profileRevision = null;
