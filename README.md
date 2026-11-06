@@ -58,6 +58,10 @@ application supports:
 See [RakNet configuration](transport-raknet/README.md) and
 [NetherNet setup](transport-nethernet/README.md) for transport configuration.
 
+The optional `nethernet-nxs` module adds a client for NetherNet External
+Signaling (NXS) providers on top of the NetherNet transport; see
+[its README](nethernet-nxs/README.md). It is not part of the 1.3.0 release.
+
 ## Compatibility
 
 | Module | Java target | Packages |
@@ -65,8 +69,9 @@ See [RakNet configuration](transport-raknet/README.md) and
 | `transport-common` | 25 | `io.github.sendablemetatype.netty` |
 | `transport-raknet` | 25 | `io.github.sendablemetatype.netty` |
 | `transport-nethernet` | 25 | `io.github.sendablemetatype.netty` |
+| `nethernet-nxs` | 25 | `io.github.sendablemetatype.netty` |
 
-All three modules use Netty 4.2.19.Final, aligned through its BOM. Applications
+All modules use Netty 4.2.20.Final, aligned through its BOM. Applications
 that provide Netty must use compatible 4.2 modules together. RakNet depends on
 `netty-codec-base` rather than the aggregate `netty-codec` artifact, so it does
 not pull in unrelated codecs.
@@ -76,8 +81,9 @@ NetworkCompatible must update their imports and rebuild. Libraries that directly
 reference transport classes, such as Cloudburst Protocol's connection module,
 also need a build targeting NetworkM.
 
-NetherNet uses the [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java).
-Its Java packages use the `io.github.sendablemetatype.webrtc` namespace.
+NetherNet runs its WebRTC work through an engine interface. The default engine
+uses the [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java), whose
+Java packages use the `io.github.sendablemetatype.webrtc` namespace.
 
 ## Building from source
 
@@ -85,6 +91,9 @@ Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
 Gradle provisions JDK 27 for compilation and tests. Compilation uses
 `--release 25`. CI runs the same tests on Java 25 and 27; use
 `-PtestJavaVersion=25` to test on the minimum supported version locally.
+The `nethernet-nxs` tests run the NXS specification's Node.js verifiers and fail
+without Node.js; `-PnxsNode=<path>` selects the binary, `node` on the path
+otherwise.
 
 Local builds use the development version declared in [gradle.properties](gradle.properties).
 `NETWORK_PUBLISH_VERSION` overrides it when preparing a release. Forks can change
