@@ -8,9 +8,10 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientI
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusAnswer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusProvider;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusRequest;
-import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +37,7 @@ class HttpSignalingStatusTest {
     private static final NetherNetServerStatus FIRST = NetherNetServerStatus.builder().name("First").players(1).build();
     private static final NetherNetServerStatus SECOND = NetherNetServerStatus.builder().name("Second").build();
 
-    private final EventLoopGroup worker = new DefaultEventLoopGroup(1);
+    private final EventLoopGroup worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final RecordingSink sink = new RecordingSink();
     private final List<EmbeddedHttp> connections = new ArrayList<>();
     private final List<StatusRequest> asked = new CopyOnWriteArrayList<>();

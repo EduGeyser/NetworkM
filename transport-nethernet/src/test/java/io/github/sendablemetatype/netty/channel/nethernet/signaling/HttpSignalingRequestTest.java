@@ -5,8 +5,9 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.EmbeddedHttp.Response;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusAnswer;
 import io.netty.buffer.ByteBuf;
-import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -41,7 +42,7 @@ class HttpSignalingRequestTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";
     private static final String ANSWER = "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\n";
 
-    private final EventLoopGroup worker = new DefaultEventLoopGroup(1);
+    private final EventLoopGroup worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final RecordingSink sink = new RecordingSink();
     private final List<EmbeddedHttp> connections = new ArrayList<>();
     private NetherNetHttpSignaling signaling;
