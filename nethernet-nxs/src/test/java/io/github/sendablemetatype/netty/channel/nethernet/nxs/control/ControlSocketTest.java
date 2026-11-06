@@ -184,6 +184,28 @@ class ControlSocketTest {
         }
     }
 
+    @Test
+    void manySmallFramesWaitingForABusyOwnerAlsoStopTheReading() throws Exception {
+        try (var server = new Loopback(false)) {
+            // Forty frames stay well inside the byte limit, so only their number can stop the reading
+            var limits = new ControlSocket.Limits(1 << 20, 4, 64, 2 << 20, DEADLINE, DEADLINE, DEADLINE, DEADLINE);
+            var socket = open(server, limits, IGNORE);
+            owner.runReady();
+            Channel peer = server.socket.get(5, TimeUnit.SECONDS);
+            String filler = "x".repeat(20000);
+            for (int i = 0; i < 40; i++) {
+                peer.write(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1})));
+                peer.write(new TextWebSocketFrame(filler));
+            }
+            peer.write(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1})));
+            peer.flush();
+            int handedOver = settledQueue();
+            assertTrue(handedOver <= 12, handedOver + " frames waited for the owner");
+            assertNotNull(owner.failure(socket.closed()));
+            assertEquals(ControlSocket.UNSUPPORTED_DATA, server.closeCodes.poll(5, TimeUnit.SECONDS));
+        }
+    }
+
     /** How many tasks wait for the owner once the event loop stopped handing over more for a while. */
     private int settledQueue() throws InterruptedException {
         long deadline = System.currentTimeMillis() + 10_000;
