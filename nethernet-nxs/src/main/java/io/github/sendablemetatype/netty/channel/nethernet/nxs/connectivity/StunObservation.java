@@ -29,9 +29,11 @@ import java.util.Optional;
 import java.util.function.LongSupplier;
 
 /**
- * Watches one numeric STUN server through a monitor on the gameplay port. The latest mapping counts while younger
- * than the max age, and a fresh one survives a reopened monitor until it ages out. A monitor that fails is closed,
- * its mapping withdrawn, and opened again after {@link #RETRY_DELAY}. Polled by its owner, one thread at a time.
+ * Watches one numeric STUN server through a monitor on the gameplay port. The monitor (webrtc-java's
+ * {@code IceUdpEndpoint.monitorStun}) only reports readings; this class keeps the per-server state on top of them.
+ * The latest mapping counts while younger than the max age, and a fresh one survives a reopened monitor until it
+ * ages out. A monitor that fails is closed, its mapping withdrawn, and opened again after {@link #RETRY_DELAY}.
+ * Polled by its owner, one thread at a time.
  */
 final class StunObservation implements AutoCloseable {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(StunObservation.class);
