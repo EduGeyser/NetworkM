@@ -583,6 +583,11 @@ upstream API usage; adapt their imports, dependencies and API calls for NetworkM
    into whole messages for the pipeline, and pipeline writes are split into
    segments for the engine.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/nethernet_server_dark.svg">
+  <img alt="NetherNet server packet flow" src="../.github/readme/nethernet_server_light.svg">
+</picture>
+
 ### Client
 
 1. The client channel connects its signaling and creates an engine peer.
@@ -590,3 +595,8 @@ upstream API usage; adapt their imports, dependencies and API calls for NetworkM
    or after gathering with every candidate in it (HTTP).
 3. It applies the answer, goes active once both data channels are open, and from
    then on moves whole messages as the server child does.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/nethernet_client_dark.svg">
+  <img alt="NetherNet client packet flow" src="../.github/readme/nethernet_client_light.svg">
+</picture>
