@@ -269,7 +269,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         // A refusal can arrive as a 2xx with a short body instead of an SDP, as vanilla BDS does
         if (!response.body().startsWith("v=")) {
-            fail(connectionId, current, "HTTP " + response.status() + " without an SDP answer" + reason(response.body()),
+            fail(connectionId, current,
+                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body()),
                     JoinRefusal.INTERNAL.errorCode());
             return;
         }
@@ -497,7 +498,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                 result.completeExceptionally(new ConnectException("malformed response: " + response.decoderResult()));
                 return;
             }
-            result.complete(new Response(response.status().code(), response.content().toString(StandardCharsets.UTF_8)));
+            String body = response.content().toString(StandardCharsets.UTF_8);
+            result.complete(new Response(response.status().code(), body));
         }
 
         @Override

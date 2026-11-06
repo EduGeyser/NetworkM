@@ -574,7 +574,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
         }
 
         /**
-         * @param maxConnections open signaling connections at most, {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS} by default
+         * @param maxConnections open signaling connections at most,
+         *                       {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS} by default
          * @return this builder
          */
         public Builder maxConnections(int maxConnections) {
@@ -584,7 +585,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
 
         /**
          * @param maxConnectionsPerAddress open connections per client address (IPv6 per /64) at
-         *                                 most, {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS_PER_ADDRESS} by default
+         *                                 most, {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS_PER_ADDRESS}
+         *                                 by default
          * @return this builder
          */
         public Builder maxConnectionsPerAddress(int maxConnectionsPerAddress) {

@@ -66,6 +66,7 @@ public record HttpClientSettings(Scheme scheme, List<IceServerInfo> iceServers, 
     public static final HttpClientSettings DEFAULT =
             new HttpClientSettings(Scheme.AUTO, List.of(), null, null, DEFAULT_ANSWER_TIMEOUT);
 
+    /** Checks the settings; a null trust or client info is allowed, see the components. */
     public HttpClientSettings {
         Objects.requireNonNull(scheme, "scheme");
         iceServers = List.copyOf(iceServers);
@@ -75,27 +76,42 @@ public record HttpClientSettings(Scheme scheme, List<IceServerInfo> iceServers, 
         }
     }
 
-    /** @return these settings with that scheme */
+    /**
+     * @param scheme the scheme
+     * @return these settings with that scheme
+     */
     public HttpClientSettings withScheme(Scheme scheme) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }
 
-    /** @return these settings with those ICE servers */
+    /**
+     * @param iceServers the STUN and TURN servers
+     * @return these settings with those ICE servers
+     */
     public HttpClientSettings withIceServers(List<IceServerInfo> iceServers) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }
 
-    /** @return these settings trusting certificates through that factory, for a private CA */
+    /**
+     * @param trust the trust, for a private CA, or null for the JDK's default trust store
+     * @return these settings checking certificates against that trust
+     */
     public HttpClientSettings withTrust(TrustManagerFactory trust) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }
 
-    /** @return these settings telling the server that about the client, as the retail client does */
+    /**
+     * @param clientInfo what to tell the server about the client, as the retail client does, or null
+     * @return these settings telling the server that
+     */
     public HttpClientSettings withClientInfo(ClientInfo clientInfo) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }
 
-    /** @return these settings waiting that long for an answer */
+    /**
+     * @param answerTimeout how long to wait for an answer, positive
+     * @return these settings waiting that long
+     */
     public HttpClientSettings withAnswerTimeout(Duration answerTimeout) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }

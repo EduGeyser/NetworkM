@@ -36,6 +36,7 @@ public record ClientInfo(String version, int protocol, int platform) {
     /** Room for {@code 1.100.100.100} and then some. */
     public static final int MAX_VERSION_LENGTH = 16;
 
+    /** Checks that a version is given; its format is checked only when read from a query. */
     public ClientInfo {
         Objects.requireNonNull(version, "version");
     }
