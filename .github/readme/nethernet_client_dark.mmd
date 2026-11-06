@@ -8,7 +8,7 @@ flowchart LR
 
  subgraph TransportLayer["<b>NetherNet Transport</b>"]
     Signaling["<b>NetherNetClientSignaling</b><br><i>HTTP, Xbox RPC or LAN</i>"]
-    ClientChannel["<b>NetherNetClientChannel</b><br><i>Signs the offer with its ClientIdentity</i>"]
+    ClientChannel["<b>NetherNetClientChannel</b><br><i>Signs the offer with its ClientIdentity, checks the answer with its ServerTrust</i>"]
   subgraph Engine["<b>NetherNetEngine</b><br><i>WebRtcEngine: libwebrtc through webrtc-java</i>"]
     Peer["<b>Peer</b><br><i>One per attempt</i>"]
     Reliable["<b>ReliableDataChannel</b>"]

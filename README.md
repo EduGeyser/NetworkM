@@ -67,9 +67,13 @@ module path.
 
 See [RakNet configuration](transport-raknet/README.md) and
 [NetherNet setup](transport-nethernet/README.md) for transport configuration.
+Each module README ends with diagrams of its packet flow:
+[RakNet](transport-raknet/README.md#packet-flow) and
+[NetherNet](transport-nethernet/README.md#packet-flow).
 
-The optional `nethernet-nxs` module adds a client for NetherNet External
-Signaling (NXS) providers on top of the NetherNet transport; see
+The optional `nethernet-nxs` module adds NetherNet External Signaling (NXS) to
+a NetherNet server: the provider client, the host side that admits NXS players
+on the server's shared ICE port, and connectivity diagnostics; see
 [its README](nethernet-nxs/README.md). It is not part of the 1.3.0 release.
 
 ## Compatibility

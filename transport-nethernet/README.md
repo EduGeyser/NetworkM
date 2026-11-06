@@ -1,7 +1,8 @@
 # netty-transport-nethernet
 
 A NetherNet transport for Netty: Bedrock's WebRTC data channel transport, with a
-server endpoint that takes joins from HTTP, Xbox RPC and LAN signaling, and a
+server endpoint that takes joins from HTTP, Xbox RPC and LAN signaling (and from
+NXS through the [`nethernet-nxs`](../nethernet-nxs/README.md) module), and a
 client channel. In NetworkM this module targets Java 25 and runs on libwebrtc
 through the [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java),
 with Maven coordinates `io.github.sendablemetatype.webrtc:webrtc-java` and Java
@@ -89,7 +90,11 @@ Choose one explicitly:
 - `ServerIdentity.ephemeral(domain)` keeps the key in memory only.
 
 The endpoint logs the key's SHA-256 fingerprint when it binds;
-`identity.fingerprint()` returns it for publishing.
+`identity.fingerprint()` returns it for publishing, and `identity.publicKey()`
+the key a client pins (see [Client](#client)). Code that signs descriptions
+itself uses `ServerIdentity.augmentAnswer` and `ClientIdentity.withAssertion`;
+both throw `GeneralSecurityException` when the key cannot sign, and no jose4j
+type appears in their signatures.
 
 **Sources.** `addSource(source)` and `addSource(source, policy)` add a join
 source before or after bind. A source starts once the endpoint is bound and its
@@ -99,11 +104,26 @@ every join replies through its own `ReplyPath`. A source starts once: to restart
 one, remove it and add a new instance. Closing the endpoint closes its sources.
 `sources()` lists them.
 
+A custom source implements `JoinSource` and hands the endpoint a `Join` per offer
+through the `JoinSink` it gets at start. Its `ReplyPath` carries the answer and
+the refusal back; a path that settles joins on its own, as HTTP signaling does at
+its deadline, fails a later refusal with `JoinAlreadySettledException`, and the
+endpoint then does not count that refusal. `JoinSource.oneJoinPerNetworkId()`
+(false by default, true for HTTP signaling) puts the source's joins under the
+duplicate rule of [Admission](#admission). `JoinSink.sharedIcePort()` gives a
+source the shared ICE port: `claimHeldChecks` takes the connectivity checks no
+peer holds (NXS stateless joins), `monitorStun` keeps STUN bindings alive from
+the port, and `openPeer` opens a peer that carries no player (NXS connectivity
+checks). Such a peer gets no child channel and counts no session, but holds one
+of the endpoint's pending joins until its termination completed; the source must
+close it. Removing the source closes its peers.
+
 **ICE port.** By default every peer gathers its host candidates on one UDP port,
 the address and port the endpoint binds (`NETHER_SERVER_SHARED_ICE_PORT`, true).
-Port 0 picks a free port. A taken port fails the bind. The engine opens the port
-after bind returned; a port that fails to open then closes the endpoint. Between
-bind and the port opening, joins are refused with `CAPACITY`. Set
+Port 0 binds a free port, found when the endpoint binds. A taken port fails the
+bind. The engine opens the port after bind returned; a port that fails to open
+then closes the endpoint. Between bind and the port opening, joins are refused
+with `CAPACITY`. Set
 `NETHER_SERVER_SHARED_ICE_PORT` to false to give each session ports of its own
 from `NETHER_CANDIDATE_POLICY`'s port window, the way BDS allocates them
 ([client behavior](docs/client-behavior.md#how-vanilla-bds-answers-for-comparison)).
@@ -120,6 +140,17 @@ closes the endpoint. An address the host gathered narrows the host candidates to
 it; any other is announced as the public side of a NAT. Empty by default: answers
 carry what ICE gathered plus the address in the client's `Host` header.
 
+**STUN discovery.** Instead of advertised addresses, `NETHER_SERVER_STUN_SERVERS`
+lists STUN servers (each with a port; `StunObserver.parseServer` reads `stun:`
+URLs) that the shared ICE port asks for its public mapping every 15 s, which
+also keeps the NAT mapping open. Answers announce each fresh mapping as a server
+reflexive candidate, until `NETHER_SERVER_STUN_MAX_AGE` (5 minutes) after its
+last answer or until a server reports another one. No join waits for the
+servers. A mapping on another port than the ICE port is also announced on the
+ICE port, for a router that forwards the ICE port but moves the port of outgoing
+traffic. Binding fails when STUN servers are set together with advertised
+addresses, with PROXY protocol relays, or without the shared ICE port.
+
 **Candidate options.**
 
 | Option | Default | Meaning |
@@ -127,6 +158,16 @@ carry what ICE gathered plus the address in the client's `Host` header.
 | `NETHER_SERVER_INFER_PEER_CANDIDATES` | true | Checks guessed candidates at the address a client signaled from, when it offers only host candidates and this host gathered no public one. |
 | `NETHER_ICE_SERVERS` | none | STUN and TURN servers every peer uses, next to those a source hands out (Xbox TURN). |
 | `NETHER_CANDIDATE_POLICY` | `CandidatePolicy.DEFAULT` | IPv6, local addresses and the port window for gathering. |
+| `NETHER_SERVER_STUN_SERVERS` | none | STUN servers that report the shared ICE port's public mapping, see above. |
+| `NETHER_SERVER_STUN_MAX_AGE` | 5 minutes | How long a mapping is announced after its last answer; positive. |
+
+**Remote candidates.** The server applies only UDP candidates with an IP
+literal: at most 32 from the offer and 32 more trickled. A name would make the
+server look it up for whoever sent the offer, and NetherNet gathers no TCP. It
+drops candidates at a multicast, limited broadcast or unspecified address, since
+no peer can answer a check from there; loopback and link-local addresses stay,
+for peers on the same host or link. Behind PROXY protocol relays it applies no
+remote candidate at all.
 
 **Trusted proxies.** `NETHER_SERVER_TRUSTED_PROXIES` takes a `TrustedProxies`
 (transport-common, `util.address`): one list of peers whose PROXY protocol
@@ -135,35 +176,73 @@ once at startup with `TrustedProxies.parseList`, off any I/O thread: entries are
 addresses, CIDR ranges, host names or `https://` URLs listing more entries;
 `http://` URLs are refused. On the endpoint, the PROXY protocol list names the
 relays in front of the shared ICE port: the port reads their PROXY protocol v2
-headers, answers announce only the relays and TURN, and no remote candidate is
-applied. This needs the shared ICE port. HTTP signaling reads its own list
-(`NetherNetHttpSignaling.Builder.trustedProxies`); pass it the same parsed value.
-With `NETHER_SERVER_PREFER_PROXIED_ADDRESS` (false by default), a child keeps
-reporting the client address a trusted signaling proxy declared instead of the
-selected ICE pair; a TURN pair is reported as the relay either way.
+headers, and players reach the server only through a relay or TURN, so the
+origin's address never appears in an answer. This needs the shared ICE port.
+HTTP signaling reads its own list (`NetherNetHttpSignaling.Builder.trustedProxies`);
+pass it the same parsed value. With `NETHER_SERVER_PREFER_PROXIED_ADDRESS` (false
+by default), a child keeps reporting the client address a trusted signaling proxy
+declared instead of the selected ICE pair; a TURN pair is reported as the relay
+either way.
+
+Behind relays, set `NETHER_SERVER_ADVERTISED_ADDRESSES` to the relays' public
+addresses: answers announce those and TURN relay candidates (without their
+related address, which is this host's public mapping). Without advertised
+addresses, answers carry only TURN relay candidates, and bind logs a warning.
+The warning has two forms. With a TURN server in `NETHER_ICE_SERVERS`
+(`IceServer.isTurn()`), players connect through TURN, not through the relays.
+Without one, answers carry no candidates, players cannot reach the server
+through the relays at all, and only joins whose signaling hands out TURN servers
+(Xbox) can connect. Bind sees only the TURN servers the host configured, not
+those Xbox hands out per join.
 
 ### Admission
 
 Every join, whatever its source, passes the same stage on the endpoint's event
 loop:
 
-1. The per-address throttle (`NETHER_SERVER_THROTTLE`). The default
+1. One pending join per network ID, for sources that ask for it
+   (`JoinSource.oneJoinPerNetworkId()`, HTTP signaling): a second offer for a
+   network ID whose join is still pending is refused with `DUPLICATE` before it
+   gets a peer, and the first join is left alone. The rule spans every such
+   source of the endpoint. A join holds its network ID until its answer is sent
+   or it fails, also after its source was removed.
+2. The per-address throttle (`NETHER_SERVER_THROTTLE`). The default
    `DefaultNetherServerThrottle` allows 100 open connections and 30 joins per
    4 s per address, IPv6 counted per /64; a school shares one NAT address. Joins
    from an unknown address (Xbox RPC) are not throttled.
-2. One budget shared by all sources: `NETHER_SERVER_MAX_SESSIONS` (unlimited by
+3. One budget shared by all sources: `NETHER_SERVER_MAX_SESSIONS` (unlimited by
    default) and `NETHER_SERVER_MAX_PENDING_JOINS` (256), the joins that have not
    gone active yet.
-3. The offer's identity check (`NETHER_SERVER_OFFER_CHECK`, `OfferCheck.minecraft()`
-   by default), off the event loop on a bounded executor, with a deadline
-   (`NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS`, 10,000). The endpoint fetches the
-   trusted issuers' keys when it binds, so the first join does not wait for them.
-4. The source's `OfferPolicy` decides on the check's result.
+4. The offer's identity check (`NETHER_SERVER_OFFER_CHECK`, `OfferCheck.minecraft()`
+   by default), off the event loop on a bounded executor (up to four threads and
+   64 queued checks), with a deadline (`NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS`,
+   10,000). The endpoint fetches the trusted issuers' keys when it binds, so the
+   first join does not wait for them.
+5. The source's `OfferPolicy` decides on the check's result.
+6. The host's join filter (`NETHER_SERVER_JOIN_FILTER`), if one is set.
+
+An offer whose `a=max-message-size` the endpoint cannot use is refused as
+`BAD_OFFER` before the check. A join whose source authenticated the client itself
+(`Join.Authenticated`, NXS) skips the check and the policy; the throttle, the
+budget and the join filter apply to it all the same.
 
 A join holds its share of the budget and its throttle entry until its child's
 `termination()` stage completed, not merely until the child closed. A child that
 does not go active within `NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS` (30) is
 closed.
+
+**Join filter.** A `NetherServerJoinFilter` is the host's say over who joins, for
+example an allow list or a ban list. Its `allows(request)` sees a `Request`: the
+join's source, the client's network ID, its address as the source saw it, the
+`Host` header and the `ClientInfo` of an HTTP join (null on other sources;
+`ClientInfo` is also null when the request carried no usable query), and the identity check's
+result (null for an NXS join). Everything except the source and the check result
+comes from the client unchecked. The filter runs on the identity check executor,
+shares its threads and queue, and counts against the same deadline, which runs
+from the start of the check. Keep it quick. False refuses the join with
+`HOST_REFUSED`; an answer past the deadline refuses it with `NO_ANSWER_IN_TIME`,
+and a filter that throws refuses it with `INTERNAL` (the first failure is logged
+as a warning, later ones at debug).
 
 **Identity check levels.** `OfferCheck` grades the offer's `a=identity` in three
 steps and returns one `OfferCheckResult`:
@@ -200,20 +279,28 @@ also carries `NetherNetChildChannel.CONNECTION_ID`, the client's connection ID.
 
 **Refusals.** A refused join creates nothing. Its source tells the client with a
 `JoinRefusal`: an HTTP status with an empty body over HTTP, a `CONNECTERROR`
-signal with a NetherNet error code over Xbox RPC and LAN. Which message each makes
-the client show is not captured yet. Upstream Network's record of the reasons
-clients pick for 401, 403 and 503, and where each status here fits it, is in
+signal with a NetherNet error code over Xbox RPC and LAN. NXS sends neither: a
+refused stateless join's check is dropped, and a refused assisted join fails its
+answer to the provider. Which message each status or code makes the client show
+is not captured yet. Upstream Network's record of the reasons clients pick for
+401, 403 and 503, and where each status here fits it, is in
 [docs/client-disconnect-reasons.md](docs/client-disconnect-reasons.md).
 
 | `JoinRefusal` | HTTP | Error code | When |
 | --- | --- | --- | --- |
 | `IDENTITY_MISSING` | 401 | 16 | The policy refused an offer without an assertion. |
 | `IDENTITY_INVALID` | 401 | 16 | Malformed assertion, failed proof, or not attested where the policy requires it. |
-| `HOST_REFUSED` | 403 | 16 | Defined for host refusals; nothing in the library produces it yet. |
-| `CAPACITY` | 503 | 16 | Throttle, budget, full check queue, endpoint not ready, closing, or the source was removed. |
+| `HOST_REFUSED` | 403 | 16 | The join filter refused the join. |
+| `CAPACITY` | 503 | 16 | Throttle, budget, a full check executor, endpoint not ready or closing, or the source was removed. |
 | `TRUST_SOURCE_UNREACHABLE` | 500 | 35 | Attestation was required and the issuer's keys could not be fetched. |
-| `NO_ANSWER_IN_TIME` | 504 | 2 | The identity check, or the answer, missed its deadline. |
-| `INTERNAL` | 500 | 11 | An unusable offer, or a failure on the server while answering. |
+| `NO_ANSWER_IN_TIME` | 504 | 2 | The identity check, the join filter, or the answer missed its deadline. |
+| `BAD_OFFER` | 400 | 13 | The offer is unusable: empty, for a network ID that does not decode, an SDP the identity check cannot read, an unusable `a=max-message-size`, or a description the engine refused. |
+| `DUPLICATE` | 409 | 16 | Another offer for the same network ID is still pending (HTTP). |
+| `INTERNAL` | 500 | 11 | A failure on the server while answering, or a join filter that threw. |
+
+Error code 2 is NegotiationTimeout, 11 FailedToCreateAnswer, 13
+FailedToSetRemoteDescription, 16 IncomingConnectionIgnored and 35 GenericFailure,
+positions in the client's signaling error enumeration as go-nethernet lists it.
 
 ### Login key binding
 
@@ -264,6 +351,7 @@ cannot be bound again.
 | `maxConnections(int)` | 1024 | Open signaling connections. |
 | `maxConnectionsPerAddress(int)` | 100 | Open connections per client address (IPv6 per /64, proxied clients by their declared source). |
 | `maxRequestBodyBytes(int)` | 32 KiB | The largest request body; larger ones get `413`. |
+| `metrics(NetherServerMetrics)` | none | Where the source reports what it refuses on its own, see [Metrics and access log](#metrics-and-access-log). |
 
 **TLS.** Each connection's first bytes say whether it is TLS. On a TLS
 ClientHello the `TlsContextSelector` is asked with the requested server name
@@ -310,13 +398,47 @@ for example `NetherNetServerStatus.randomNonce()`.
 more request started within 5 s; each request has 10 s to arrive whole, and the
 last response says `Connection: close`. A client that leaves while its offer is
 pending abandons the join, and the endpoint closes the child unless it already
-went active. Other statuses besides the refusals: `400` for a malformed request
-or network ID, `404` for other paths, `503` for an offer before `start` or after
-`close`.
+went active. An offer for a network ID that does not decode, or with an empty
+body, is a `BAD_OFFER` (`400`). Other statuses besides the refusals: `400` for a
+malformed request, `404` for other paths, `503` for an offer before `start` or
+after `close`.
+
+**Duplicate offers.** The endpoint takes one pending offer per network ID from
+HTTP signaling, across all its HTTP sources: a second offer for a network ID
+whose first offer has neither been answered nor failed gets `409`
+(`DUPLICATE`), and the first goes on. The network ID is free again as soon as
+the answer is sent, so a later offer for it is a new connect.
 
 **Proxies.** A PROXY protocol header (v1 or v2) from a trusted PROXY protocol peer
 wins over `X-Forwarded-For` from a trusted forwarder; nobody else can declare a
-source. `X-Forwarded-For` is walked right to left without DNS.
+source. `X-Forwarded-For` is walked right to left without DNS. An entry without a
+port keeps the forwarder's port.
+
+#### Metrics and access log
+
+Give the builder's `metrics` the same `NetherServerMetrics` the endpoint has as
+`NETHER_SERVER_METRICS`. The endpoint reports the joins it admits and refuses;
+HTTP signaling reports only what it refuses on its own, so nothing is counted
+twice. A hook that throws is logged at debug and ignored.
+
+| Event | When |
+| --- | --- |
+| `addressRefused(address)` | The address already holds as many signaling connections as it may. |
+| `connectionCapRefused(address)` | Every signaling connection is taken, so a new one was closed unread. The address is the TCP peer, which is the proxy for a proxied client. |
+| `requestTimedOut(address)` | A request did not arrive whole within 10 s, so its connection closed unanswered. The address is the client a PROXY protocol header declared, else the TCP peer. A connection that sends no second request after its status request is not reported. |
+| `plaintextRefused(address)` | A plain HTTP request arrived under `requiresTls`. |
+| `joinRefused(status)` | An offer was refused before or instead of the endpoint, such as a `504` past the negotiation deadline, or a `413` (body too large) or `417` (an `Expect` it does not meet) before the offer was read whole. |
+
+Each join counts once in `joinRefused`, for the refusal that settled it, also
+when writing that refusal failed. A refusal that comes after the join was
+settled, for example the endpoint's refusal after HTTP signaling's own `504`, is
+not counted.
+
+Every request logs one debug line with the requester (and the proxy that spoke
+for it), the method, the path without its query, the status and the elapsed
+time, under the logger
+`io.github.sendablemetatype.netty.channel.nethernet.signaling.HttpAccessLog`. No
+body, header or query reaches the log, so offers and tokens never do.
 
 ### Xbox RPC signaling
 
@@ -376,13 +498,32 @@ address and the client's network ID. Anyone on the network can forge a datagram'
 source, so joins carry it as `AddressSource.SIGNALING_LAN`.
 
 Discovery responses use binary server data v7, the layout BDS 1.26.50 and later
-send. `LanServerData.V7` is the LAN record, separate from the HTTP status
-document; the two need not match. The authentication flags describe the
-endpoint's admission policy; they enable nothing. `setServerData` encodes the
-record once and caches it; a record that does not fit one datagram throws
-`IllegalArgumentException` and the previous one stays. `NetherNetServerDataCodec`
-and the scanner read v6 and v7. The v7 layout is not yet confirmed against a
-current retail capture.
+send. `LanServerData.V7` (package `signaling.lan`) is the LAN record, separate
+from the HTTP status document; the two need not match. The authentication flags
+describe the endpoint's admission policy; they enable nothing.
+`NetherNetServerDataCodec` and the scanner read v6 and v7. The v7 layout is not
+yet confirmed against a current retail capture.
+
+A source answers every discovery request in one of two ways; setting one
+replaces the other:
+
+- `setServerData(data)` answers every request with fixed data. It encodes the
+  record once and caches it; a record that does not fit one datagram throws
+  `IllegalArgumentException` and the previous one stays.
+- `setAdvertiser(advertiser)` asks a `LanAdvertiser` per request, the LAN
+  counterpart of HTTP's status provider, so the player count can be live and a
+  requester can be left without a response. It gets a `LanDiscoveryRequest`
+  with the requester's address and announced network ID, and answers with
+  `LanAdvertisement.advertise(data)` or `LanAdvertisement.decline()` (no
+  response). It runs off the I/O threads, at most 64 calls at once, each with a
+  deadline: 1 s, or the `Duration` of `setAdvertiser(advertiser, timeout)`, which
+  must be positive. A call that misses its deadline, throws, answers null or
+  returns data too large for one datagram, and a request beyond the 64, get the
+  last data this advertiser produced in time, or no response while there is
+  none. Each advertiser keeps its own last data, so a replaced advertiser's
+  fallback never reaches its successor's requests. Anyone on the network can
+  send discovery requests, so keep each call cheap, for example by returning a
+  cached record.
 
 ### Network IDs
 
@@ -396,7 +537,39 @@ HTTP 400.
 Generated IDs are decimal strings. LAN discovery uses uint64 IDs in its binary
 wire format. The numeric `NetherNetAddress` constructor and
 `getNetworkIdAsLong()` remain available for that representation; use
-`getNetworkId()` when handling opaque IDs.
+`getNetworkId()` when handling opaque IDs. Two `NetherNetAddress`es are equal
+when their network IDs are.
+
+### Connection IDs
+
+A connection ID names one connection attempt in signaling. NetworkM treats it as
+an opaque string on Xbox RPC, LAN and the HTTP client: a received ID is matched
+and echoed exactly as written and never parsed as a number, so `00042` stays
+`00042`. A valid ID is 1 to 64 printable ASCII characters without spaces (0x21
+to 0x7E); a signal with any other ID is dropped with a debug line that does not
+quote it. A `Signal` or `Join` built with an invalid ID throws
+`IllegalArgumentException`, so a custom source or signaling cannot pass one on.
+
+IDs NetworkM generates, for HTTP server answers and client attempts
+(`Signal.newConnectionId()`), are nonzero unsigned 64-bit values in decimal, the
+form vanilla writes, since other peers may parse them as numbers (go-nethernet
+does). An NXS join's connection ID is its ticket ID (32 hex digits); it is never
+signaled. The admitted child carries its ID in
+`NetherNetChildChannel.CONNECTION_ID`.
+
+**Signals.** A `Signal` is one signal as Xbox RPC and LAN carry it:
+`type()` (a `SignalType`: `CONNECT_REQUEST`, `CONNECT_RESPONSE`,
+`CANDIDATE_ADD` or `CONNECT_ERROR`), `connectionId()` and `payload()`.
+`Signal.parse(raw)` reads one and drops a signal of an unknown type or with an
+invalid connection ID; `wire()` writes it back. Custom signaling implements
+`NetherNetSignaling`: `SignalHandler.onSignal(Signal)` receives the parsed
+signals of one connection ID, and
+`setSignalHandler(connectionId, remoteNetworkId, handler)` registers it for the
+signals of that ID from that remote peer only. A client attempt passes the peer
+its offer went to, so a third party that learned the ID can neither answer nor
+fail the attempt. On LAN, the target `"0"` means the server discovery found.
+HTTP needs no such check, since the answer is the response to the client's own
+request.
 
 ### Channels
 
@@ -404,6 +577,37 @@ Server children and client channels are `NetherNetChannel`s and implement
 transport-common's `TransportChannel`. Each carries a reliable and an unreliable
 data channel, and each message is carried whole: the channel splits and
 reassembles segments itself. No framing codec goes in the pipeline.
+
+**Options.** Each channel takes only the NetherNet options that act on it,
+besides Netty's own:
+
+| Channel | Set with | NetherNet options |
+| --- | --- | --- |
+| `NetherNetServerChannel` | `ServerBootstrap.option` | Every `NETHER_SERVER_*` option, `NETHER_ICE_SERVERS`, `NETHER_CANDIDATE_POLICY` |
+| `NetherNetChildChannel` | `ServerBootstrap.childOption` | The connection options below |
+| `NetherNetClientChannel` | `Bootstrap.option` | The connection options, every `NETHER_CLIENT_*` option, `NETHER_ICE_SERVERS`, `NETHER_CANDIDATE_POLICY` |
+
+A NetherNet option a channel does not take, or a value out of an option's range,
+throws `IllegalArgumentException` naming it. A null value throws
+`NullPointerException`, except for the options whose default is none. Netty
+4.2's bootstraps log such a failure as a warning and then, unless the system
+property `io.netty.bootstrap.closeOnSetOptionFailure` is false, close the
+channel: a refused `option` fails the bind or connect, and a refused
+`childOption` closes every child as it is accepted.
+
+| Connection option | Default | Range |
+| --- | --- | --- |
+| `NETHER_MAX_REASSEMBLED_BYTES` | 16 MiB | at least 1 |
+| `NETHER_SEND_PAUSE_BYTES` | 2 MiB | 1 to 16,515,072 (16 MiB less 256 KiB) |
+| `NETHER_MAX_QUEUED_BYTES` | 64 MiB | at least 1 |
+| `NETHER_METRICS` | none | |
+
+The server's count and time options (`NETHER_SERVER_MAX_SESSIONS`,
+`NETHER_SERVER_MAX_PENDING_JOINS`, `NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS`,
+`NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS`) and the client's
+(`NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS`, `NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS`)
+are at least 1, `NETHER_SERVER_STUN_MAX_AGE` is positive, and
+`NETHER_SERVER_ADVERTISED_ADDRESSES` holds at most 32 entries.
 
 **Writing.** A plain `ByteBuf` goes on the reliable channel. Sending unreliably is
 opt-in: write a `NetherNetPacket(content, false)`. An unreliable message must fit
@@ -420,6 +624,10 @@ corrupt the reliable stream.
 a `NetherNetPacket` whose `reliable()` is false. The two data channels have no
 ordering between them. Vanilla sends game data only on the reliable channel
 ([client behavior](docs/client-behavior.md#data-channels-and-framing)).
+A segment the peer sends as a text message is read like a binary one: vanilla
+sends binary messages only, and its receive path does not close a session over
+a message's type. A custom engine reports text messages through
+`PeerListener.onTextMessage`.
 `AUTO_READ` and `read()` are honored: messages wait in a queue of at most 512
 messages and twice `NETHER_MAX_REASSEMBLED_BYTES` bytes, and `read()` delivers one
 message. With auto-read on, queued messages are delivered in batches of at most
@@ -444,9 +652,12 @@ sections do not count; if several apply, the smallest is used.
 **Pacing and caps.** While a data channel's engine queue holds more than
 `NETHER_SEND_PAUSE_BYTES` (2 MiB), the channel stops handing segments to the
 engine and turns unwritable; it resumes once the queue drained to a quarter of
-that. libwebrtc closes a data channel past 16 MiB queued, so segments wait in
-Java instead. Past `NETHER_MAX_QUEUED_BYTES` (64 MiB) waiting in Java, the
-connection ends with `QUEUE_TOO_LONG`.
+that. libwebrtc fails a send and closes the data channel once 16 MiB are queued,
+so segments wait in Java instead. That limit is `DataLink.SEND_QUEUE_CAPACITY`,
+which every engine must take: the pause level plus one segment of the largest
+size the channel sends (256 KiB) stays within it, which caps
+`NETHER_SEND_PAUSE_BYTES` at 16,515,072. Past `NETHER_MAX_QUEUED_BYTES` (64 MiB)
+waiting in Java, the connection ends with `QUEUE_TOO_LONG`.
 
 **Disconnect reasons.** When the transport ends a connection, the channel fires
 one `TransportDisconnectReason` as a user event on its event loop just before it
@@ -473,13 +684,27 @@ placeholder in 240.0.0.0/4 when it saw none (`PlaceholderAddress`), until ICE
 selects a pair; from then on it is the remote side of the newest selected pair,
 which for a relayed connection is the TURN relay. A server child moves to the
 pair when it goes active, and fires a `RemoteAddressChangedEvent` for every later
-move. `NetherNetChildChannel.reportedAddress()` returns the address with its
-`AddressSource`. `getPing()` returns the ICE round trip time in milliseconds,
-sampled every 3 s, or 0 while unknown.
+move. A client that dialed a network ID keeps it as its remote address.
+`getPing()` returns the ICE round trip time in milliseconds, sampled every 3 s,
+or 0 while unknown.
+
+**Statistics.** Server children and clients expose the same readings; each
+address comes as a `SourcedAddress`, the address with its `AddressSource`:
+
+| Method | Returns |
+| --- | --- |
+| `signaledAddress()` | Where signaling met the peer, fixed for the channel's life: for a child the HTTP connection, a trusted proxy's declaration, the LAN datagram or the NXS admission; for a client the address it dialed. A placeholder with source `UNKNOWN` when signaling did not say (Xbox, or a client that dialed a network ID). |
+| `mediaAddress()` | The remote side of the newest selected pair, where the media flows; a TURN relay for a relayed pair, never the address the peer claims behind it. Empty until ICE selected a pair with a known remote address, which can be before activation; a client's next attempt starts empty again. |
+| `reportedAddress()` | What `remoteAddress()` reports, with its source: for a child the signaled address until it goes active, then the media address (or a trusted proxy's declaration under `NETHER_SERVER_PREFER_PROXIED_ADDRESS`); for a client the media address once there is one, else the signaled address. |
+| `selectedPath()` | The selected candidate pair as a `TransportPath`: both ends with their `TransportPath.CandidateType`; either address is null when the engine does not report it. Empty before ICE selected a pair; after close, the last pair. |
+| `transportMetrics()` | A stage with the `TransportMetrics`: the selected pair's ICE round trip time and the SCTP association's counters (smoothed round trip time, congestion window, retransmissions, packets and messages). The stage may complete on an engine thread; do not block an event loop on it. Before the channel has a peer (a client before it connects or between attempts) and after close, it completes at once with `TransportMetrics.NONE`; before activation each part is empty until it exists. |
 
 **Metrics.** `NETHER_METRICS` takes a `NetherChannelMetrics` for per-connection
 counters and events; `NETHER_SERVER_METRICS` a `NetherServerMetrics` for the
-endpoint's accepted, refused and throttled joins. Both are off by default.
+endpoint's accepted, refused and throttled joins. Both are off by default. A
+join counts once in `joinRefused`, with the HTTP status of its refusal whatever
+its source; give HTTP signaling the same instance for the refusals it decides
+itself ([Metrics and access log](#metrics-and-access-log)).
 
 ### Client
 
@@ -493,22 +718,40 @@ closes with itself; give each client channel its own signaling instance.
 | `NetherNetDiscoverySignaling()` | `InetSocketAddress` of the server's discovery port | Discovers the server within 10 s. |
 
 ```java
-NetherNetHttpClientSignaling signaling = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT, group);
+ClientIdentity identity = ClientIdentity.of(keyPair, token, idpDomain); // throws GeneralSecurityException
 Channel channel = new Bootstrap()
         .group(group)
-        .channelFactory(() -> new NetherNetClientChannel(signaling))
-        .option(NetherChannelOption.NETHER_CLIENT_IDENTITY, ClientIdentity.of(keyPair, token, idpDomain))
+        // A new signaling instance for every channel the bootstrap creates
+        .channelFactory(() -> new NetherNetClientChannel(
+                new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT, group)))
+        .option(NetherChannelOption.NETHER_CLIENT_IDENTITY, identity)
         .handler(new MyInitializer())
         .connect(InetSocketAddress.createUnresolved("play.example.com", 19132))
         .sync().channel();
 ```
 
+`NetherNetChannelFactory.client(engine, signalingSupplier)` and
+`client(engineSupplier, signalingSupplier)` do the same and also choose the
+engine.
+
 **Identity.** Vanilla BDS and this library's endpoints refuse an offer without an
 identity. `NETHER_CLIENT_IDENTITY` takes a `ClientIdentity` built with
 `ClientIdentity.of(keyPair, token, idpDomain)`: a secp384r1 key pair and a token
 whose `cpk` names it, either a retail multiplayer token or one the caller signs
-itself, as Education does. The client signs its offer's fingerprints with the key.
-Tokens expire, so set a fresh identity per connection.
+itself, as Education does. `of` throws `GeneralSecurityException` when the key is
+not a secp384r1 pair or the token does not name it. The client signs its offer's
+fingerprints with the key. Tokens expire, so set a fresh identity per connection.
+
+**Server identity.** Without `NETHER_CLIENT_SERVER_TRUST` (the default) the
+client checks nothing about the server's identity. To pin it, set a
+`ServerTrust.pinnedTo(keys)`: one or more secp384r1 public keys, such as the
+server's `ServerIdentity.publicKey()`, more than one across a key rotation. The
+endpoint logs its key's fingerprint when it binds. The answer's `a=identity`
+must then name a pinned key, be self-signed by it, carry a valid signature over
+the answer's DTLS fingerprints, and not be expired; the DTLS handshake then
+holds the server to those fingerprints. An answer without an identity, with one
+that does not verify, or with a key that is not pinned fails the connect at
+once, without another attempt.
 
 **HTTP.** HTTP carries one offer and one answer, so the client waits for ICE
 gathering and sends its offer with every candidate in it. `HttpClientSettings`
@@ -521,13 +764,29 @@ the server's default negotiation deadline). Requests are HTTP/1.1 and follow no
 redirects. `NetherNetHttpClientSignaling.probe(address, settings, group, networkId)`
 asks for the status alone.
 
-**Handshake.** An attempt that does not open both data channels within
-`NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS` (3,000) is retried with a new peer and
-connection ID, up to `NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS` (3). Over HTTP each
-attempt also gets the signaling's answer wait. A refusal, a `2xx` without an SDP,
-a missed answer deadline or a signaling transport failure ends the connect
-without a retry. Once connected, a failing peer ends the connection as on the
+**Handshake.** An attempt that does not open its reliable data channel within
+`NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS` (3,000), or whose peer fails, starts over
+with a new peer and connection ID. `NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS` (3)
+counts the attempts in all, the first one included. Signaling that does not
+trickle (HTTP) makes one attempt whatever the option says: it carries one offer,
+and the server refuses a second offer for the same network ID as a duplicate
+while the first is pending. Over HTTP the attempt also gets the signaling's
+answer wait until the answer arrived. A refusal, a `2xx` without an SDP, a missed
+answer deadline, a signaling transport failure, a `CONNECTERROR` or a refused
+server identity ends the connect without another attempt. The client takes
+signals for an attempt only once its offer went out, and only from the peer the
+offer went to. Once connected, a failing peer ends the connection as on the
 server.
+
+**Remote candidates.** The client takes UDP candidates from the server, at most
+32 from the answer and 32 more trickled, and drops TCP candidates and those at a
+multicast, limited broadcast or unspecified address, as the server does. Unlike
+the server, it also takes candidates that name a host, since dynamic DNS,
+split-horizon DNS and cluster names are legitimate on a server. It looks each
+name up in Java, off the event loop, at most 32 lookups per attempt, runs the
+address through the same rules (numeric spellings such as `0xe00000fb` count as
+names, so the resolver's reading is checked), and hands the engine the IP
+literal. A name that does not resolve is dropped. The engine never sees a name.
 
 ### Native log
 
@@ -572,9 +831,10 @@ upstream API usage; adapt their imports, dependencies and API calls for NetworkM
 ### Server
 
 1. A join source receives an offer and hands the endpoint a `Join` with its
-   `ReplyPath`.
-2. The endpoint admits the join (throttle, budget, identity check, policy) or
-   refuses it through the reply path.
+   `ReplyPath`. NXS brings its stateless joins from checks the shared ICE port
+   holds for unknown ICE usernames, and its assisted joins from its provider.
+2. The endpoint admits the join (duplicate rule, throttle, budget, identity check,
+   policy, join filter) or refuses it through the reply path.
 3. An admitted join becomes a `NetherNetChildChannel`, published at once. The
    child creates its engine peer, answers through the reply path (with the
    server identity added) and applies the client's candidates.
@@ -582,6 +842,9 @@ upstream API usage; adapt their imports, dependencies and API calls for NetworkM
    reliable one is open. From then on, segments from the engine are reassembled
    into whole messages for the pipeline, and pipeline writes are split into
    segments for the engine.
+
+NXS connectivity checks also arrive on the shared ICE port, but get a peer of
+their own (`SharedIcePort.openPeer`) and no child.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/nethernet_server_dark.svg">
@@ -593,8 +856,9 @@ upstream API usage; adapt their imports, dependencies and API calls for NetworkM
 1. The client channel connects its signaling and creates an engine peer.
 2. It sends the signed offer: at once with trickled candidates (Xbox RPC, LAN),
    or after gathering with every candidate in it (HTTP).
-3. It applies the answer, goes active once both data channels are open, and from
-   then on moves whole messages as the server child does.
+3. It checks the answer's identity when `NETHER_CLIENT_SERVER_TRUST` is set,
+   applies the answer, goes active once its reliable data channel is open, and
+   from then on moves whole messages as the server child does.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../.github/readme/nethernet_client_dark.svg">
