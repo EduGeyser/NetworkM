@@ -1,218 +1,182 @@
+/*
+ * Copyright 2026 CloudburstMC
+ *
+ * CloudburstMC licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetOfferValidator;
-import io.github.sendablemetatype.netty.util.nethernet.ClientAssertionValidator;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
-import io.github.sendablemetatype.netty.util.nethernet.TrustSourceUnavailableException;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusProvider;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsContextSelector;
+import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObjectAggregator;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.HttpServerCodec;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.handler.codec.http.QueryStringDecoder;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslHandler;
-import io.netty.handler.timeout.ReadTimeoutHandler;
-import io.netty.util.ReferenceCountUtil;
-import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
- * NetherNet's HTTP signaling front end: the direct connection model that
- * replaces RakNet for updated clients, per Mojang's NetherNet onboarding
- * guide. Listens on TCP under the same port RakNet serves on UDP; the client
- * probes it before falling back to RakNet, so every failure mode here lands
- * on a working RakNet join.
+ * HTTP signaling, the direct connection path of Mojang's NetherNet onboarding guide, as a
+ * {@link JoinSource}. It listens on TCP, usually at the port players type; the client asks it
+ * before it tries anything else, and a client that still supports RakNet falls back to it when
+ * the answer is not a {@code 2xx}.
+ * <ul>
+ *   <li>{@code GET /v1/join}: a {@code 2xx} says NetherNet is served here. The body is the
+ *   {@link io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus status
+ *   document} the {@link StatusProvider} gives, or empty without one. A {@code 404} declines
+ *   NetherNet: when the provider declines, and whenever an offer would certainly be refused
+ *   (not started, closed, or the endpoint's {@link JoinSink#admits} says no).</li>
+ *   <li>{@code POST /v1/join/{networkId}}: the body is the client's SDP offer; the response is
+ *   the full answer ({@code application/sdp}) or a {@link JoinRefusal}'s status with an empty
+ *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle.</li>
+ * </ul>
+ * Everything else is a {@code 404}, as on vanilla.
  *
- * Endpoints:
- * - GET /v1/join: any 2xx means NetherNet is supported and the client
- *   proceeds with the SDP exchange. Carries the
- *   {@link NetherNetServerStatus} document when a supplier is set, which
- *   vanilla 1.26.50 and later answer with as their equivalent of the RakNet
- *   unconnected pong; older clients ignore the body.
- * - POST /v1/join/{networkId}: the request body is the client's SDP offer;
- *   the response body is the full ICE SDP answer (application/sdp). The
- *   whole exchange fits one round trip, so {@link #fullIceAnswers()} is true
- *   and no candidate signals flow in either direction.
+ * <p>Connections: one request, or a status request and one more request started within 5 s;
+ * each request has 10 s to arrive whole. The last response says {@code Connection: close}. An
+ * offer has the negotiation deadline (15 s by default) from the end of its request for the
+ * endpoint's admission and the answer; past it the client gets a {@code 504}, and the join's
+ * {@link ReplyPath#abandoned()} completes, as it does when the client leaves first. Nothing else
+ * closes a connection while its answer is pending.
  *
- * Connections are one shot (Connection: close), offers are capped at 1 MiB,
- * and a negotiation that produces no answer within the timeout responds 502
- * and tears the half negotiated connection down.
+ * <p>TLS and plain HTTP share the port: each connection's first bytes say which it is. A TLS
+ * connection asks the {@link TlsContextSelector} with the server name it requested; null closes
+ * it, which clients read as TLS refused. With {@code requiresTls}, plain HTTP is always answered
+ * {@code 426}, also while no certificate is available.
  *
- * TLS: pre 26.40 clients require HTTPS with a certificate that validates
- * against the server's IP address; pass an SslContext for that. 26.40 and
- * later also accept plain HTTP, trusting the server identity through their
- * TOFU flow. The listener serves both on the one port: each connection's
- * protocol is selected from its first bytes, so with a certificate present
- * TLS and plaintext both work, and with none (or behind a TLS terminating
- * reverse proxy) plaintext alone is served and TLS speakers are closed
- * immediately.
+ * <p>Behind proxies, configure {@link TrustedProxies}: a PROXY protocol header (v1 or v2) from a
+ * trusted PROXY proxy wins over {@code X-Forwarded-For} from a trusted forwarder; nobody else can
+ * declare a source. Connections count against a global cap and a per-address cap (IPv6 by /64,
+ * proxied clients by the source the proxy declares).
+ *
+ * <p>Bind with {@link #bind}, then hand the source to an endpoint, which calls {@link #start}.
+ * Closed instances cannot be bound again.
  */
-public class NetherNetHttpSignaling implements NetherNetServerSignaling {
-    private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpSignaling.class);
+public final class NetherNetHttpSignaling implements JoinSource {
+    static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpSignaling.class);
 
-    private static final String JOIN_PATH = "/v1/join";
-    private static final String OFFER_PATH_PREFIX = "/v1/join/";
-    /** Mirrors the go-nethernet reference cap for SDP bodies. */
-    private static final int MAX_OFFER_BYTES = 1 << 20;
-    private static final int READ_TIMEOUT_SECONDS = 10;
-    private static final long NEGOTIATION_TIMEOUT_SECONDS = 15;
+    /** The default negotiation deadline, measured from the end of an offer's request. */
+    public static final Duration DEFAULT_NEGOTIATION_TIMEOUT = Duration.ofSeconds(15);
+    /** The default status deadline. */
+    public static final Duration DEFAULT_STATUS_TIMEOUT = Duration.ofSeconds(1);
+    /** The default cap on open signaling connections. */
+    public static final int DEFAULT_MAX_CONNECTIONS = 1024;
+    /**
+     * The default cap on connections per client address. High, since players behind one NAT
+     * (a classroom) share an address.
+     */
+    public static final int DEFAULT_MAX_CONNECTIONS_PER_ADDRESS = 100;
+    /**
+     * The default cap on a request body. Real offers measured 2.0 to 2.5 KB (2026-11-05); the cap
+     * bounds what every open connection may buffer, since bodies are read before admission.
+     */
+    public static final int DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024;
 
-    private final Supplier<SslContext> sslContextSupplier;
+    private static final long WARNING_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(10);
+
     private final EventLoopGroup workerGroup;
     private final Supplier<? extends EventLoopGroup> acceptGroupFactory;
-    private final Supplier<? extends ExecutorService> validationExecutorFactory;
+    private final TlsContextSelector tlsSelector;
+    private final boolean requiresTls;
+    private final TrustedProxies trustedProxies;
+    private final Duration negotiationTimeout;
+    private final int maxRequestBodyBytes;
+    private final HttpConnectionLimits limits;
+    private final HttpStatusService statusService;
+    private final ExecutorService ownedStatusExecutor;
+
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
-    private final String localNetworkId = Long.toUnsignedString(ThreadLocalRandom.current().nextLong());
-
-    private final Map<Long, SignalHandler> signalHandlers = new ConcurrentHashMap<>();
-    private final Map<Long, PendingExchange> pendingExchanges = new ConcurrentHashMap<>();
-
-    private volatile Supplier<NetherNetServerStatus> statusSupplier;
-    // Racing a duplicate first warn is harmless; this only bounds the spam.
-    private volatile boolean statusSupplierWarned;
-    private volatile NewConnectionHandler newConnectionHandler;
-    private volatile NetherNetOfferValidator offerValidator = new ClientAssertionValidator();
-    private ExecutorService validationExecutor;
+    private final List<Consumer<SignalingHealth>> healthListeners = new CopyOnWriteArrayList<>();
+    private final AtomicLong nextPlaintextWarning = new AtomicLong(System.nanoTime());
+    private final AtomicLong nextTlsWarning = new AtomicLong(System.nanoTime());
+    private volatile JoinSink sink;
     private volatile Channel serverChannel;
-    // The TCP accept loop. Owned: bind() is called from the NetherNet server
-    // channel's event loop, so registering the listener on a caller supplied
-    // group and waiting for the bind would deadlock a single threaded group
-    // against itself (netty rejects it as a blocking call on the event loop).
+    // The TCP accept loop. Owned: binding on a group the caller also runs on and waiting for it
+    // would deadlock a single threaded group against itself
     private EventLoopGroup acceptGroup;
+    private boolean bound;
     private volatile boolean closed;
+    private volatile SignalingHealth health = new SignalingHealth(SignalingState.NEW, 0, null, null);
 
-    /**
-     * @param sslContext  server TLS context, or null to serve plaintext
-     * @param workerGroup connection I/O loops; not owned, never shut down here
-     */
-    public NetherNetHttpSignaling(SslContext sslContext, EventLoopGroup workerGroup) {
-        this(() -> sslContext, workerGroup);
-    }
-
-    /**
-     * @param sslContextSupplier consulted per accepted connection: non null
-     *                           enables TLS with that context, null serves
-     *                           plaintext. Lets certificate rotation (or late
-     *                           issuance) apply to new connections without a
-     *                           rebind; signaling connections are one shot,
-     *                           so nothing needs draining.
-     * @param workerGroup        connection I/O loops; not owned, never shut
-     *                           down here
-     */
-    public NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup) {
-        this(sslContextSupplier, workerGroup, () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()));
-    }
-
-    NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
-                          Supplier<? extends EventLoopGroup> acceptGroupFactory) {
-        this(sslContextSupplier, workerGroup, acceptGroupFactory, NetherNetHttpSignaling::newValidationExecutor);
-    }
-
-    NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
-                          Supplier<? extends EventLoopGroup> acceptGroupFactory,
-                          Supplier<? extends ExecutorService> validationExecutorFactory) {
-        this.sslContextSupplier = Objects.requireNonNull(sslContextSupplier, "sslContextSupplier");
-        this.workerGroup = Objects.requireNonNull(workerGroup, "workerGroup");
-        this.acceptGroupFactory = Objects.requireNonNull(acceptGroupFactory, "acceptGroupFactory");
-        this.validationExecutorFactory = Objects.requireNonNull(validationExecutorFactory, "validationExecutorFactory");
-    }
-
-    /**
-     * Configures offer validation and optional application authorization. The default
-     * verifies Minecraft-issued tokens and their SDP fingerprint signatures. Set null
-     * to explicitly opt out. Changes apply to subsequent offers; validators run outside
-     * I/O loops and must not log bearer tokens or include them in exception messages.
-     */
-    public void setOfferValidator(NetherNetOfferValidator validator) {
-        this.offerValidator = validator;
-    }
-
-    private static ExecutorService newValidationExecutor() {
-        int threads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS,
-                new ArrayBlockingQueue<>(64), new DefaultThreadFactory("nethernet-identity", true));
-        executor.allowCoreThreadTimeOut(true);
-        return executor;
-    }
-
-    private ExecutorService validationExecutor() {
-        synchronized (lifecycleLock) {
-            if (closed) throw new RejectedExecutionException("HTTP signaling is closed");
-            if (validationExecutor == null) {
-                validationExecutor = Objects.requireNonNull(validationExecutorFactory.get(), "validation executor");
-            }
-            return validationExecutor;
+    private NetherNetHttpSignaling(Builder builder) {
+        this.workerGroup = builder.workerGroup;
+        this.acceptGroupFactory = builder.acceptGroupFactory;
+        this.tlsSelector = builder.tlsSelector;
+        this.requiresTls = builder.requiresTls;
+        this.trustedProxies = builder.trustedProxies;
+        this.negotiationTimeout = builder.negotiationTimeout;
+        this.maxRequestBodyBytes = builder.maxRequestBodyBytes;
+        this.limits = new HttpConnectionLimits(builder.maxConnections, builder.maxConnectionsPerAddress);
+        if (builder.statusProvider == null) {
+            this.ownedStatusExecutor = null;
+            this.statusService = null;
+        } else {
+            Executor executor = builder.statusExecutor;
+            this.ownedStatusExecutor = executor == null
+                    ? Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("nethernet-http-status-", 0).factory())
+                    : null;
+            this.statusService = new HttpStatusService(builder.statusProvider, builder.statusTimeout,
+                    executor != null ? executor : ownedStatusExecutor);
         }
     }
 
     /**
-     * Sets the source of the server status answered on the capability check,
-     * or null to answer with an empty body as before. Consulted per request,
-     * so live values (the player count above all) need no republishing; the
-     * consumer owns any caching, since this endpoint is reachable by anyone
-     * who can open a TCP connection.
-     *
-     * Called from connection I/O threads; implementations must be thread
-     * safe and return promptly. A failure is treated as no status being
-     * available and never turns the capability check negative.
+     * @param workerGroup the I/O loops connections are served on; not owned, never shut down here.
+     *                    It has to take NIO channels, as the listener is NIO
+     * @return a builder with the defaults: plain HTTP only, no trusted proxies, an empty status
      */
-    public void setStatusSupplier(Supplier<NetherNetServerStatus> statusSupplier) {
-        this.statusSupplier = statusSupplier;
+    public static Builder builder(EventLoopGroup workerGroup) {
+        return new Builder(workerGroup);
     }
 
-    @Override
+    /**
+     * Binds the listener and returns once it listens. A failed bind closes this instance. Do not
+     * call it from the worker group's loops.
+     *
+     * @param localAddress where to listen
+     * @throws ConnectException if binding fails, or this instance is closed or already bound
+     */
     public void bind(SocketAddress localAddress) throws ConnectException {
         Objects.requireNonNull(localAddress, "localAddress");
         EventLoopGroup accept;
@@ -226,9 +190,10 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             accept = Objects.requireNonNull(acceptGroupFactory.get(), "acceptGroupFactory returned null");
             acceptGroup = accept;
         }
+        updateHealth(null);
 
         ChannelFuture bind = null;
-        boolean bound = false;
+        Throwable failure = null;
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
             bootstrap.group(accept, workerGroup)
@@ -261,167 +226,81 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             }
             ConnectException ce = new ConnectException("Failed to bind HTTP signaling listener: " + e.getMessage());
             ce.initCause(e);
+            failure = ce;
             throw ce;
         } finally {
-            if (!bound) {
+            if (failure != null) {
                 try {
                     if (bind != null) {
                         bind.channel().close();
                     }
                 } finally {
-                    close();
+                    close(failure);
                 }
             }
         }
+        updateHealth(null);
     }
 
-    void initConnection(Channel channel) {
-        connections.add(channel);
-        if (closed) {
-            channel.close();
-            return;
-        }
-        ReadTimeoutHandler requestTimeout = new ReadTimeoutHandler(READ_TIMEOUT_SECONDS);
-        HttpServerCodec httpCodec = new HttpServerCodec();
-        channel.pipeline().addLast(requestTimeout);
-        channel.pipeline().addLast(new ProtocolSelectingHandler());
-        channel.pipeline().addLast(httpCodec);
-        channel.pipeline().addLast(new SingleRequestHandler(requestTimeout, httpCodec));
-        channel.pipeline().addLast(new HttpObjectAggregator(MAX_OFFER_BYTES + 8192));
-        channel.pipeline().addLast(new SignalingRequestHandler());
-    }
-
-    private static final class SingleRequestHandler extends ChannelInboundHandlerAdapter {
-        private final ReadTimeoutHandler requestTimeout;
-        private final HttpServerCodec httpCodec;
-        private boolean complete;
-
-        private SingleRequestHandler(ReadTimeoutHandler requestTimeout, HttpServerCodec httpCodec) {
-            this.requestTimeout = requestTimeout;
-            this.httpCodec = httpCodec;
-        }
-
-        @Override
-        public void channelRead(ChannelHandlerContext ctx, Object message) {
-            if (complete) {
-                ReferenceCountUtil.release(message);
-                return;
-            }
-            if (message instanceof LastHttpContent) {
-                complete = true;
-                ctx.pipeline().remove(requestTimeout);
-                // Keep the response encoder while discarding subsequent pipelined input.
-                // The pending offer now has its own negotiation deadline.
-                httpCodec.removeInboundHandler();
-            }
-            ctx.fireChannelRead(message);
-        }
-    }
-
-    /**
-     * The address the HTTP listener actually bound, resolving an ephemeral
-     * port request to the assigned port. Null before {@link #bind}.
-     */
+    /** The address the listener bound, an ephemeral port resolved; null before {@link #bind}. */
     public InetSocketAddress boundAddress() {
         Channel channel = this.serverChannel;
         return channel != null ? (InetSocketAddress) channel.localAddress() : null;
     }
 
     @Override
-    public void setNewConnectionHandler(NewConnectionHandler handler) {
-        this.newConnectionHandler = handler;
-    }
-
-    @Override
-    public void setAdvertisementData(PongData pongData) {
-        // No MOTD endpoint exists on the HTTP path yet; server list ping
-        // stays with RakNet. Kept as a hook for a future /v1/motd.
-    }
-
-    @Override
-    public void sendSignal(String targetNetworkId, String data) {
-        String[] parts = data.split(" ", 3);
-        if (parts.length < 2) {
-            return;
-        }
-        long connectionId;
-        try {
-            connectionId = Long.parseUnsignedLong(parts[1]);
-        } catch (NumberFormatException e) {
-            return;
-        }
-
-        switch (parts[0]) {
-            case NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE -> {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange == null) {
-                    log.debug("Answer for {} arrived after its exchange completed or timed out",
-                            Long.toUnsignedString(connectionId));
-                    return;
-                }
-                exchange.cancelTimeout();
-                respond(exchange.ctx, HttpResponseStatus.OK, "application/sdp", parts.length > 2 ? parts[2] : "");
+    public void start(JoinSink sink) {
+        Objects.requireNonNull(sink, "sink");
+        synchronized (lifecycleLock) {
+            if (closed) {
+                throw new IllegalStateException("HTTP signaling is closed");
             }
-            case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange != null) {
-                    exchange.cancelTimeout();
-                    respond(exchange.ctx, HttpResponseStatus.BAD_REQUEST, "text/plain",
-                            "Negotiation failed" + (parts.length > 2 ? ": " + parts[2] : ""));
-                }
+            if (this.sink != null) {
+                throw new IllegalStateException("HTTP signaling was already started");
             }
-            case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> {
-                // Full ICE: candidates ride inside the answer; nothing to
-                // trickle on a request/response medium.
-            }
-            default -> log.debug("Dropping unsupported outbound signal type {} for {}",
-                    parts[0], Long.toUnsignedString(connectionId));
+            this.sink = sink;
         }
+        updateHealth(null);
+    }
+
+    /**
+     * {@link SignalingState#CONNECTED} once bound and started; {@link SignalingState#STARTING}
+     * while one of the two is missing.
+     */
+    @Override
+    public SignalingHealth health() {
+        return health;
+    }
+
+    /** Listeners run on the thread that changed the state: the one binding, starting or closing. */
+    @Override
+    public void addHealthListener(Consumer<SignalingHealth> listener) {
+        healthListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
-        signalHandlers.put(connectionId, handler);
+    public void removeHealthListener(Consumer<SignalingHealth> listener) {
+        healthListeners.remove(listener);
     }
 
+    /** None: HTTP signaling hands out no STUN or TURN servers. */
     @Override
-    public void removeSignalHandler(long connectionId) {
-        signalHandlers.remove(connectionId);
+    public List<IceServer> iceServers() {
+        return List.of();
     }
 
-    @Override
-    public String getLocalNetworkId() {
-        return localNetworkId;
-    }
-
-    @Override
-    public boolean fullIceAnswers() {
-        return true;
-    }
-
-    @Override
-    public InetSocketAddress remoteAddressOf(long connectionId) {
-        PendingExchange exchange = pendingExchanges.get(connectionId);
-        return exchange != null ? exchange.remoteAddress : null;
-    }
-
-    @Override
-    public ClientIdentity clientIdentityOf(long connectionId) {
-        PendingExchange exchange = pendingExchanges.get(connectionId);
-        return exchange != null ? exchange.identity : null;
-    }
-
-    @Override
-    public boolean isConnectionPending(long connectionId) {
-        return pendingExchanges.containsKey(connectionId);
-    }
-
-    /** Closes the listener and accepted connections. This instance cannot be rebound. */
+    /**
+     * Closes the listener and every connection. An offer waiting for its answer has its
+     * {@link ReplyPath#abandoned()} completed. This instance cannot be bound again.
+     */
     @Override
     public void close() {
+        close(null);
+    }
+
+    private void close(Throwable failure) {
         Channel channel;
         EventLoopGroup accept;
-        ExecutorService validation;
         synchronized (lifecycleLock) {
             if (closed) {
                 return;
@@ -429,340 +308,332 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             closed = true;
             channel = serverChannel;
             accept = acceptGroup;
-            validation = validationExecutor;
-            this.serverChannel = null;
-            this.acceptGroup = null;
-            this.validationExecutor = null;
+            serverChannel = null;
+            acceptGroup = null;
         }
         try {
             if (channel != null) {
                 channel.close();
             }
-            for (Long connectionId : pendingExchanges.keySet()) {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange != null) {
-                    exchange.cancelTimeout();
-                    respond(exchange.ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Server shutting down");
-                }
-            }
-            signalHandlers.clear();
+            connections.close();
         } finally {
             try {
-                if (validation != null) validation.shutdownNow();
-                connections.close();
+                if (ownedStatusExecutor != null) {
+                    ownedStatusExecutor.shutdownNow();
+                }
             } finally {
                 if (accept != null) {
                     accept.shutdownGracefully(0, 3, TimeUnit.SECONDS);
                 }
             }
         }
+        updateHealth(failure);
     }
 
-    /**
-     * One in flight offer/answer exchange: the HTTP context awaiting the
-     * answer, the peer's address, and the negotiation timeout reaping it.
-     */
-    static final class PendingExchange {
-        final ChannelHandlerContext ctx;
-        final InetSocketAddress remoteAddress;
-        private ScheduledFuture<?> timeout;
-        private Future<?> validationTask;
-        private volatile ClientIdentity identity;
-        private boolean completed;
-
-        PendingExchange(ChannelHandlerContext ctx, InetSocketAddress remoteAddress) {
-            this.ctx = ctx;
-            this.remoteAddress = remoteAddress;
-        }
-
-        synchronized void setTimeout(ScheduledFuture<?> timeout) {
-            // Close can complete an exchange between its map insertion and timer assignment.
-            if (completed) {
-                timeout.cancel(false);
-            } else {
-                this.timeout = timeout;
-            }
-        }
-
-        synchronized void cancelTimeout() {
-            completed = true;
-            if (validationTask != null) {
-                validationTask.cancel(true);
-                validationTask = null;
-            }
-            if (timeout != null) {
-                timeout.cancel(false);
-                timeout = null;
-            }
-        }
-
-        synchronized void setValidationTask(Future<?> task) {
-            if (completed) task.cancel(true);
-            else validationTask = task;
-        }
-    }
-
-    private final class SignalingRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
-        @Override
-        protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
-            if (!request.decoderResult().isSuccess()) {
-                respond(ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Malformed request");
-                return;
-            }
-            String path = request.uri();
-            int query = path.indexOf('?');
-            if (query >= 0) {
-                path = path.substring(0, query);
-            }
-
-            if (HttpMethod.GET.equals(request.method()) && JOIN_PATH.equals(path)) {
-                // Any 2xx tells the client NetherNet is supported here.
-                if (newConnectionHandler == null || closed) {
-                    respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Service unavailable");
-                } else {
-                    respondStatus(ctx);
-                }
-                return;
-            }
-            if (HttpMethod.POST.equals(request.method()) && path.startsWith(OFFER_PATH_PREFIX)) {
-                handleOffer(ctx, request, path.substring(OFFER_PATH_PREFIX.length()));
-                return;
-            }
-            respond(ctx, HttpResponseStatus.NOT_FOUND, "text/plain", "Not found");
-        }
-
-        private void handleOffer(ChannelHandlerContext ctx, FullHttpRequest request, String encodedNetworkId) {
-            String networkId;
-            try {
-                if (encodedNetworkId.isEmpty() || encodedNetworkId.indexOf('/') >= 0
-                        || encodedNetworkId.indexOf('#') >= 0) {
-                    throw new IllegalArgumentException("Expected one Network ID path segment");
-                }
-                // Decode to bytes first so invalid UTF-8 cannot collapse distinct IDs.
-                // Path decoding preserves literal '+' and decodes percent escapes once.
-                String decodedBytes = new QueryStringDecoder("/" + encodedNetworkId, StandardCharsets.ISO_8859_1)
-                        .path().substring(1);
-                networkId = StandardCharsets.UTF_8.newDecoder()
-                        .decode(ByteBuffer.wrap(decodedBytes.getBytes(StandardCharsets.ISO_8859_1))).toString();
-            } catch (IllegalArgumentException | CharacterCodingException e) {
-                respond(ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Invalid Network ID path segment");
-                return;
-            }
-            NewConnectionHandler handler = newConnectionHandler;
-            if (handler == null || closed) {
-                respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Service unavailable");
-                return;
-            }
-            String offerSdp = request.content().toString(StandardCharsets.UTF_8);
-            if (offerSdp.isEmpty()) {
-                respond(ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Missing SDP offer in request body");
-                return;
-            }
-
-            long connectionId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-            PendingExchange exchange = new PendingExchange(ctx, (InetSocketAddress) ctx.channel().remoteAddress());
-            pendingExchanges.put(connectionId, exchange);
-
-            // Reap a negotiation that produces no answer in time: 502 to the
-            // client, CONNECTERROR inward so the server channel closes the
-            // half negotiated child.
-            exchange.setTimeout(ctx.channel().eventLoop().schedule(() -> {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    log.debug("Negotiation for {} timed out waiting for the answer", Long.toUnsignedString(connectionId));
-                    respond(ctx, HttpResponseStatus.BAD_GATEWAY, "text/plain", "Timed out waiting for answer");
-                    SignalHandler signalHandler = signalHandlers.get(connectionId);
-                    if (signalHandler != null) {
-                        signalHandler.onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " "
-                                + Long.toUnsignedString(connectionId) + " negotiation timeout");
-                    }
-                }
-            }, NEGOTIATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-
-            // A client that disconnects mid negotiation leaves the answer with
-            // nowhere to go; drop the exchange so the timeout does not fire a
-            // response into a dead channel. Completed exchanges were already
-            // removed by then and this is a no-op.
-            ctx.channel().closeFuture().addListener(future -> {
-                PendingExchange orphan = pendingExchanges.remove(connectionId);
-                if (orphan != null) {
-                    orphan.cancelTimeout();
-                }
-            });
-
-            NetherNetOfferValidator validator = offerValidator;
-            if (validator == null) {
-                dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, null, null);
-                return;
-            }
-            FutureTask<Void> task = new FutureTask<>(() -> {
-                ClientIdentity identity = null;
-                Exception failure = null;
-                try {
-                    identity = Objects.requireNonNull(validator.validate(offerSdp), "Validator returned no identity");
-                } catch (Exception e) {
-                    failure = e;
-                }
-                ClientIdentity verified = identity;
-                Exception error = failure;
-                try {
-                    ctx.executor().execute(() -> dispatchOffer(connectionId, exchange, networkId, offerSdp,
-                            handler, verified, error));
-                } catch (RejectedExecutionException e) {
-                    // The existing negotiation deadline still reaps the exchange if the loop recovers.
-                    log.debug("Identity completion could not reach the HTTP event loop for {}",
-                            Long.toUnsignedString(connectionId));
-                }
-                return null;
-            });
-            exchange.setValidationTask(task);
-            try {
-                if (!task.isCancelled()) validationExecutor().execute(task);
-            } catch (RejectedExecutionException e) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Identity validation unavailable");
-                }
-            }
-        }
-
-        private void dispatchOffer(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
-                                   NewConnectionHandler handler, ClientIdentity identity, Exception failure) {
-            if (closed || !exchange.ctx.channel().isActive() || pendingExchanges.get(connectionId) != exchange) return;
-            if (failure != null) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    // Validator messages never carry the bearer token, so they can be logged.
-                    if (failure instanceof TrustSourceUnavailableException) {
-                        log.warn("Offer {} from {} not validated, trust source unreachable: {}",
-                                Long.toUnsignedString(connectionId), exchange.remoteAddress, failure.getMessage());
-                        respond(exchange.ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain",
-                                "Identity trust source unavailable");
-                    } else {
-                        log.info("Rejected offer {} from {}: {}",
-                                Long.toUnsignedString(connectionId), exchange.remoteAddress, failure.getMessage());
-                        respond(exchange.ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Client assertion rejected");
-                    }
-                }
-                return;
-            }
-            exchange.identity = identity;
-            log.debug("Offer for {} from network {} via HTTP", Long.toUnsignedString(connectionId), networkId);
-            try {
-                handler.onConnect(connectionId, networkId, offerSdp);
-            } catch (Exception e) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    signalHandlers.remove(connectionId);
-                    exchange.ctx.close();
-                }
-            }
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            // Routine noise: TLS handshakes from probing clients without our
-            // certificate trusted, port scanners, read timeouts.
-            log.debug("HTTP signaling connection error: {}", cause.toString());
-            ctx.close();
-        }
-    }
-
-    /**
-     * Selects the connection's protocol from its first bytes, so TLS and
-     * plaintext are both served on the one port a client ever derives from
-     * the join address. A TLS record installs the SslHandler when a
-     * certificate is available, and closes the connection when none is,
-     * before any handshake byte can reach the HTTP codec. Everything else
-     * proceeds as plaintext HTTP, which keeps signaling reachable for
-     * clients whose TLS attempt failed against a broken certificate: 26.40
-     * and later retry over plain HTTP and trust the server identity through
-     * their TOFU flow, so certificate rot degrades to a confirmation prompt
-     * instead of losing NetherNet entirely.
-     */
-    private final class ProtocolSelectingHandler extends ByteToMessageDecoder {
-
-        @Override
-        protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
-            // A TLS record is recognizable from its first five bytes.
-            if (in.readableBytes() < 5) {
-                return;
-            }
-            if (SslHandler.isEncrypted(in, false)) {
-                SslContext sslContext = sslContextSupplier.get();
-                if (sslContext == null) {
-                    // TLS spoken at a certificate-less server: close instead
-                    // of letting handshake bytes reach the HTTP codec. The
-                    // immediate close is also the fastest signal for the
-                    // client's own fallback ladder.
-                    ctx.close();
-                    return;
-                }
-                ctx.pipeline().addAfter(ctx.name(), null, sslContext.newHandler(ctx.alloc()));
-            }
-            // Removing the decoder forwards the buffered bytes to whichever
-            // handler now follows: the SslHandler for TLS, the HTTP codec
-            // for plaintext.
-            ctx.pipeline().remove(this);
-        }
-    }
-
-    /**
-     * Answers the capability check, carrying the server status document when
-     * the consumer supplies one. A supplier that is absent or that fails
-     * leaves the historical empty body, which every client accepts: the guide
-     * defines the body as ignored, and only 1.26.50 and later read it.
-     */
-    private void respondStatus(ChannelHandlerContext ctx) {
-        Supplier<NetherNetServerStatus> supplier = this.statusSupplier;
-        if (supplier == null) {
-            respond(ctx, HttpResponseStatus.OK, "text/plain", "");
+    /** Builds the pipeline of one accepted connection. */
+    void initConnection(Channel channel) {
+        connections.add(channel);
+        if (closed) {
+            channel.close();
             return;
         }
-        String body;
-        try {
-            NetherNetServerStatus status = supplier.get();
-            body = status == null ? null : status.toJson();
-        } catch (Throwable e) {
-            // The probe decides whether the client attempts NetherNet at all,
-            // so it must still answer 2xx when the consumer cannot describe
-            // itself. Older clients ignore the body outright; what a reading
-            // client makes of an absent one is not established. Throwable
-            // rather than Exception: an Error escaping here reaches
-            // exceptionCaught, which closes the connection with no response
-            // at all, and a client reads that as no NetherNet rather than as
-            // a server that cannot currently describe itself.
-            //
-            // Warn once, then debug: the endpoint is unauthenticated TCP, so
-            // per request warns would let anyone drive log volume by
-            // hammering the probe against a broken supplier.
-            if (statusSupplierWarned) {
-                log.debug("Server status supplier failed: {}", e.getMessage());
-            } else {
-                statusSupplierWarned = true;
-                log.warn("Server status supplier failed (further failures log at debug): {}", e.getMessage());
-            }
-            body = null;
+        if (!limits.open()) {
+            log.debug("Refused a signaling connection from {}: the connection cap is reached",
+                    channel.remoteAddress());
+            channel.close();
+            return;
         }
-        if (body == null) {
-            respond(ctx, HttpResponseStatus.OK, "text/plain", "");
-        } else {
-            respond(ctx, HttpResponseStatus.OK, "application/json", body);
+        channel.closeFuture().addListener(future -> limits.closed());
+        HttpConnection connection = new HttpConnection(channel, limits);
+        InetSocketAddress peer = (InetSocketAddress) channel.remoteAddress();
+        // A proxy's clients count by the source it declares, once that is read
+        if (!trustedProxies.isProxy(peer) && !connection.countAddress(peer.getAddress())) {
+            log.debug("Refused a signaling connection from {}: its address holds its share", peer);
+            channel.close();
+            return;
         }
+        ChannelPipeline pipeline = channel.pipeline();
+        if (trustedProxies.trustsProxyProtocol(peer)) {
+            pipeline.addLast(new HttpProxyHeaderReader(connection, this));
+        }
+        pipeline.addLast(new HttpTlsSelector(connection, this));
+        HttpServerCodec codec = new HttpServerCodec();
+        pipeline.addLast(codec);
+        pipeline.addLast(new HttpRequestBudget(connection, codec));
+        pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
+        pipeline.addLast(new HttpRequestHandler(this, connection));
     }
 
     /**
-     * Writes a one shot response: Connection: close and the channel closed
-     * after the write, matching the one request per connection model. Safe
-     * from any thread.
+     * Where a request came from, counting a proxied client against its address the first time it
+     * is known.
+     *
+     * @return the source, or null when the client's address holds its share and the connection
+     *         is closing
      */
-    private static void respond(ChannelHandlerContext ctx, HttpResponseStatus status, String contentType, String body) {
-        FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status,
-                Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, contentType)
-                .setInt(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
-                .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+    SourcedAddress sourceOf(HttpConnection connection, InetSocketAddress peer, List<String> forwardedFor) {
+        SourcedAddress source = SourcedAddress.signaling(peer, connection.proxyDeclared, forwardedFor, trustedProxies);
+        if (!connection.addressCounted && !connection.countAddress(source.address().getAddress())) {
+            log.debug("Refused a signaling connection for {}: its address holds its share", source);
+            connection.channel.close();
+            return null;
+        }
+        return source;
+    }
+
+    /** Counts a client a PROXY protocol header declared. */
+    void countProxiedClient(HttpConnection connection, InetSocketAddress declared) {
+        if (!connection.countAddress(declared.getAddress())) {
+            log.debug("Refused a signaling connection for {} via {}: its address holds its share", declared,
+                    connection.channel.remoteAddress());
+            connection.channel.close();
+        }
+    }
+
+    void plaintextRefused(SocketAddress peer) {
+        warnSparingly(nextPlaintextWarning, "Refused plain HTTP signaling from {}: requiresTls is set, so only "
+                + "TLS is served", peer);
+    }
+
+    void tlsRefused(String serverName, String reason) {
+        if (requiresTls) {
+            warnSparingly(nextTlsWarning, "Refused TLS signaling for server name {} ({}), and requiresTls refuses "
+                    + "plain HTTP: these clients get no NetherNet signaling at all", serverName, reason);
+        } else {
+            log.debug("Refused TLS signaling for server name {}: {}", serverName, reason);
+        }
+    }
+
+    void tlsSelectorFailed(String serverName, Throwable cause) {
+        warnSparingly(nextTlsWarning, "The TLS selector failed for server name {}: {}", serverName, cause);
+    }
+
+    TlsContextSelector tlsSelector() {
+        return tlsSelector;
+    }
+
+    boolean requiresTls() {
+        return requiresTls;
+    }
+
+    TrustedProxies trustedProxies() {
+        return trustedProxies;
+    }
+
+    JoinSink sink() {
+        return sink;
+    }
+
+    boolean isClosed() {
+        return closed;
+    }
+
+    HttpStatusService statusService() {
+        return statusService;
+    }
+
+    Duration negotiationTimeout() {
+        return negotiationTimeout;
+    }
+
+    /**
+     * Warns at most once per 10 minutes for one kind of event and logs the rest at debug: the
+     * endpoint is open to anyone, who could otherwise drive the log volume.
+     */
+    private static void warnSparingly(AtomicLong next, String format, Object... arguments) {
+        long now = System.nanoTime();
+        long due = next.get();
+        if (now - due >= 0 && next.compareAndSet(due, now + WARNING_INTERVAL_NANOS)) {
+            log.warn(format + " (repeats log at debug for 10 minutes)", arguments);
+        } else {
+            log.debug(format, arguments);
+        }
+    }
+
+    private void updateHealth(Throwable failure) {
+        SignalingHealth next;
+        synchronized (lifecycleLock) {
+            SignalingState state;
+            if (closed) {
+                state = SignalingState.CLOSED;
+            } else if (bound && sink != null) {
+                state = SignalingState.CONNECTED;
+            } else if (acceptGroup == null && sink == null) {
+                state = SignalingState.NEW;
+            } else {
+                state = SignalingState.STARTING;
+            }
+            if (state == health.state()) {
+                return;
+            }
+            next = new SignalingHealth(state, failure == null ? 0 : 1, failure, null);
+            health = next;
+        }
+        for (Consumer<SignalingHealth> listener : healthListeners) {
+            try {
+                listener.accept(next);
+            } catch (RuntimeException e) {
+                log.warn("A signaling health listener failed", e);
+            }
+        }
+    }
+
+    /** Builds a {@link NetherNetHttpSignaling}. */
+    public static final class Builder {
+        private final EventLoopGroup workerGroup;
+        private Supplier<? extends EventLoopGroup> acceptGroupFactory =
+                () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        private TlsContextSelector tlsSelector;
+        private boolean requiresTls;
+        private TrustedProxies trustedProxies = TrustedProxies.NONE;
+        private StatusProvider statusProvider;
+        private Executor statusExecutor;
+        private Duration statusTimeout = DEFAULT_STATUS_TIMEOUT;
+        private Duration negotiationTimeout = DEFAULT_NEGOTIATION_TIMEOUT;
+        private int maxConnections = DEFAULT_MAX_CONNECTIONS;
+        private int maxConnectionsPerAddress = DEFAULT_MAX_CONNECTIONS_PER_ADDRESS;
+        private int maxRequestBodyBytes = DEFAULT_MAX_REQUEST_BODY_BYTES;
+
+        private Builder(EventLoopGroup workerGroup) {
+            this.workerGroup = Objects.requireNonNull(workerGroup, "workerGroup");
+        }
+
+        /**
+         * Serves TLS next to plain HTTP, with the context the selector picks per connection. See
+         * {@link io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsContexts} to
+         * load one from files. Without a selector, TLS connections are closed.
+         *
+         * @param selector the selector, or null for no TLS
+         * @return this builder
+         */
+        public Builder tls(TlsContextSelector selector) {
+            this.tlsSelector = selector;
+            return this;
+        }
+
+        /**
+         * Refuses plain HTTP with a {@code 426}, also when no certificate is available, so that
+         * nothing is served then. Off by default: a client whose TLS attempt was refused retries
+         * plain HTTP and trusts the server's identity on first use, so refusing plain HTTP turns
+         * that into no NetherNet at all, or a RakNet join where the client still has RakNet.
+         *
+         * @param requiresTls whether to refuse plain HTTP
+         * @return this builder
+         */
+        public Builder requiresTls(boolean requiresTls) {
+            this.requiresTls = requiresTls;
+            return this;
+        }
+
+        /**
+         * Sets the proxies allowed to declare a client: PROXY protocol headers from one role,
+         * {@code X-Forwarded-For} from the other. Parse them once at startup.
+         *
+         * @param trustedProxies the proxies; {@link TrustedProxies#NONE} by default
+         * @return this builder
+         */
+        public Builder trustedProxies(TrustedProxies trustedProxies) {
+            this.trustedProxies = Objects.requireNonNull(trustedProxies, "trustedProxies");
+            return this;
+        }
+
+        /**
+         * Sets what status requests are answered with. Without a provider every status request
+         * gets an empty {@code 200}.
+         *
+         * @param provider the provider, or null
+         * @return this builder
+         */
+        public Builder statusProvider(StatusProvider provider) {
+            this.statusProvider = provider;
+            return this;
+        }
+
+        /**
+         * Sets how long a status request waits for the provider before the last document served
+         * for its {@code Host} goes out instead.
+         *
+         * @param timeout the deadline, 1 s by default
+         * @return this builder
+         */
+        public Builder statusTimeout(Duration timeout) {
+            this.statusTimeout = positive(timeout, "statusTimeout");
+            return this;
+        }
+
+        /**
+         * Sets how long an offer may wait for the endpoint's admission and its answer, from the
+         * end of its request. Past it the client gets a {@code 504}.
+         *
+         * @param timeout the deadline, 15 s by default
+         * @return this builder
+         */
+        public Builder negotiationTimeout(Duration timeout) {
+            this.negotiationTimeout = positive(timeout, "negotiationTimeout");
+            return this;
+        }
+
+        /**
+         * @param maxConnections open signaling connections at most,
+         *                       {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS} by default
+         * @return this builder
+         */
+        public Builder maxConnections(int maxConnections) {
+            this.maxConnections = positive(maxConnections, "maxConnections");
+            return this;
+        }
+
+        /**
+         * @param maxConnectionsPerAddress open connections per client address (IPv6 per /64) at
+         *                                 most, {@value NetherNetHttpSignaling#DEFAULT_MAX_CONNECTIONS_PER_ADDRESS}
+         *                                 by default
+         * @return this builder
+         */
+        public Builder maxConnectionsPerAddress(int maxConnectionsPerAddress) {
+            this.maxConnectionsPerAddress = positive(maxConnectionsPerAddress, "maxConnectionsPerAddress");
+            return this;
+        }
+
+        /**
+         * @param maxRequestBodyBytes the largest request body taken; larger ones get a {@code 413}.
+         *                            {@value NetherNetHttpSignaling#DEFAULT_MAX_REQUEST_BODY_BYTES} by default
+         * @return this builder
+         */
+        public Builder maxRequestBodyBytes(int maxRequestBodyBytes) {
+            this.maxRequestBodyBytes = positive(maxRequestBodyBytes, "maxRequestBodyBytes");
+            return this;
+        }
+
+        /** Creates the accept loop at bind; a test seam. */
+        Builder acceptGroupFactory(Supplier<? extends EventLoopGroup> factory) {
+            this.acceptGroupFactory = Objects.requireNonNull(factory, "factory");
+            return this;
+        }
+
+        /** Runs status provider calls, instead of a virtual thread each; a test seam. */
+        Builder statusExecutor(Executor executor) {
+            this.statusExecutor = Objects.requireNonNull(executor, "executor");
+            return this;
+        }
+
+        /** @return the signaling, not bound yet */
+        public NetherNetHttpSignaling build() {
+            return new NetherNetHttpSignaling(this);
+        }
+
+        private static Duration positive(Duration value, String name) {
+            Objects.requireNonNull(value, name);
+            if (value.isNegative() || value.isZero()) {
+                throw new IllegalArgumentException(name + " must be positive: " + value);
+            }
+            return value;
+        }
+
+        private static int positive(int value, String name) {
+            if (value < 1) {
+                throw new IllegalArgumentException(name + " must be positive: " + value);
+            }
+            return value;
+        }
     }
 }

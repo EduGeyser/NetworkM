@@ -135,6 +135,14 @@ What follows from this:
 - BDS rejects an offer without `a=identity` with `200`, `application/sdp`, body
   `37` (`ErrorCodeIdentityNotAllowed`), whatever `online-mode` is set to
   (Measured, BDS 1.26.45.1 and 1.26.60.21).
+- BDS answers a LAN discovery request with server data in one layout version:
+  v6 from BDS 1.26.45.1, v7 from the 1.26.60.21 preview, which adds the protocol
+  and version, drops the transport layer and writes player counts as varints
+  (Measured, 2026-09-06). Retail BDS and clients past 1.26.60 are not captured
+  yet.
+- A 1.26.51 client lists a LAN server that answers only in an older version but
+  never sends it an offer (Reported: upstream CloudburstMC/Network,
+  `ServerData.java`).
 - Client and BDS both link Google's libwebrtc statically, with dcsctp for SCTP
   and OpenSSL 1.1.1n for DTLS (Decompiled: client 1.26.45 and 1.26.6022, BDS
   1.26.45.1 and 1.26.60.21).

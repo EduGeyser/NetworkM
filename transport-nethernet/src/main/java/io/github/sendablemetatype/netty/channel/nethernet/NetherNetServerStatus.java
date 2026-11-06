@@ -1,7 +1,16 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -139,6 +148,98 @@ public final class NetherNetServerStatus {
             json.addProperty("connection", connection);
         }
         return json.toString();
+    }
+
+    /**
+     * Reads a status document, as an HTTP signaling client receives it. Members this type does not
+     * know are skipped, so a newer server's document still reads; a JSON {@code null} reads as
+     * unset.
+     *
+     * @param json the document
+     * @return the status
+     * @throws IllegalArgumentException if it is not strict JSON, not an object, or a known member
+     *                                  has the wrong type, as a web page or another service's
+     *                                  answer would
+     */
+    public static NetherNetServerStatus fromJson(String json) {
+        JsonObject object;
+        try (JsonReader reader = new JsonReader(new StringReader(json))) {
+            reader.setStrictness(Strictness.STRICT);
+            JsonElement parsed = JsonParser.parseReader(reader);
+            if (reader.peek() != JsonToken.END_DOCUMENT) {
+                throw new IllegalArgumentException("Not a status document: text follows the JSON value");
+            }
+            if (!parsed.isJsonObject()) {
+                throw new IllegalArgumentException("Not a status document: not a JSON object");
+            }
+            object = parsed.getAsJsonObject();
+        } catch (JsonParseException | IOException e) {
+            throw new IllegalArgumentException("Not a status document: " + e.getMessage(), e);
+        }
+        return builder()
+                .dataVersion(integer(object, "dataVersion"))
+                .name(string(object, "name"))
+                .protocol(integer(object, "protocol"))
+                .version(string(object, "version"))
+                .level(string(object, "level"))
+                .players(integer(object, "players"))
+                .maxPlayers(integer(object, "maxPlayers"))
+                .gameType(integer(object, "gameType"))
+                .editor(bool(object, "editor"))
+                .hardcore(bool(object, "hardcore"))
+                .onlineAuth(bool(object, "onlineAuth"))
+                .selfSignedAuth(bool(object, "selfSignedAuth"))
+                .nonce(string(object, "nonce"))
+                .connection(integer(object, "connection"))
+                .build();
+    }
+
+    private static JsonPrimitive member(JsonObject object, String name) {
+        JsonElement value = object.get(name);
+        if (value == null || value.isJsonNull()) {
+            return null;
+        }
+        if (!value.isJsonPrimitive()) {
+            throw new IllegalArgumentException("Not a status document: " + name + " is not a plain value");
+        }
+        return value.getAsJsonPrimitive();
+    }
+
+    private static Integer integer(JsonObject object, String name) {
+        JsonPrimitive value = member(object, name);
+        if (value == null) {
+            return null;
+        }
+        if (!value.isNumber()) {
+            throw new IllegalArgumentException("Not a status document: " + name + " is not a number");
+        }
+        try {
+            return value.getAsBigDecimal().intValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            throw new IllegalArgumentException("Not a status document: " + name + " is not a 32-bit integer", e);
+        }
+    }
+
+    private static String string(JsonObject object, String name) {
+        JsonPrimitive value = member(object, name);
+        if (value == null) {
+            return null;
+        }
+        if (!value.isString()) {
+            throw new IllegalArgumentException("Not a status document: " + name + " is not a string");
+        }
+        return value.getAsString();
+    }
+
+    private static Boolean bool(JsonObject object, String name) {
+        JsonPrimitive value = member(object, name);
+        if (value == null) {
+            return null;
+        }
+        if (!value.isBoolean()) {
+            throw new IllegalArgumentException("Not a status document: " + name + " is not a boolean");
+        }
+        return value.getAsBoolean();
     }
 
     public Integer dataVersion() {

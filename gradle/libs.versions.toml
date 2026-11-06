@@ -5,6 +5,7 @@ webrtc-java = "0.21.0-sm.2-SNAPSHOT"
 gson = "2.14.0"
 nmcp = "1.6.2"
 jose4j = "0.9.7"
+bouncycastle = "1.86"
 slf4j = "2.0.20"
 xmlutil = "1.0.2.1"
 
@@ -17,12 +18,14 @@ netty-buffer = { group = "io.netty", name = "netty-buffer" }
 netty-codec-base = { group = "io.netty", name = "netty-codec-base" }
 netty-codec-http = { group = "io.netty", name = "netty-codec-http" }
 netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
+netty-pkitesting = { group = "io.netty", name = "netty-pkitesting" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-unix-common = { group = "io.netty", name = "netty-transport-native-unix-common" }
 netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }
 netty-pkitesting = { group = "io.netty", name = "netty-pkitesting" }
 webrtc-java = { group = "io.github.sendablemetatype.webrtc", name = "webrtc-java", version.ref = "webrtc-java" }
 jose4j = { group = "org.bitbucket.b_c", name = "jose4j", version.ref = "jose4j" }
+bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
 slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
 errorprone-annotations = { group = "com.google.errorprone", name = "error_prone_annotations", version = "2.50.0" }
 

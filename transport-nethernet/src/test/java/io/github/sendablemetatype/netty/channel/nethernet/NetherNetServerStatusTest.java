@@ -1,9 +1,12 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -93,5 +96,35 @@ class NetherNetServerStatusTest {
             assertTrue(nonce.matches("[0-9a-f]{1,16}"), "unexpected nonce: " + nonce);
             assertFalse(nonce.length() > 1 && nonce.charAt(0) == '0', "zero padded nonce: " + nonce);
         }
+    }
+
+    @Test
+    void readsWhatItWrites() {
+        assertEquals(VANILLA_FULL, NetherNetServerStatus.fromJson(VANILLA_FULL).toJson());
+        assertEquals(VANILLA_PUBLIC, NetherNetServerStatus.fromJson(VANILLA_PUBLIC).toJson());
+    }
+
+    @Test
+    void readingSkipsUnknownMembersAndNulls() {
+        assertEquals("{\"name\":\"x\"}",
+                NetherNetServerStatus.fromJson("{\"name\":\"x\",\"future\":[1],\"level\":null}").toJson());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "<!doctype html><title>Welcome</title>",
+            "[]",
+            "\"name\"",
+            "{name:\"unquoted\"}",
+            "{\"name\":\"x\"} trailing",
+            "{\"players\":\"3\"}",
+            "{\"players\":1.5}",
+            "{\"players\":4294967296}",
+            "{\"name\":3}",
+            "{\"hardcore\":\"false\"}",
+            "{\"name\":{}}"
+    })
+    void refusesWhatIsNotAStatusDocument(String body) {
+        assertThrows(IllegalArgumentException.class, () -> NetherNetServerStatus.fromJson(body));
     }
 }

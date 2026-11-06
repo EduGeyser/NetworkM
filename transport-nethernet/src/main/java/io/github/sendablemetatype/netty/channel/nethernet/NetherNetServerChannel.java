@@ -1,499 +1,839 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.backend.LibWebRtcServerBackend;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcServerBackend;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSessionListener;
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.RemoteAddressTracker;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherServerChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
-import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerThrottle;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateAnnouncement;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSource;
+import io.github.sendablemetatype.netty.util.address.TrustedProxies;
+import io.github.sendablemetatype.netty.util.nethernet.IdentityRefusal;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
-import io.github.sendablemetatype.webrtc.PeerConnectionFactory;
 import io.netty.channel.AbstractServerChannel;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
+import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelMetadata;
 import io.netty.channel.EventLoop;
-import io.netty.channel.group.ChannelGroup;
-import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.io.IOException;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
- * NetherNet server channel: accepts connection offers arriving over a
- * {@link NetherNetServerSignaling} implementation and negotiates them through
- * a {@link WebRtcServerBackend}, emitting accepted
- * {@link NetherNetChildChannel}s into the pipeline like any netty server
- * channel. No WebRTC engine types appear here; the backend seam owns them.
+ * A NetherNet server endpoint. It takes joins from any number of {@link JoinSource}s (HTTP, Xbox
+ * RPC, LAN discovery), admits each through one admission stage, and emits a
+ * {@link NetherNetChildChannel} per admitted join, like any Netty server channel.
+ *
+ * <p><b>Sources.</b> {@link #addSource} adds a source before or after bind; it starts once the
+ * endpoint is bound and its ICE port is open. {@link #removeSource} stops and closes one.
+ * Neither touches connected players, since every join replies through its own
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.signaling.ReplyPath}.
+ * A source is started once; to restart one, remove it and add a new instance. Closing the
+ * endpoint closes its sources.
+ *
+ * <p><b>Admission.</b> Every join passes the same stage, whatever its source, on this channel's
+ * event loop: the per-address throttle ({@link NetherChannelOption#NETHER_SERVER_THROTTLE}), one
+ * budget for sessions and pending handshakes shared by all sources
+ * ({@link NetherChannelOption#NETHER_SERVER_MAX_SESSIONS},
+ * {@link NetherChannelOption#NETHER_SERVER_MAX_PENDING_JOINS}), and the offer's identity check
+ * ({@link NetherChannelOption#NETHER_SERVER_OFFER_CHECK}) under the source's {@link OfferPolicy}.
+ * The check runs off the event loop with a deadline. A refused join gets a typed
+ * {@link JoinRefusal} through its reply path and creates nothing. A join holds its share of the
+ * budget and its throttle entry until its child's {@linkplain NetherNetChannel#termination()
+ * termination} completed.
+ *
+ * <p><b>Identity.</b> One {@link ServerIdentity}, set with
+ * {@link NetherChannelOption#NETHER_SERVER_IDENTITY}, signs the answers of every source. Binding
+ * fails without one.
+ *
+ * <p><b>ICE.</b> By default every peer gathers its host candidates on one UDP port at the address
+ * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
+ * opens the port after bind returned, and the sources start once it is open; a port that fails
+ * to open then closes the endpoint, with the error logged. With
+ * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
+ * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead.
+ *
+ * <p>The child is exposed as soon as its join is admitted. It owns its engine peer from creation
+ * and negotiates in its own initializer once registered. The engine is either the caller's, which
+ * this channel never closes, or one this channel creates when it binds and closes with itself.
  */
 public class NetherNetServerChannel extends AbstractServerChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetServerChannel.class);
     private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
 
     private final DefaultNetherServerChannelConfig config;
-    private final Supplier<? extends WebRtcServerBackend> backendSupplier;
-    private final NetherNetServerSignaling signaling;
-    private final ChannelGroup children = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
+    private final EngineRef engine;
+    private final Supplier<? extends ExecutorService> checkExecutors;
+    private final AdmissionGate gate = new AdmissionGate();
+    /** Children whose termination has not completed yet. */
+    private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
+    /** Joins in the admission stage, which closing the endpoint or removing their source ends. */
+    private final Set<Admission> admitting = ConcurrentHashMap.newKeySet();
 
+    private final Object sourcesLock = new Object();
+    // Guarded by sourcesLock.
+    private final Map<JoinSource, Registration> sources = new LinkedHashMap<>();
+    private boolean sourcesStarted;
+
+    private volatile InetSocketAddress localAddress;
     /**
-     * The WebRTC backend. Set at construction for the eager constructors;
-     * for the supplier constructor it materializes in {@link #doBind} only
-     * after the signaling endpoint bound successfully, so a failed bind
-     * never creates (and then immediately tears down) native engine state.
-     * Written and read on this channel's event loop; volatile for doClose.
+     * The shared ICE port, opening from bind on and owned by this channel from then: whatever it
+     * yields closes with the channel, also when it opens after the channel closed. Null when each
+     * session takes its own ports.
      */
-    private volatile WebRtcServerBackend backend;
-
-    private InetSocketAddress localAddress;
+    private volatile CompletionStage<IceEndpoint> iceEndpoint;
+    private volatile Bound bound;
     private volatile boolean open = true;
 
-    /**
-     * The built in self signed identity backing the default answer
-     * decoration. Generated for every channel regardless of constructor so
-     * no construction path can reach an answer without an identity to sign
-     * it with.
-     */
-    private final ServerIdentity serverIdentity = generateDefaultIdentity();
-
-    /**
-     * Creates a NetherNetServerChannel with a single default engine factory.
-     *
-     * @param signaling The NetherNetServerSignaling instance for signaling.
-     */
-    public NetherNetServerChannel(NetherNetServerSignaling signaling) {
-        this(new LibWebRtcServerBackend(List.of(new PeerConnectionFactory())), signaling);
+    /** Creates an endpoint with an engine of its own, created when it binds and closed with it. */
+    public NetherNetServerChannel() {
+        this(EngineRef.owned(DefaultEngine::create), OfferCheck::newExecutor);
     }
 
     /**
-     * Creates a NetherNetServerChannel backed by a single engine factory.
+     * Creates an endpoint on the caller's engine, which the endpoint never closes.
      *
-     * @param factory   The PeerConnectionFactory to use for creating peer connections.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
+     * @param engine the engine; shared engines are closed by their owner
      */
-    public NetherNetServerChannel(PeerConnectionFactory factory, NetherNetServerSignaling signaling) {
-        this(new LibWebRtcServerBackend(List.of(factory)), signaling);
+    public NetherNetServerChannel(NetherNetEngine engine) {
+        this(EngineRef.shared(engine), OfferCheck::newExecutor);
     }
 
     /**
-     * Creates a NetherNetServerChannel backed by a pool of engine factories
-     * with round robin connection assignment.
+     * Creates an endpoint that owns the engine the supplier returns. The supplier runs once, when
+     * the endpoint binds; the endpoint closes the engine with itself.
      *
-     * @param factories The PeerConnectionFactory pool, at least one. The
-     *                  channel takes ownership and disposes each on close.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
+     * @param engineSupplier creates the engine
      */
-    public NetherNetServerChannel(List<PeerConnectionFactory> factories, NetherNetServerSignaling signaling) {
-        this(new LibWebRtcServerBackend(factories), signaling);
+    public NetherNetServerChannel(Supplier<? extends NetherNetEngine> engineSupplier) {
+        this(EngineRef.owned(engineSupplier), OfferCheck::newExecutor);
     }
 
     /**
-     * Creates a NetherNetServerChannel over an explicit backend.
-     *
-     * @param backend   The WebRTC backend negotiating and carrying connections.
-     *                  The channel takes ownership and closes it on close.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
+     * @param checkExecutors creates the bounded executor identity checks run on, once per bind
      */
-    public NetherNetServerChannel(WebRtcServerBackend backend, NetherNetServerSignaling signaling) {
-        this.backend = backend;
-        this.backendSupplier = null;
-        this.signaling = signaling;
+    NetherNetServerChannel(EngineRef engine, Supplier<? extends ExecutorService> checkExecutors) {
+        this.engine = engine;
+        this.checkExecutors = checkExecutors;
         this.config = new DefaultNetherServerChannelConfig(this);
     }
 
     /**
-     * Creates a NetherNetServerChannel whose backend is created lazily,
-     * only after the signaling endpoint bound successfully. A signaling
-     * endpoint that cannot bind (a taken TCP port, a refused websocket)
-     * therefore never creates native engine state, instead of creating a
-     * factory pool and disposing it milliseconds later, a teardown that
-     * races engine initialization.
+     * What bind decided before the shared ICE port opened.
      *
-     * @param backendSupplier Invoked once from {@link #doBind} after the
-     *                        signaling bind succeeded. The channel takes
-     *                        ownership of the returned backend and closes
-     *                        it on close.
-     * @param signaling       The NetherNetServerSignaling instance for signaling.
+     * @param answers what every join answers with
+     * @param relays the PROXY protocol relays in front of the ICE port, empty for none
+     * @param advertised the advertised addresses, resolved
+     * @param offerCheck checks every join's identity
      */
-    public NetherNetServerChannel(Supplier<? extends WebRtcServerBackend> backendSupplier, NetherNetServerSignaling signaling) {
-        this.backend = null;
-        this.backendSupplier = backendSupplier;
-        this.signaling = signaling;
-        this.config = new DefaultNetherServerChannelConfig(this);
+    private record BindPlan(ServerJoin.Settings answers, List<String> relays, List<InetSocketAddress> advertised,
+                            OfferCheck offerCheck) {
     }
 
-    private static ServerIdentity generateDefaultIdentity() {
-        try {
-            return ServerIdentity.generate("self");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+    /**
+     * What the endpoint takes joins with, fixed for its life once its ICE port is open.
+     *
+     * @param answers what every join answers with
+     * @param iceEndpoint the shared ICE port, or null when each session takes its own
+     * @param advertised the advertised addresses, resolved
+     * @param offerCheck checks every join's identity
+     * @param checkExecutor runs the checks, off the event loop
+     */
+    private record Bound(ServerJoin.Settings answers, IceEndpoint iceEndpoint, List<InetSocketAddress> advertised,
+                         OfferCheck offerCheck, ExecutorService checkExecutor) {
+    }
+
+    // ---- Sources ----
+
+    /**
+     * Adds a join source whose offers must prove their key, attested or not
+     * ({@link OfferPolicy#REQUIRE_KEY_PROVEN}).
+     *
+     * @param source the source; this endpoint starts it and closes it with itself
+     * @see #addSource(JoinSource, OfferPolicy)
+     */
+    public void addSource(JoinSource source) {
+        addSource(source, OfferPolicy.REQUIRE_KEY_PROVEN);
+    }
+
+    /**
+     * Adds a join source. An endpoint that takes joins already starts it at once, otherwise the
+     * endpoint starts it once it is bound and its ICE port is open.
+     *
+     * @param source the source; this endpoint starts it and closes it with itself
+     * @param policy which identity check results this source's joins need
+     * @throws IllegalStateException if the endpoint is closed or already has this source
+     */
+    public void addSource(JoinSource source, OfferPolicy policy) {
+        Registration registration = new Registration(source, policy);
+        synchronized (sourcesLock) {
+            if (!open) {
+                throw new IllegalStateException("The NetherNet endpoint is closed");
+            }
+            if (sources.putIfAbsent(source, registration) != null) {
+                throw new IllegalStateException("The NetherNet endpoint already has this source");
+            }
+            if (!sourcesStarted) {
+                return;
+            }
+        }
+        registration.start();
+    }
+
+    /**
+     * Stops and closes a source. Its players stay connected; joins it delivered that have no child
+     * yet are refused at once and give back their share of the budget.
+     *
+     * @param source the source
+     * @return whether the endpoint had it
+     */
+    public boolean removeSource(JoinSource source) {
+        Registration registration;
+        synchronized (sourcesLock) {
+            registration = sources.remove(source);
+        }
+        if (registration == null) {
+            return false;
+        }
+        registration.removed = true;
+        // Before the source closes, so the refusals can still reach their clients.
+        withdrawAdmissions(registration);
+        closeQuietly(source);
+        return true;
+    }
+
+    /** The endpoint's sources, in the order they were added. */
+    public List<JoinSource> sources() {
+        synchronized (sourcesLock) {
+            return List.copyOf(sources.keySet());
         }
     }
+
+    /** One source's place in the endpoint: the sink it delivers to and the policy its joins get. */
+    private final class Registration implements JoinSink {
+        private final JoinSource source;
+        private final OfferPolicy policy;
+        private volatile boolean removed;
+
+        private Registration(JoinSource source, OfferPolicy policy) {
+            this.source = Objects.requireNonNull(source, "source");
+            this.policy = Objects.requireNonNull(policy, "policy");
+        }
+
+        void start() {
+            try {
+                source.start(this);
+            } catch (RuntimeException e) {
+                log.warn("A NetherNet join source failed to start: {}", e.toString());
+            }
+        }
+
+        @Override
+        public void join(Join join) {
+            try {
+                eventLoop().execute(() -> admit(this, join));
+            } catch (RejectedExecutionException | IllegalStateException closing) {
+                refuse(join, JoinRefusal.CAPACITY);
+            }
+        }
+
+        @Override
+        public boolean admits(SourcedAddress address) {
+            return NetherNetServerChannel.this.admits(this, address);
+        }
+    }
+
+    // ---- Bind and close ----
 
     @Override
-    protected void doBind(SocketAddress localAddress) throws Exception {
-        if (!(localAddress instanceof InetSocketAddress)) throw new IllegalArgumentException("Unsupported address type");
-        this.localAddress = (InetSocketAddress) localAddress;
+    protected void doBind(SocketAddress requested) throws Exception {
+        if (!(requested instanceof InetSocketAddress address)) {
+            throw new IllegalArgumentException("Unsupported address type");
+        }
+        ServerIdentity identity = config.getServerIdentity();
+        if (identity == null) {
+            throw new IllegalStateException("No NetherNet server identity: set "
+                    + "NetherChannelOption.NETHER_SERVER_IDENTITY to ServerIdentity.loadOrCreate(keyFile, domain), "
+                    + "or to ServerIdentity.ephemeral(domain) if plain HTTP players may be asked to trust the "
+                    + "server again after every restart");
+        }
+        TrustedProxies proxies = config.getTrustedProxies();
+        boolean relayed = !proxies.proxyProtocol().isEmpty();
+        boolean shared = config.isSharedIcePort();
+        if (relayed && !shared) {
+            throw new IllegalStateException("PROXY protocol relays for media need the shared ICE port");
+        }
+        // Names are looked up once, here; literals return at once.
+        List<InetSocketAddress> advertised = AdvertisedAddresses.resolve(config.getAdvertisedAddresses());
+        if (relayed && advertised.isEmpty()) {
+            log.warn("PROXY protocol relays front the ICE port, but no advertised addresses name them: answers "
+                    + "name this host, and players can only connect if something in front of signaling rewrites them");
+        }
 
-        this.signaling.setNewConnectionHandler((connectionId, remoteNetworkId, offerSdp) -> {
-            acceptConnection(connectionId, offerSdp, remoteNetworkId);
+        NetherNetEngine current = engine.get();
+        InetSocketAddress local = address;
+        int icePort = 0;
+        CompletionStage<IceEndpoint> opening = null;
+        if (shared) {
+            InetAddress host = address.getAddress();
+            icePort = probeUdpPort(address);
+            List<InetAddress> addresses = host == null || host.isAnyLocalAddress() ? List.of() : List.of(host);
+            opening = current.openEndpoint(new EndpointConfig(icePort, addresses));
+            this.iceEndpoint = opening;
+            local = new InetSocketAddress(host, icePort);
+        }
+        this.localAddress = local;
+
+        OfferCheck offerCheck = config.getOfferCheck();
+        // Off the event loop, and off the bounded check executor, whose slots belong to joins: the
+        // first join should not wait for the issuers' keys.
+        Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
+        ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(), icePort,
+                relayed);
+        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), advertised,
+                offerCheck);
+
+        CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
+                : opening.toCompletableFuture();
+        if (opened.isDone()) {
+            // Ports per session, or an engine that opened the port at once: a failure fails the bind.
+            IceEndpoint endpoint;
+            try {
+                endpoint = opened.join();
+            } catch (CompletionException e) {
+                throw e.getCause() instanceof Exception cause ? cause : e;
+            }
+            ready(plan, endpoint);
+            return;
+        }
+        // The engine opens the port on its own thread; this loop does not wait for it (ruling A-4).
+        opening.whenComplete((endpoint, failure) -> {
+            try {
+                eventLoop().execute(() -> opened(plan, endpoint, failure));
+            } catch (RejectedExecutionException gone) {
+                // No loop left to close this channel on, so nothing else would close the port.
+                if (endpoint != null) {
+                    endpoint.close();
+                }
+            }
         });
-
-        // Bind the signaling endpoint before any backend exists: binding is
-        // the step that fails in the wild (a taken TCP port), and a lazily
-        // supplied backend means that failure creates no native state at
-        // all. Offers cannot outrun the backend: they hop onto this event
-        // loop, which is still running doBind.
-        this.signaling.bind(localAddress);
-
-        if (backend == null) {
-            try {
-                backend = backendSupplier.get();
-            } catch (Exception e) {
-                // The signaling endpoint is up but the backend never came to
-                // be; close signaling so the failed channel holds nothing.
-                try {
-                    signaling.close();
-                } catch (Exception closeError) {
-                    log.debug("Failed to close signaling after backend creation failed: {}", closeError.getMessage());
-                }
-                throw e;
-            }
-        }
-
-        // Channel options are set between construction and bind, so this is
-        // the moment to hand the configured port allocator settings (with
-        // their NetherNet defaults: no TCP candidates, IPv6, shared socket)
-        // to the backend. An explicit backend construction wins. Offers
-        // queued behind doBind on this event loop see the configured
-        // backend.
-        if (backend instanceof LibWebRtcServerBackend) {
-            ((LibWebRtcServerBackend) backend).applyDefaultPortAllocatorConfig(
-                    config.getOption(NetherChannelOption.NETHER_PORT_ALLOCATOR_CONFIG));
-        }
     }
 
     /**
-     * Accepts an incoming connection offer. Runs on the signaling I/O thread:
-     * only the signal handler registration happens here (a cheap map put, so
-     * candidates arriving right behind the offer are never dropped), then all
-     * negotiation work hops onto this server channel's event loop. Backend
-     * calls block on engine threads and must never stall the signaling
-     * socket's thread, whose keepalives hold the connection to the signaling
-     * service open.
+     * Binds the shared ICE port once and lets it go again, so a taken port fails the bind before
+     * doBind returns, as Netty needs; the engine opens the port later, on its own thread, and
+     * checks it again then. A plain socket bind, which waits on nothing. Port 0 picks a free port.
      */
-    public void acceptConnection(long connectionId, String offerSdp, String remoteNetworkId) {
-        if (!isOpen()) {
+    private static int probeUdpPort(InetSocketAddress address) throws IOException {
+        InetAddress host = address.getAddress();
+        // Where the engine binds: every address for the wildcard, else the one address.
+        InetSocketAddress probed = host == null || host.isAnyLocalAddress()
+                ? new InetSocketAddress(address.getPort()) : address;
+        try (DatagramSocket probe = new DatagramSocket(null)) {
+            probe.setReuseAddress(false);
+            probe.bind(probed);
+            return probe.getLocalPort();
+        }
+    }
+
+    /** The shared ICE port opened, or failed to, after bind returned. Event loop. */
+    private void opened(BindPlan plan, IceEndpoint endpoint, Throwable failure) {
+        if (!open) {
+            // doClose closes the port, now that it opened.
             return;
         }
-        PendingConnection pending = new PendingConnection(connectionId);
-        signaling.setSignalHandler(connectionId, signal -> eventLoop().execute(() -> pending.handleSignal(signal)));
+        if (failure != null) {
+            Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                    ? failure.getCause() : failure;
+            log.error("The NetherNet endpoint at {} could not open its ICE port, closing it: {}", localAddress,
+                    cause.toString());
+            close();
+            return;
+        }
         try {
-            eventLoop().execute(() -> establishConnection(pending, connectionId, offerSdp, remoteNetworkId));
+            ready(plan, endpoint);
         } catch (RuntimeException e) {
-            signaling.removeSignalHandler(connectionId);
-            throw e;
+            log.error("The NetherNet endpoint at {} could not set up its ICE port, closing it: {}", localAddress,
+                    e.toString());
+            close();
         }
     }
 
-    /**
-     * Negotiates an accepted offer through the backend. Runs on this server
-     * channel's event loop; incoming signals for the connection hop onto the
-     * same loop, so everything here is single threaded and ordered.
-     */
-    private void establishConnection(PendingConnection pending, long connectionId, String offerSdp, String remoteNetworkId) {
-        // Capture identity before checking liveness: cancellation can remove the HTTP exchange.
-        ClientIdentity identity = signaling.clientIdentityOf(connectionId);
-        // Offers racing a failed doBind: signaling briefly accepted
-        // connections but the backend never materialized.
-        if (!isOpen() || backend == null || !signaling.isConnectionPending(connectionId)) {
-            log.debug("Dropping offer {} while the server backend is unavailable", Long.toUnsignedString(connectionId));
-            signaling.removeSignalHandler(connectionId);
-            return;
+    /** The ICE port is open, if it is shared: the endpoint takes joins from now on. Event loop. */
+    private void ready(BindPlan plan, IceEndpoint endpoint) {
+        if (endpoint != null && !plan.relays().isEmpty()) {
+            endpoint.proxyRelays(plan.relays());
         }
-        try {
-            int maxMessageSize = NetherNetConstants.parseMaxMessageSize(offerSdp);
-            // An HTTP front end knows the peer's address from the request; ICE
-            // nomination later overwrites it with the actual candidate pair.
-            InetSocketAddress signaledAddress = signaling.remoteAddressOf(connectionId);
-            NetherNetChildChannel child = new NetherNetChildChannel(this,
-                    signaledAddress != null ? signaledAddress : generatePlaceholderAddress(), localAddress);
-            pending.child = child;
-            child.setClientIdentity(identity);
-            children.add(child);
-            child.setMaxOutboundMessageSize(maxMessageSize);
+        // NXS stateless joins are no join source: they arrive at the shared port, as checks it holds
+        // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
+        this.bound = new Bound(plan.answers(), endpoint, plan.advertised(), plan.offerCheck(), checkExecutors.get());
+        log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
+                endpoint != null ? "shared ICE port" : "ICE ports per session",
+                plan.answers().identity().fingerprint());
 
-            child.closeFuture().addListener(future -> signaling.removeSignalHandler(connectionId));
-
-            WebRtcSession session = backend.accept(offerSdp, signaling.getIceServers(),
-                    new ChildSessionBridge(child, connectionId, remoteNetworkId), signaling.fullIceAnswers());
-            child.attachSession(session);
-            pending.attach(child, session);
-
-            int handshakeTimeoutSeconds = this.config.getOption(NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS);
-            ScheduledFuture<?> handshakeTimeout = eventLoop().schedule(() -> {
-                if (!child.isActive()) {
-                    log.warn("Connection {} timed out during handshake ({}s)", Long.toUnsignedString(connectionId), handshakeTimeoutSeconds);
-                    child.close();
-                }
-            }, handshakeTimeoutSeconds, TimeUnit.SECONDS);
-            // The reaper exists only to catch a handshake that silently never
-            // completes, leaving the child open but inactive. Any close makes
-            // it obsolete; without this cancellation a session that connects
-            // and ends within the timeout gets a bogus timed out warning,
-            // because isActive() is also false after a completed life.
-            child.closeFuture().addListener(future -> handshakeTimeout.cancel(false));
-        } catch (Exception e) {
-            log.error("Failed to establish connection {}: {}", Long.toUnsignedString(connectionId), e.getMessage(), e);
-            try {
-                signaling.sendSignal(remoteNetworkId, NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR
-                        + " " + Long.toUnsignedString(connectionId) + " Failed to establish connection");
-            } catch (Exception signalFailure) {
-                log.debug("Could not signal negotiation failure for {}: {}",
-                        Long.toUnsignedString(connectionId), signalFailure.getMessage());
-            } finally {
-                try {
-                    signaling.removeSignalHandler(connectionId);
-                } finally {
-                    if (pending.child != null) {
-                        pending.child.close();
-                    }
-                }
-            }
+        List<Registration> toStart;
+        synchronized (sourcesLock) {
+            sourcesStarted = true;
+            toStart = List.copyOf(sources.values());
         }
-    }
-
-    /**
-     * Bridges backend session events into the child channel and outbound
-     * signaling. Callbacks arrive on engine threads; everything they touch
-     * is thread safe (volatile channel state, netty writes, event loop
-     * dispatch).
-     */
-    private final class ChildSessionBridge implements WebRtcSessionListener {
-        private final NetherNetChildChannel child;
-        private final long connectionId;
-        private final String remoteNetworkId;
-
-        private ChildSessionBridge(NetherNetChildChannel child, long connectionId, String remoteNetworkId) {
-            this.child = child;
-            this.connectionId = connectionId;
-            this.remoteNetworkId = remoteNetworkId;
-        }
-
-        @Override
-        public void onAnswerReady(String answerSdp) {
-            if (!isOpen() || !child.isOpen()) {
-                return;
-            }
-            String finalAnswer = answerSdp;
-            // The built in self signed identity keeps answers acceptable to
-            // 26.40 clients out of the box; consumers replace it to own the
-            // keys and domain of the assertion.
-            NetherNetAnswerDecorator decorator = config.getOption(NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR);
-            if (decorator == null) {
-                decorator = serverIdentity::augmentAnswer;
-            }
-            try {
-                finalAnswer = decorator.decorate(answerSdp);
-            } catch (Exception e) {
-                // Peers require the decoration (the identity assertion); an
-                // undecorated answer would only be refused by the peer after
-                // parsing. Fail the exchange instead: the signaling layer
-                // reports the error (a 400 on HTTP) and the peer falls back
-                // immediately.
-                log.warn("Answer decoration failed for {}; failing the exchange: {}",
-                        Long.toUnsignedString(connectionId), e.getMessage());
-                try {
-                    signaling.sendSignal(remoteNetworkId, NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR
-                            + " " + Long.toUnsignedString(connectionId) + " answer decoration failed");
-                } catch (Exception signalError) {
-                    // Signaling gone too; the handshake timeout reaps the child.
-                    log.debug("Could not signal decoration failure for {}: {}",
-                            Long.toUnsignedString(connectionId), signalError.getMessage());
-                }
-                child.close();
-                return;
-            }
-            try {
-                signaling.sendSignal(remoteNetworkId,
-                        NetherNetConstants.buildSignalConnectResponse(connectionId, finalAnswer));
-            } catch (Exception e) {
-                // Signaling dropped mid handshake; the client cannot receive
-                // the answer, so let the handshake timeout reap this
-                // connection.
-                log.warn("Failed to send answer for {} (signaling unavailable): {}",
-                        Long.toUnsignedString(connectionId), e.getMessage());
-                return;
-            }
-            pipeline().fireChannelRead(child);
-        }
-
-        @Override
-        public void onLocalCandidate(String candidateSdp) {
-            try {
-                signaling.sendSignal(remoteNetworkId,
-                        NetherNetConstants.buildSignalCandidateAdd(connectionId, candidateSdp));
-            } catch (Exception e) {
-                // Established connections do not signal candidates, so only
-                // this in flight handshake is affected; the handshake timeout
-                // cleans it up if it cannot complete.
-                log.debug("Failed to signal ICE candidate for {} (signaling unavailable): {}",
-                        Long.toUnsignedString(connectionId), e.getMessage());
-            }
-        }
-
-        @Override
-        public void onTransportOpen() {
-            child.markTransportOpen();
-        }
-
-        @Override
-        public void onMessage(java.nio.ByteBuffer data) {
-            child.deliverInbound(data);
-        }
-
-        @Override
-        public void onUnreliableMessage(java.nio.ByteBuffer data) {
-            child.deliverInbound(data, false);
-        }
-
-        @Override
-        public void onBytesSent(long bytes) {
-            child.onEngineBytesSent(bytes);
-        }
-
-        @Override
-        public void onRemoteAddress(InetSocketAddress address, String candidateType) {
-            // Fires before the transport opens, so the channel carries its
-            // real remote address before activation; the unique random
-            // placeholder covers the window until then and the case of this
-            // callback never firing. For relayed connections this is the TURN
-            // relay, the peer actually connected to us. A re nomination
-            // simply overwrites.
-            child.remoteAddress = address;
-            log.debug("Resolved remote address for {}: {} (type: {})",
-                    Long.toUnsignedString(connectionId), address, candidateType);
-        }
-
-        @Override
-        public void onNegotiationFailed(String reason) {
-            if (!isOpen() || !child.isOpen()) {
-                return;
-            }
-            try {
-                signaling.sendSignal(remoteNetworkId, NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR
-                        + " " + Long.toUnsignedString(connectionId) + " " + reason);
-            } catch (Exception e) {
-                log.debug("Could not signal negotiation failure for {}: {}",
-                        Long.toUnsignedString(connectionId), e.getMessage());
-            } finally {
-                child.markTransportClosed();
-                child.close();
-            }
-        }
-
-        @Override
-        public void onTransportClosed() {
-            child.markTransportClosed();
-            child.close();
-        }
-    }
-
-    /**
-     * Per connection signal state. All methods run on this server channel's
-     * event loop, so no synchronization is needed. Signals that arrive
-     * between the offer and the session becoming available are queued and
-     * drained by attach, preserving arrival order.
-     */
-    private final class PendingConnection {
-        private final long connectionId;
-        private NetherNetChildChannel child;
-        private WebRtcSession session;
-        private List<String> queued = new ArrayList<>();
-
-        PendingConnection(long connectionId) {
-            this.connectionId = connectionId;
-        }
-
-        void attach(NetherNetChildChannel child, WebRtcSession session) {
-            this.child = child;
-            this.session = session;
-            List<String> pendingSignals = this.queued;
-            this.queued = null;
-            for (String signal : pendingSignals) {
-                apply(signal);
-            }
-        }
-
-        void handleSignal(String signal) {
-            if (session == null) {
-                if (queued != null) {
-                    queued.add(signal);
-                }
-                return;
-            }
-            apply(signal);
-        }
-
-        private void apply(String signal) {
-            String[] parts = signal.split(" ", 3);
-            if (parts.length < 3) return;
-            String type = parts[0];
-            String data = parts[2];
-
-            switch (type) {
-                case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> {
-                    log.trace("Applying remote candidate for {}", Long.toUnsignedString(connectionId));
-                    session.addRemoteCandidate(data);
-                }
-                case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
-                    log.debug("Received CONNECT_ERROR for {}", Long.toUnsignedString(connectionId));
-                    child.close();
-                }
-            }
-        }
-    }
-
-    /**
-     * Generates a unique placeholder address in the 10.x.x.x range for a new
-     * Nethernet connection. The 10.0.0.0/8 range is private (RFC 1918) and
-     * will not collide with real public client addresses.
-     */
-    private static InetSocketAddress generatePlaceholderAddress() {
-        ThreadLocalRandom r = ThreadLocalRandom.current();
-        String ip = "10." + (r.nextInt(1, 256)) + "." + (r.nextInt(256)) + "." + (r.nextInt(1, 256));
-        return new InetSocketAddress(ip, 0);
+        toStart.forEach(Registration::start);
     }
 
     @Override
     protected void doClose() throws Exception {
-        this.open = false;
-        children.close();
+        List<Registration> closing;
+        synchronized (sourcesLock) {
+            open = false;
+            closing = List.copyOf(sources.values());
+            sources.clear();
+        }
+        for (Registration registration : closing) {
+            registration.removed = true;
+        }
+        // Before the sources close, so the refusals can still reach their clients. Without this,
+        // a check the executor drops below would keep its share and throttle entry for good.
+        List.copyOf(admitting).forEach(Admission::withdraw);
+        for (Registration registration : closing) {
+            closeQuietly(registration.source);
+        }
 
+        List<CompletableFuture<Void>> terminations = new ArrayList<>();
+        for (NetherNetChildChannel child : live) {
+            terminations.add(child.termination().toCompletableFuture());
+            child.close();
+        }
+        Bound settings = bound;
+        if (settings != null) {
+            settings.checkExecutor().shutdownNow();
+        }
+        // The shared port closes once no peer uses it anymore, also when it is still opening, then
+        // an owned engine releases its threads; a shared engine stays with its owner.
+        CompletionStage<IceEndpoint> port = iceEndpoint;
+        CompletableFuture.allOf(terminations.toArray(CompletableFuture[]::new))
+                .thenCompose(ignored -> port == null ? CompletableFuture.<IceEndpoint>completedFuture(null)
+                        : port.handle((endpoint, failure) -> endpoint))
+                .thenCompose(endpoint -> endpoint == null ? CompletableFuture.<Void>completedFuture(null)
+                        : endpoint.close())
+                .whenComplete((ignored, failure) -> engine.release());
+    }
+
+    private static void closeQuietly(JoinSource source) {
         try {
-            signaling.close();
-        } finally {
-            // Null when a lazily supplied backend never materialized
-            // (signaling bind failed); there is nothing to tear down then.
-            WebRtcServerBackend materialized = backend;
-            if (materialized != null) {
-                materialized.close();
+            source.close();
+        } catch (RuntimeException e) {
+            log.debug("Closing a NetherNet join source failed: {}", e.toString());
+        }
+    }
+
+    // ---- Admission ----
+
+    /** Whether a join from this address would get past the throttle and the budget now. */
+    private boolean admits(Registration from, SourcedAddress address) {
+        if (!open || bound == null || from.removed
+                || !gate.admits(config.getMaxSessions(), config.getMaxPendingJoins())) {
+            return false;
+        }
+        NetherServerThrottle throttle = config.getThrottle();
+        InetSocketAddress key = throttleKey(address);
+        return key == null || throttle.admits(key);
+    }
+
+    /** The address to throttle on, or null when the source does not know where the client is. */
+    private static InetSocketAddress throttleKey(SourcedAddress source) {
+        InetSocketAddress address = source.address();
+        if (source.source() == AddressSource.UNKNOWN || address.getAddress().isAnyLocalAddress()) {
+            return null;
+        }
+        return address;
+    }
+
+    /** The first step of the admission stage, on this channel's event loop. */
+    private void admit(Registration from, Join join) {
+        Bound settings = bound;
+        if (!open || settings == null || from.removed) {
+            refuse(join, JoinRefusal.CAPACITY);
+            return;
+        }
+        NetherServerThrottle throttle = config.getThrottle();
+        InetSocketAddress throttled = throttleKey(join.source());
+        if (throttled != null && !throttle.accept(throttled)) {
+            log.debug("Refused join {} from {}: throttled", Long.toUnsignedString(join.connectionId()), throttled);
+            serverMetrics(metrics -> metrics.joinThrottled(throttled));
+            refuse(join, JoinRefusal.CAPACITY);
+            return;
+        }
+        AdmissionGate.Reservation reservation = gate.reserve(config.getMaxSessions(), config.getMaxPendingJoins());
+        if (reservation == null) {
+            if (throttled != null) {
+                throttle.closed(throttled);
+            }
+            log.debug("Refused join {}: the endpoint is at capacity", Long.toUnsignedString(join.connectionId()));
+            refuse(join, JoinRefusal.CAPACITY);
+            return;
+        }
+        new Admission(from, join, settings, reservation, throttled == null ? null : throttle, throttled).start();
+    }
+
+    /** Refuses a join that never became a child. */
+    private void refuse(Join join, JoinRefusal refusal) {
+        serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+        try {
+            join.reply().refuse(refusal).whenComplete((ignored, failure) -> {
+                if (failure != null) {
+                    log.debug("Could not refuse join {}: {}", Long.toUnsignedString(join.connectionId()),
+                            failure.toString());
+                }
+            });
+        } catch (RuntimeException e) {
+            log.debug("Could not refuse join {}: {}", Long.toUnsignedString(join.connectionId()), e.toString());
+        }
+        join.reply().finished();
+    }
+
+    /**
+     * One join from the moment it holds its share of the budget until it becomes a child or is
+     * refused. Its steps run on the event loop. It ends exactly once, whoever ends it: its check,
+     * its deadline, its client leaving, or {@link #withdraw} when the endpoint closes or its source
+     * is removed, which can happen on any thread.
+     */
+    private final class Admission {
+        private final Registration from;
+        private final Join join;
+        private final String id;
+        private final Bound settings;
+        private final AdmissionGate.Reservation reservation;
+        private final NetherServerThrottle throttle;
+        private final InetSocketAddress throttled;
+        private final AtomicBoolean settled = new AtomicBoolean();
+        private int maxMessageSize;
+        private volatile CompletableFuture<OfferCheckResult> check;
+        private volatile ScheduledFuture<?> deadline;
+        /** When the check started and how long it may take, on the event loop's clock. */
+        private long startedNanos;
+        private long timeoutNanos;
+
+        private Admission(Registration from, Join join, Bound settings, AdmissionGate.Reservation reservation,
+                          NetherServerThrottle throttle, InetSocketAddress throttled) {
+            this.from = from;
+            this.join = join;
+            this.id = Long.toUnsignedString(join.connectionId());
+            this.settings = settings;
+            this.reservation = reservation;
+            this.throttle = throttle;
+            this.throttled = throttled;
+        }
+
+        void start() {
+            try {
+                maxMessageSize = NetherNetConstants.parseMaxMessageSize(join.offer());
+            } catch (IllegalArgumentException e) {
+                log.debug("Refusing join {}: {}", id, e.getMessage());
+                fail(JoinRefusal.INTERNAL);
+                return;
+            }
+            admitting.add(this);
+            if (from.removed) {
+                // Removed on another thread after this join got in, too late to find it in admitting.
+                withdraw();
+                return;
+            }
+            join.reply().abandoned().whenComplete((ignored, failure) -> onLoop(this::abandoned));
+            timeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.getOfferCheckTimeoutMillis());
+            startedNanos = eventLoop().ticker().nanoTime();
+            CompletableFuture<OfferCheckResult> started = settings.offerCheck().checkAsync(join.offer(),
+                    settings.checkExecutor());
+            check = started;
+            // A check that finishes after this admits nothing: its stage is already complete.
+            ScheduledFuture<?> timer = eventLoop().schedule(() -> {
+                started.completeExceptionally(new TimeoutException());
+            }, timeoutNanos, TimeUnit.NANOSECONDS);
+            deadline = timer;
+            if (settled.get()) {
+                // Withdrawn on another thread while the check was being set up.
+                started.cancel(true);
+                timer.cancel(false);
+                return;
+            }
+            started.whenComplete((result, failure) -> onLoop(() -> checked(result, failure)));
+        }
+
+        private void checked(OfferCheckResult result, Throwable failure) {
+            if (settled.get()) {
+                return;
+            }
+            // The deadline only fires once this loop gets to it: a loop that ran late can see a
+            // result that came in past the deadline before the deadline fired.
+            if (failure == null && eventLoop().ticker().nanoTime() - startedNanos >= timeoutNanos) {
+                log.debug("Refusing join {}: its identity check finished after its deadline", id);
+                fail(JoinRefusal.NO_ANSWER_IN_TIME);
+                return;
+            }
+            if (failure != null) {
+                Throwable cause = failure instanceof CompletionException ? failure.getCause() : failure;
+                JoinRefusal refusal = switch (cause) {
+                    case TimeoutException late -> JoinRefusal.NO_ANSWER_IN_TIME;
+                    case RejectedExecutionException full -> JoinRefusal.CAPACITY;
+                    default -> JoinRefusal.INTERNAL;
+                };
+                log.debug("Refusing join {}: its identity check did not finish ({})", id, cause.toString());
+                fail(refusal);
+                return;
+            }
+            Optional<IdentityRefusal> refused = from.policy.refusal(result);
+            if (refused.isPresent()) {
+                // Diagnostics hold no token, and their text is sanitized for logs.
+                log.info("Refused join {} from {}: {} ({}, {})", id, join.source().address(), refused.get(),
+                        result.reason(), result.diagnostics());
+                fail(refusalOf(refused.get()));
+                return;
+            }
+            if (!open || from.removed) {
+                fail(JoinRefusal.CAPACITY);
+                return;
+            }
+            if (settle()) {
+                createChild(this, result);
+            }
+        }
+
+        /** The client left before the check finished: nothing to answer, nothing to create. */
+        private void abandoned() {
+            if (settle()) {
+                cancelCheck();
+                release();
+                join.reply().finished();
+            }
+        }
+
+        /**
+         * Ends a join that has no child yet because the endpoint closed or its source was removed:
+         * withdraws its check, gives back what it holds and refuses it. Any thread.
+         */
+        void withdraw() {
+            if (settle()) {
+                cancelCheck();
+                release();
+                refuse(join, JoinRefusal.CAPACITY);
+            }
+        }
+
+        /** Withdraws the check: a queued one never runs, a running one is interrupted. */
+        private void cancelCheck() {
+            CompletableFuture<OfferCheckResult> pending = check;
+            if (pending != null) {
+                pending.cancel(true);
+            }
+        }
+
+        private void fail(JoinRefusal refusal) {
+            if (settle()) {
+                release();
+                refuse(join, refusal);
+            }
+        }
+
+        /** Ends the admission stage. True for the one caller that ended it, who settles the join. */
+        private boolean settle() {
+            if (!settled.compareAndSet(false, true)) {
+                return false;
+            }
+            admitting.remove(this);
+            ScheduledFuture<?> timer = deadline;
+            if (timer != null) {
+                timer.cancel(false);
+            }
+            return true;
+        }
+
+        /** Gives back everything the join holds. Any thread, once the child's termination completed. */
+        void release() {
+            reservation.release();
+            if (throttle != null) {
+                throttle.closed(throttled);
+            }
+        }
+
+        private void onLoop(Runnable task) {
+            try {
+                eventLoop().execute(task);
+            } catch (RejectedExecutionException closing) {
+                if (settle()) {
+                    release();
+                    join.reply().finished();
+                }
             }
         }
     }
 
+    /** Ends the admission of every join from this source that has no child yet. Any thread. */
+    private void withdrawAdmissions(Registration from) {
+        for (Admission admission : admitting) {
+            if (admission.from == from) {
+                admission.withdraw();
+            }
+        }
+    }
+
+    private static JoinRefusal refusalOf(IdentityRefusal refusal) {
+        return switch (refusal) {
+            case IDENTITY_MISSING -> JoinRefusal.IDENTITY_MISSING;
+            case IDENTITY_INVALID, NOT_ATTESTED -> JoinRefusal.IDENTITY_INVALID;
+            case TRUST_SOURCE_UNREACHABLE -> JoinRefusal.TRUST_SOURCE_UNREACHABLE;
+        };
+    }
+
+    // ---- Children ----
+
+    /** Creates the child for a join whose admission ended in its favor, and exposes it. Event loop. */
+    private void createChild(Admission admission, OfferCheckResult offerCheck) {
+        Join join = admission.join;
+        Bound settings = admission.settings;
+        NetherNetEngine current = engine.current();
+        if (current == null) {
+            admission.release();
+            refuse(join, JoinRefusal.CAPACITY);
+            return;
+        }
+        boolean relayed = settings.answers().relayed();
+        RemoteCandidateIntake intake = relayed ? RemoteCandidateIntake.relayed() : RemoteCandidateIntake.server();
+        AdmissionGate.Reservation reservation = admission.reservation;
+        ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake, announcement(join, settings),
+                reservation::handshakeDone);
+        RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
+
+        NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);
+        child.setMaxOutboundMessageSize(admission.maxMessageSize);
+        child.attr(NetherNetChildChannel.CONNECTION_ID).set(negotiation.id());
+        child.setOfferCheck(offerCheck);
+        child.trackAddress(tracker, intake, relayed ? settings.iceEndpoint() : null);
+        live.add(child);
+        child.closeFuture().addListener(future -> negotiation.closed());
+        // Capacity follows the peer's teardown, not the close call: a handshake that closes stays
+        // pending until its peer is gone, or join and close could pile up native teardown.
+        child.termination().whenComplete((ignored, failure) -> {
+            live.remove(child);
+            admission.release();
+        });
+
+        try {
+            child.openPeer(current, peerConfig(admission.from.source, settings));
+        } catch (Exception | LinkageError e) {
+            log.error("Failed to create the peer for join {}: {}", negotiation.id(), e.toString(), e);
+            negotiation.refuse(JoinRefusal.INTERNAL);
+            child.close();
+            return;
+        }
+        negotiation.attach(child, eventLoop());
+
+        int handshakeTimeoutSeconds = config.getServerRtcHandshakeTimeoutSeconds();
+        ScheduledFuture<?> handshakeTimeout = eventLoop().schedule(() -> {
+            if (child.isOpen() && !child.isActive()) {
+                child.connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
+                negotiation.timedOut(handshakeTimeoutSeconds);
+                child.close();
+            }
+        }, handshakeTimeoutSeconds, TimeUnit.SECONDS);
+        // Any close makes the timeout obsolete, or a connection that ends within it would get a
+        // bogus warning.
+        child.closeFuture().addListener(future -> handshakeTimeout.cancel(false));
+
+        // Negotiate only once registered: initializer failure, timeout and disconnect all close
+        // through the child, which owns the peer.
+        child.pipeline().addLast(new ChannelInitializer<Channel>() {
+            @Override
+            protected void initChannel(Channel channel) {
+                negotiation.negotiate();
+            }
+        });
+
+        serverMetrics(metrics -> metrics.connectionAccepted(join.remoteNetworkId(), offerCheck.attested()));
+        pipeline().fireChannelRead(child);
+        if (!open) {
+            // Closed while this join was set up, after doClose went through the children.
+            child.close();
+        }
+    }
+
+    private PeerConfig peerConfig(JoinSource source, Bound settings) {
+        return new PeerConfig(PeerConfig.Role.ANSWERER,
+                NetherNetChannel.iceServers(config.getIceServers(), source.iceServers()),
+                config.getCandidatePolicy(), settings.iceEndpoint(), null, null);
+    }
+
+    /**
+     * What a join's answer announces: the advertised addresses (as relays behind PROXY protocol
+     * relays), or else the address the player typed, when the source knows it.
+     */
+    private static CandidateAnnouncement announcement(Join join, Bound settings) {
+        int icePort = settings.answers().icePort();
+        Optional<InetSocketAddress> typed = Optional.empty();
+        if (join.addressed() instanceof Join.Addressed addressed) {
+            typed = CandidateAnnouncement.typedEndpoint(addressed.host(), addressed.viaTrustedProxy(), icePort,
+                    addressed.localPort() == icePort);
+        }
+        // STUN discovery (ruling G-6, item 1) would add its fresh mappings here.
+        return CandidateAnnouncement.of(settings.advertised(), settings.answers().relayed(), List.of(), typed);
+    }
+
+    private void serverMetrics(Consumer<NetherServerMetrics> event) {
+        NetherServerMetrics metrics = config.getServerMetrics();
+        if (metrics == null) {
+            return;
+        }
+        try {
+            event.accept(metrics);
+        } catch (RuntimeException e) {
+            log.debug("NetherNet server metrics failed", e);
+        }
+    }
+
+    AdmissionGate gate() {
+        return gate;
+    }
+
     @Override
-    protected void doBeginRead() throws Exception {
-        // Server channel doesn't read data directly
+    protected void doBeginRead() {
+        // A server channel reads nothing itself.
     }
 
     @Override
@@ -507,7 +847,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     @Override
-    public ChannelConfig config() { return config; }
+    public ChannelConfig config() {
+        return config;
+    }
 
     @Override
     public boolean isOpen() {

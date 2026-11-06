@@ -27,8 +27,8 @@ leading zeros and numeric-looking IDs outside the uint64 range. Missing IDs,
 malformed percent escapes, invalid UTF-8 and unescaped path delimiters receive
 HTTP 400.
 
-The Xbox WebSocket path encodes the local ID as a single segment; JSON signaling
-keeps peer IDs as strings. Generated IDs remain decimal strings for compatibility.
+Xbox signaling keeps peer IDs as strings. Generated IDs remain decimal strings
+for compatibility.
 LAN discovery still uses uint64 IDs in its binary wire format. The numeric
 `NetherNetAddress` constructor and `getNetworkIdAsLong()` remain available for
 that representation; use `getNetworkId()` when handling opaque IDs.
@@ -106,33 +106,52 @@ Set discovery authentication flags to match the endpoint's admission policy.
 This policy applies to HTTP offers. LAN and Xbox signaling behavior is unchanged,
 as is the server identity assertion attached to answers.
 
-### LAN advertisements
+### Xbox signaling
 
-`NetherNetDiscovery` emits binary ServerData v6, matching stable Bedrock
-1.26.45.1. The scanner and `NetherNetServerDataCodec` decode v6 and reject
-unsupported versions or malformed records. Preview's v7 format is deferred
-until a stable release adopts it.
-
-`PongData` includes `acceptsOnlineAuth`, `acceptsSelfSignedAuth`, and `nonce`.
-The existing nine-argument constructor and builder methods remain available.
-Both authentication flags default to true; consumers with a different admission
-policy must set them explicitly. These fields describe policy and do not enable
-authentication or Login nonce checks.
-
-The default nonce is generated once for the process and reused across new
-builders and advertisement updates. Set it explicitly when sharing a nonce with
-another endpoint, such as HTTP server status:
+`NetherNetXboxRpcSignaling` keeps its WebSocket to the Xbox signaling service up
+by itself. `bind` and `connect` start it in the background, so a server channel
+binds even while Xbox is unreachable. The consumer provides a token supplier,
+which is asked before every connection attempt; `refresh` is true after the
+service refused the previous token:
 
 ```java
-PongData data = new PongData.Builder()
-        .setServerName("My server")
-        .setLevelName("My world")
-        .setAcceptsOnlineAuth(true)
-        .setAcceptsSelfSignedAuth(false)
-        .setNonce(sharedNonce)
-        .build();
-signaling.setAdvertisementData(data);
+NetherNetXboxRpcSignaling signaling = new NetherNetXboxRpcSignaling(networkId,
+        refresh -> tokens.mcToken(refresh)); // CompletionStage<String>, "MCToken ..."
+signaling.addHealthListener(health -> log.info("Xbox signaling: {}", health));
 ```
+
+Failed attempts are retried with exponential backoff (2 s doubling to 2 min,
+with jitter). A lost socket is replaced in place: the network ID, registered
+handlers and connected players stay. A socket counts as lost when the service
+closes it, it fails, no frame arrives for 45 s, two `System_Ping` requests in a
+row go unanswered, or the self-addressed route probe shows that joins no longer
+reach it. `health()` returns the state (`STARTING`, `CONNECTED`,
+`RECONNECTING`, `CLOSED`), the failed attempts in a row, the last failure and
+when the next attempt starts. `reconnect()` replaces the socket on request.
+
+### LAN advertisements
+
+`NetherNetDiscovery` answers discovery requests with binary server data v7, the
+layout BDS 1.26.50 and later send. It no longer answers in v6. The scanner and
+`NetherNetServerDataCodec` read v6 and v7 and reject other versions and
+malformed records. The v7 layout still has to be confirmed against a current
+retail capture.
+
+`LanServerData.V7` is the LAN record. It is separate from the HTTP status
+document (`NetherNetServerStatus`), and the two need not match. The
+authentication flags describe the endpoint's admission policy; they do not
+enable authentication or Login nonce checks. Use one nonce per endpoint, in
+BDS's form (unpadded lowercase hex), for LAN and HTTP alike:
+
+```java
+LanServerData.V7 data = new LanServerData.V7("My server", protocol, "1.26.60",
+        "My world", playerCount, maxPlayers, gameType, false, false,
+        true, false, sharedNonce, 4);
+discoverySignaling.setServerData(data);
+```
+
+`setAdvertisementData(PongData)` is not supported on LAN signaling, because
+`PongData` carries no protocol or version.
 
 Advertisements are encoded when updated and cached for discovery responses.
 An update that cannot fit a UDP datagram fails without replacing the previous

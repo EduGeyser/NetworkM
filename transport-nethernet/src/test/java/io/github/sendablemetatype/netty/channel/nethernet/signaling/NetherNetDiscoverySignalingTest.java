@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -62,7 +63,7 @@ class NetherNetDiscoverySignalingTest {
         assertTrue(discovery.closed);
         assertNull(discovery.callback.get());
         assertTrue(signaling.connect(REMOTE).isCompletedExceptionally());
-        assertThrows(IllegalStateException.class, () -> signaling.bind(new InetSocketAddress(0)));
+        assertThrows(IllegalStateException.class, () -> signaling.start(new RecordingSink()));
         assertEquals(1, discovery.binds);
     }
 
@@ -251,8 +252,9 @@ class NetherNetDiscoverySignalingTest {
         }
 
         @Override
-        public void sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
+        public ChannelFuture sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
             lastTargetId = targetNetworkId;
+            return null;
         }
 
         @Override

@@ -1,7 +1,5 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import java.util.List;
-
 public interface NetherNetSignaling extends AutoCloseable {
 
     /**
@@ -49,39 +47,5 @@ public interface NetherNetSignaling extends AutoCloseable {
          * @param signal The raw signal payload.
          */
         void onSignal(String signal);
-    }
-
-    /**
-     * Data structure for ICE server information.
-     *
-     * @param username The username for the ICE server (if applicable).
-     * @param password The password for the ICE server (if applicable).
-     * @param urls     The list of URLs for the ICE server.
-     */
-    public record IceServerInfo(String username, String password, List<String> urls) {
-        public static class Builder {
-            private String username = "";
-            private String password = "";
-            private List<String> urls = List.of();
-
-            public Builder setUsername(String username) {
-                this.username = username;
-                return this;
-            }
-
-            public Builder setPassword(String password) {
-                this.password = password;
-                return this;
-            }
-
-            public Builder setUrls(List<String> urls) {
-                this.urls = urls;
-                return this;
-            }
-
-            public IceServerInfo build() {
-                return new IceServerInfo(username, password, urls);
-            }
-        }
     }
 }

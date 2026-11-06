@@ -31,13 +31,6 @@ public class NetherNetConstants {
     // Signaling User Agent String
     public static final String SIGNALING_USER_AGENT = "libHttpClient/1.0.0.0";
 
-    // Xbox Signaling Message Types
-    public static final int XBOX_SIGNAL_NOT_FOUND = 0;
-    public static final int XBOX_SIGNAL_SIGNAL = 1;
-    public static final int XBOX_SIGNAL_CREDENTIALS = 2;
-    public static final int XBOX_SIGNAL_ACCEPTED = 3;
-    public static final int XBOX_SIGNAL_ACK = 4;
-
     // Xbox JSON-RPC Signaling Method Names
     public static final String XBOX_RPC_METHOD_TURN_AUTH = "Signaling_TurnAuth_v1_0";
     public static final String XBOX_RPC_METHOD_SEND_MESSAGE = "Signaling_SendClientMessage_v1_0";
@@ -59,6 +52,8 @@ public class NetherNetConstants {
     public static final int MAX_OUTBOUND_MESSAGE_SIZE = 262144;
     public static final String RELIABLE_CHANNEL_LABEL = "ReliableDataChannel";
     public static final String UNRELIABLE_CHANNEL_LABEL = "UnreliableDataChannel";
+    /** The most segments one message may take: the countdown header numbers 255 down to 0. */
+    public static final int MAX_SEGMENTS = 256;
 
     private static final byte[] KEY_BYTES;
     private static final SecretKeySpec ENCRYPTION_KEY;
@@ -205,6 +200,18 @@ public class NetherNetConstants {
     }
 
     /**
+     * Builds a signaling message for a CONNECTERROR. Vanilla reads the payload as a signed 32-bit
+     * decimal number from its signaling error enumeration.
+     *
+     * @param connectionId the unique connection ID
+     * @param errorCode the error code
+     * @return the formatted signaling message
+     */
+    public static String buildSignalConnectError(long connectionId, int errorCode) {
+        return RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId) + " " + errorCode;
+    }
+
+    /**
      * Returns the outgoing fragment limit for the peer's SCTP media sections.
      * Missing attributes use the RFC 8841 default; zero means unlimited.
      * All results are capped by our local outgoing ceiling. If multiple active
@@ -274,6 +281,51 @@ public class NetherNetConstants {
             size = Math.min(MAX_OUTBOUND_MESSAGE_SIZE, size * 10 + digit - '0');
         }
         return outboundMessageSize(size);
+    }
+
+    /**
+     * How many segments a message takes. An empty message takes none and is
+     * not sent at all.
+     *
+     * @param length the message length
+     * @param maxPayload the most payload one segment carries, excluding the header byte
+     * @return the segment count
+     * @throws IllegalArgumentException if the countdown cannot number that many segments
+     */
+    public static int segmentCount(int length, int maxPayload) {
+        if (maxPayload < 1) {
+            throw new IllegalArgumentException("A segment has no room for payload");
+        }
+        int segments = length == 0 ? 0 : (length - 1) / maxPayload + 1;
+        if (segments > MAX_SEGMENTS) {
+            throw new IllegalArgumentException("A message of " + length + " bytes needs " + segments
+                    + " segments, more than the " + MAX_SEGMENTS + " its countdown can number");
+        }
+        return segments;
+    }
+
+    /**
+     * The media ID of a description's data channel section, which trickled
+     * candidates for it carry. Falls back to {@code "0"}, the ID every current
+     * client uses, when the description names none.
+     *
+     * @param sdp the description
+     * @return the media ID
+     */
+    public static String applicationMid(String sdp) {
+        boolean application = false;
+        for (String line : sdp.split("\\r?\\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("m=")) {
+                application = trimmed.startsWith("m=application");
+            } else if (application && trimmed.startsWith("a=mid:")) {
+                String mid = trimmed.substring("a=mid:".length()).trim();
+                if (!mid.isEmpty()) {
+                    return mid;
+                }
+            }
+        }
+        return "0";
     }
 
     static int outboundMessageSize(int size) {

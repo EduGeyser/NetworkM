@@ -59,8 +59,9 @@ class DiscoveryPeerRegistryTest {
         DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(2, 10, now::get);
         peers.register(41);
         peers.rememberSignal(41, 1, ADDRESS);
-        peers.rememberSignal(42, 1, ADDRESS);
+        peers.register(41);
         peers.register(42);
+        peers.rememberSignal(42, 1, ADDRESS);
         for (int i = 2; i <= 10; i++) {
             peers.remember(i, ADDRESS);
         }
@@ -78,49 +79,38 @@ class DiscoveryPeerRegistryTest {
     }
 
     @Test
-    void registeringAnObservedOfferCanRecoverItsEvictedPassiveRoute() {
+    void heldPeersStayUntilEveryHoldIsReleased() {
         AtomicLong now = new AtomicLong();
         DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(1, 10, now::get);
-        peers.rememberSignal(41, 1, ADDRESS);
+        peers.release(1);
+        peers.hold(1, ADDRESS);
+        peers.hold(1, ADDRESS);
         peers.remember(2, ADDRESS);
-        assertNull(peers.get(1));
-
-        peers.register(41);
-        peers.register(41);
+        peers.remember(3, ADDRESS);
         now.set(100);
-        assertEquals(ADDRESS, peers.get(1));
+        assertEquals(ADDRESS, peers.get(1), "a held peer is neither evicted nor expired");
+        peers.release(1);
         now.set(200);
-        peers.unregister(41);
+        assertEquals(ADDRESS, peers.get(1));
+        now.set(300);
+        peers.release(1);
 
-        assertNull(peers.get(1), "Replacing a handler must not add a second pin");
-    }
-
-    @Test
-    void pendingConnectionAssociationsAreBoundedAndExpire() {
-        AtomicLong now = new AtomicLong();
-        DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(2, 10, now::get);
-        for (int i = 1; i <= 20; i++) {
-            peers.rememberSignal(i, i, ADDRESS);
-        }
-        assertEquals(2, peers.recentConnectionCount());
-        assertEquals(2, peers.passiveSize());
-        now.set(10);
-        assertEquals(0, peers.recentConnectionCount());
+        assertNull(peers.get(1));
         assertEquals(0, peers.passiveSize());
     }
 
     @Test
-    void clearReleasesPinsAndPendingAssociations() {
+    void clearReleasesPins() {
         DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(2, 10, () -> 0);
         peers.register(41);
         peers.rememberSignal(41, 1, ADDRESS);
-        peers.rememberSignal(42, 2, ADDRESS);
+        peers.hold(2, ADDRESS);
         peers.clear();
 
         peers.unregister(41);
+        peers.release(2);
         assertNull(peers.get(1));
         assertNull(peers.get(2));
-        assertEquals(0, peers.recentConnectionCount());
         peers.remember(1, ADDRESS);
         assertEquals(1, peers.passiveSize());
     }

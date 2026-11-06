@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+
 import java.net.SocketAddress;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -9,8 +11,9 @@ public interface NetherNetClientSignaling extends NetherNetSignaling {
      * Connects to the signaling medium (Client mode).
      *
      * @param remoteAddress The address of the signaling server to connect to.
+     * @return the STUN and TURN servers the signaling hands out, possibly none
      */
-    CompletableFuture<List<IceServerInfo>> connect(SocketAddress remoteAddress);
+    CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress);
 
     /**
      * Sets a handler to be called when a signaling message is received for an unknown connection ID.

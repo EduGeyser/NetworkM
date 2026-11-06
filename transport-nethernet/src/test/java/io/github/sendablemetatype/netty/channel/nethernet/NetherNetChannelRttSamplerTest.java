@@ -1,27 +1,25 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherChannelConfig;
-import io.netty.buffer.ByteBuf;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelPromise;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.util.concurrent.CountDownLatch;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.DoubleConsumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/** getPing reports the ICE round trip time, sampled every 3 s once the channel is active. */
+@Timeout(10)
 class NetherNetChannelRttSamplerTest {
+    private static final TransportMetrics MEASURED = new TransportMetrics(
+            Optional.of(Duration.ofNanos(12_600_000)), Optional.empty());
 
     private final MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
@@ -31,87 +29,78 @@ class NetherNetChannelRttSamplerTest {
     }
 
     @Test
-    void startsSamplerWhenTransportOpensAfterRegistration() throws Exception {
-        TestNetherNetChannel channel = new TestNetherNetChannel();
+    void startsSamplingWhenTheTransportOpensAfterRegistration() throws Exception {
+        ChildFixture fixture = new ChildFixture(null);
+        fixture.peer.setMetrics(MEASURED);
         try {
-            group.register(channel).sync();
-            channel.openTransport();
+            group.register(fixture.child).sync();
+            assertEquals(0, fixture.child.getPing(), "0 while unknown");
+            fixture.openLinks();
 
-            assertTrue(channel.sampled.await(2, TimeUnit.SECONDS));
-            assertEquals(13, channel.rttMillis());
-            assertEquals(1, channel.sampleRequests.get());
+            awaitPing(fixture, 13);
+            assertEquals(1, fixture.peer.metricsRequests());
         } finally {
-            channel.close().syncUninterruptibly();
+            fixture.child.close().syncUninterruptibly();
         }
     }
 
     @Test
-    void startsSamplerWhenTransportOpensBeforeRegistration() throws Exception {
-        TestNetherNetChannel channel = new TestNetherNetChannel();
+    void startsSamplingWhenTheTransportOpensBeforeRegistration() throws Exception {
+        ChildFixture fixture = new ChildFixture(null).openLinks();
+        fixture.peer.setMetrics(MEASURED);
         try {
-            channel.openTransport();
-            group.register(channel).sync();
+            group.register(fixture.child).sync();
 
-            assertTrue(channel.sampled.await(2, TimeUnit.SECONDS));
-            assertEquals(13, channel.rttMillis());
-            assertEquals(1, channel.sampleRequests.get());
+            awaitPing(fixture, 13);
+            assertEquals(1, fixture.peer.metricsRequests());
         } finally {
-            channel.close().syncUninterruptibly();
+            fixture.child.close().syncUninterruptibly();
         }
     }
 
     @Test
-    void synchronousCloseFromChannelActiveCancelsSampler() throws Exception {
-        TestNetherNetChannel channel = new TestNetherNetChannel();
-        channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+    void aFailedSampleKeepsTheLastValue() throws Exception {
+        ChildFixture fixture = new ChildFixture(null).openLinks();
+        fixture.peer.setMetrics(MEASURED);
+        try {
+            group.register(fixture.child).sync();
+            awaitPing(fixture, 13);
+            fixture.peer.setMetrics(TransportMetrics.NONE);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (fixture.peer.metricsRequests() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertEquals(2, fixture.peer.metricsRequests());
+            assertEquals(13, fixture.child.getPing());
+        } finally {
+            fixture.child.close().syncUninterruptibly();
+        }
+    }
+
+    @Test
+    void aSynchronousCloseFromChannelActiveCancelsSampling() throws Exception {
+        ChildFixture fixture = new ChildFixture(null);
+        fixture.peer.setMetrics(MEASURED);
+        fixture.child.pipeline().addLast(new ChannelInboundHandlerAdapter() {
             @Override
             public void channelActive(ChannelHandlerContext ctx) {
                 ctx.close();
             }
         });
 
-        group.register(channel).sync();
-        channel.openTransport();
-        channel.closeFuture().sync();
+        group.register(fixture.child).sync();
+        fixture.openLinks();
+        fixture.child.closeFuture().sync();
 
-        assertFalse(channel.sampled.await(1200, TimeUnit.MILLISECONDS));
-        assertEquals(0, channel.sampleRequests.get());
+        Thread.sleep(1200);
+        assertEquals(0, fixture.peer.metricsRequests());
     }
 
-    private static final class TestNetherNetChannel extends NetherNetChannel {
-        private final CountDownLatch sampled = new CountDownLatch(1);
-        private final AtomicInteger sampleRequests = new AtomicInteger();
-
-        private TestNetherNetChannel() {
-            super(null, new InetSocketAddress("127.0.0.1", 19132),
-                    new InetSocketAddress("127.0.0.1", 19133));
-            this.config = new DefaultNetherChannelConfig(this);
+    private static void awaitPing(ChildFixture fixture, long expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (fixture.child.getPing() != expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
         }
-
-        private void openTransport() {
-            markTransportOpen();
-        }
-
-        @Override
-        protected void requestRttSample(DoubleConsumer callback) {
-            sampleRequests.incrementAndGet();
-            callback.accept(12.6);
-            sampled.countDown();
-        }
-
-        @Override
-        protected void sendFramed(ByteBuf framed, java.util.function.Consumer<Throwable> completion) {
-            completion.accept(null);
-        }
-
-        @Override
-        protected NetherNetUnsafe newUnsafe() {
-            return new NetherNetUnsafe() {
-                @Override
-                public void connect(SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
-                    promise.setFailure(new UnsupportedOperationException("Test channel cannot connect"));
-                }
-            };
-        }
+        assertEquals(expected, fixture.child.getPing());
     }
 }

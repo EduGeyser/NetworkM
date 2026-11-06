@@ -1,16 +1,17 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
-import io.github.sendablemetatype.netty.channel.nethernet.backend.LibWebRtcServerBackend;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcServerBackend;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
-import io.github.sendablemetatype.webrtc.PeerConnectionFactory;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
 
-import java.util.List;
 import java.util.function.Supplier;
 
+/**
+ * Netty channel factories for NetherNet. Engine ownership is explicit: a
+ * channel given an engine never closes it, and a channel given an engine
+ * supplier owns and closes the engine it creates, one per channel.
+ */
 public class NetherNetChannelFactory<T extends Channel> implements ChannelFactory<T> {
 
     private final Supplier<T> channelCreator;
@@ -25,73 +26,59 @@ public class NetherNetChannelFactory<T extends Channel> implements ChannelFactor
     }
 
     /**
-     * Creates a NetherNet Server Channel Factory.
+     * Server endpoints that each create the default engine when they bind, and
+     * close it with themselves. Add join sources to each endpoint with
+     * {@link NetherNetServerChannel#addSource}.
      *
-     * @param factory The PeerConnectionFactory to use for creating peer connections. Should be reused where possible.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
-     * @return A ChannelFactory for NetherNetServerChannel.
+     * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(PeerConnectionFactory factory, NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(factory, signaling));
+    public static ChannelFactory<NetherNetServerChannel> server() {
+        return new NetherNetChannelFactory<>(NetherNetServerChannel::new);
     }
 
     /**
-     * Creates a NetherNet Server Channel Factory backed by a pool of
-     * PeerConnectionFactory instances. Each native factory carries exactly one
-     * network, worker, and signaling thread shared by every peer connection it
-     * creates, so a pool multiplies the threads available to the data plane:
-     * incoming connections are assigned round robin across the pool.
+     * Server endpoints on the caller's engine. The endpoints never close it, so
+     * it can serve several binds; its owner closes it after the last.
      *
-     * @param factories The PeerConnectionFactory pool. Must not be empty. The
-     *                  resulting server channel takes ownership and disposes
-     *                  every factory on close.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
-     * @return A ChannelFactory for NetherNetServerChannel.
+     * @param engine the engine
+     * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(List<PeerConnectionFactory> factories, NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(factories, signaling));
+    public static ChannelFactory<NetherNetServerChannel> server(NetherNetEngine engine) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engine));
     }
 
     /**
-     * Creates a NetherNet Server Channel Factory whose PeerConnectionFactory
-     * pool is created lazily, only after the channel's signaling endpoint
-     * bound successfully. A bind that fails (a taken TCP port, a refused
-     * websocket) therefore never creates native engine state; there is
-     * nothing to tear down on that path.
+     * Server endpoints that each own the engine the supplier returns, created
+     * when they bind and closed with them.
      *
-     * @param factoriesSupplier Invoked once per channel after its signaling
-     *                          bind succeeded; must return a non empty pool.
-     *                          The channel takes ownership and disposes every
-     *                          factory on close.
-     * @param signaling         The NetherNetServerSignaling instance for signaling.
-     * @return A ChannelFactory for NetherNetServerChannel.
+     * @param engineSupplier creates one engine per endpoint
+     * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(Supplier<List<PeerConnectionFactory>> factoriesSupplier, NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(
-                () -> new LibWebRtcServerBackend(factoriesSupplier.get()), signaling));
+    public static ChannelFactory<NetherNetServerChannel> server(Supplier<? extends NetherNetEngine> engineSupplier) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engineSupplier));
     }
 
     /**
-     * Creates a NetherNet Server Channel Factory over an explicit WebRTC
-     * backend. The resulting server channel takes ownership of the backend
-     * and closes it on close.
+     * Client channels on the caller's engine, which they never close.
      *
-     * @param backend   The backend negotiating and carrying connections.
-     * @param signaling The NetherNetServerSignaling instance for signaling.
-     * @return A ChannelFactory for NetherNetServerChannel.
+     * @param engine the engine
+     * @param signaling the signaling to connect over; each channel closes it
+     * @return a ChannelFactory for NetherNetClientChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(WebRtcServerBackend backend, NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(backend, signaling));
+    public static ChannelFactory<NetherNetClientChannel> client(NetherNetEngine engine, NetherNetClientSignaling signaling) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engine, signaling));
     }
 
     /**
-     * Creates a NetherNet Client Channel Factory.
+     * Client channels that each own the engine the supplier returns, created
+     * when the first attempt needs it and closed with the channel.
      *
-     * @param factory The PeerConnectionFactory to use for creating peer connections. Should be reused where possible.
-     * @param signaling The NetherNetClientSignaling instance for signaling.
-     * @return A ChannelFactory for NetherNetClientChannel.
+     * @param engineSupplier creates one engine per channel
+     * @param signaling the signaling to connect over; each channel closes it
+     * @return a ChannelFactory for NetherNetClientChannel
      */
-    public static ChannelFactory<NetherNetClientChannel> client(PeerConnectionFactory factory, NetherNetClientSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(factory, signaling));
+    public static ChannelFactory<NetherNetClientChannel> client(Supplier<? extends NetherNetEngine> engineSupplier,
+                                                                NetherNetClientSignaling signaling) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engineSupplier, signaling));
     }
 }

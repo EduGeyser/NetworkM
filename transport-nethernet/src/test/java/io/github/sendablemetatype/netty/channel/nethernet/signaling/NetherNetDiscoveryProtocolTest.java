@@ -129,13 +129,13 @@ class NetherNetDiscoveryProtocolTest {
     }
 
     @Test
-    void callbacksCanRegisterHandlersAndQuietConnectionsKeepTheirRoutes() throws Exception {
+    void offerCallbacksCanRegisterJoinsAndQuietJoinsKeepTheirRoutes() throws Exception {
         try (Discovery discovery = new Discovery()) {
             CompletableFuture<Void> registered = new CompletableFuture<>();
-            discovery.value.setNewConnectionHandler((connectionId, sender, offer) -> {
+            discovery.value.setOfferHandler((connectionId, senderId, offer, sender) -> {
                 try {
-                    CompletableFuture.runAsync(() -> discovery.value.registerSignalHandler(connectionId, signal -> { }))
-                            .get(2, TimeUnit.SECONDS);
+                    assertTrue(CompletableFuture.supplyAsync(() -> discovery.value.registerJoin(senderId, connectionId,
+                            sender, signal -> { })).get(2, TimeUnit.SECONDS));
                     registered.complete(null);
                 } catch (Exception e) {
                     registered.completeExceptionally(e);
@@ -153,12 +153,11 @@ class NetherNetDiscoveryProtocolTest {
             DatagramPacket signal = new DatagramPacket(new byte[65535], 65535);
             discovery.client.receive(signal);
             assertTrue(signal.getLength() > 0);
-            discovery.value.unregisterSignalHandler(42);
+            discovery.value.unregisterJoin(20, 42);
             discovery.now.set(111);
             assertThrows(IllegalArgumentException.class, () -> discovery.value.sendSignal(20, "Ping"));
             discovery.value.close();
             assertEquals(0, discovery.peers.passiveSize());
-            assertEquals(0, discovery.peers.recentConnectionCount());
         }
     }
 
