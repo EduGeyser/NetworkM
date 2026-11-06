@@ -1,11 +1,19 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel;
 import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
+import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
+import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -100,6 +108,34 @@ class LanJoinSourceTest {
         Join retry = awaitJoin(2);
         assertEquals("retry", retry.offer());
         assertEquals(2, signals.size());
+    }
+
+    @Test
+    void anEndpointChecksTheIdentityOfLanJoins() throws Exception {
+        FakeEngine engine = new FakeEngine();
+        Channel endpoint = new ServerBootstrap()
+                .group(group)
+                .channelFactory(() -> new NetherNetServerChannel(engine))
+                .option(NetherChannelOption.NETHER_SERVER_IDENTITY, ServerIdentity.ephemeral("test"))
+                .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, OfferFixtures.retailCheck())
+                .childHandler(new ChannelInboundHandlerAdapter())
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        try {
+            ((NetherNetServerChannel) endpoint).addSource(source);
+
+            send("CONNECTREQUEST 42 " + OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            assertEquals("CONNECTERROR 42 16", receive(), "an offer without an assertion is refused on LAN too");
+            assertTrue(engine.peers().isEmpty());
+
+            send("CONNECTREQUEST 43 " + OfferFixtures.educationOffer());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (engine.peers().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, engine.peers().size(), "a proven key is admitted");
+        } finally {
+            endpoint.close().sync();
+        }
     }
 
     private void send(String signal) throws Exception {
