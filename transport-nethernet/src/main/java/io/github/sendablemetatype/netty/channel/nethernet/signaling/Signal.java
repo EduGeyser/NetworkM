@@ -3,9 +3,9 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.security.SecureRandom;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * One NetherNet signal, in the wire form Xbox RPC and LAN carry:
@@ -24,6 +24,8 @@ public record Signal(SignalType type, String connectionId, String payload) {
     private static final int MAX_CONNECTION_ID_LENGTH = 64;
     /** How much of an unknown type a log line shows. */
     private static final int MAX_LOGGED_TYPE_LENGTH = 32;
+    /** Thread safe; one draw per join, so its cost does not matter. */
+    private static final SecureRandom CONNECTION_IDS = new SecureRandom();
 
     /**
      * @throws IllegalArgumentException if the connection ID is not valid (see
@@ -103,12 +105,13 @@ public record Signal(SignalType type, String connectionId, String payload) {
     /**
      * A new connection ID for an attempt NetherNet starts or answers. Received IDs are opaque, but
      * other peers may parse IDs as numbers (go-nethernet does), so generated ones keep the form
-     * vanilla writes: a nonzero unsigned 64-bit value in decimal.
+     * vanilla writes: a nonzero unsigned 64-bit value in decimal. The ID comes from a secure
+     * random source, so a third party cannot predict the next one.
      *
      * @return the new ID
      */
     public static String newConnectionId() {
-        return Long.toUnsignedString(ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE));
+        return Long.toUnsignedString(CONNECTION_IDS.nextLong(1, Long.MAX_VALUE));
     }
 
     /**
