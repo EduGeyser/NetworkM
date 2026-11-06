@@ -16,7 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.signaling.http;
 
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling.IceServerInfo;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 
 import javax.net.ssl.TrustManagerFactory;
 import java.time.Duration;
@@ -40,7 +40,7 @@ import java.util.Objects;
  *                      the server's default negotiation deadline of 15 s, so the client sees the
  *                      server's own timeout refusal rather than giving up first
  */
-public record HttpClientSettings(Scheme scheme, List<IceServerInfo> iceServers, TrustManagerFactory trust,
+public record HttpClientSettings(Scheme scheme, List<IceServer> iceServers, TrustManagerFactory trust,
                                  ClientInfo clientInfo, Duration answerTimeout) {
 
     /** Which scheme the client speaks. */
@@ -88,7 +88,7 @@ public record HttpClientSettings(Scheme scheme, List<IceServerInfo> iceServers, 
      * @param iceServers the STUN and TURN servers
      * @return these settings with those ICE servers
      */
-    public HttpClientSettings withIceServers(List<IceServerInfo> iceServers) {
+    public HttpClientSettings withIceServers(List<IceServer> iceServers) {
         return new HttpClientSettings(scheme, iceServers, trust, clientInfo, answerTimeout);
     }
 

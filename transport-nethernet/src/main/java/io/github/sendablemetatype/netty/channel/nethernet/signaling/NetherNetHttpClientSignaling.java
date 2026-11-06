@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings.Scheme;
@@ -194,7 +195,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     @Override
-    public CompletableFuture<List<IceServerInfo>> connect(SocketAddress remoteAddress) {
+    public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
         if (closed) {
             return CompletableFuture.failedFuture(new IllegalStateException("HTTP client signaling is closed"));
         }
