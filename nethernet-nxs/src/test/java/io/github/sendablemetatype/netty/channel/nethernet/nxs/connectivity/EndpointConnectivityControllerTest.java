@@ -1,5 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint.StunReading;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
+
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import org.junit.jupiter.api.Test;
 
@@ -22,7 +25,7 @@ class EndpointConnectivityControllerTest {
                     AddressFamily.IPV6,
                     endpoint("2606:4700:4700::1111", 3478));
 
-    static final class FakeMonitor implements StunMonitor {
+    static final class FakeMonitor implements StunObserver.Monitor {
         final InetSocketAddress server;
         Optional<StunReading> sample = Optional.empty();
         boolean closed, fail;
@@ -34,13 +37,13 @@ class EndpointConnectivityControllerTest {
         }
 
         /** Before an answer, a monitor reports a pending transaction without a mapping. */
-        public StunReading read() {
+        public List<StunReading> read() {
             if (closed || fail) {
                 throw new IllegalStateException();
             }
             beforeRead.run();
-            return sample.orElse(new StunReading(server, null, null, StunReading.State.PENDING, 0, 0, 0,
-                    Optional.empty()));
+            return List.of(sample.orElse(new StunReading(server, null, null, StunReading.State.PENDING, 0, 0, 0,
+                    Optional.empty())));
         }
 
         public void close() {
@@ -223,7 +226,7 @@ class EndpointConnectivityControllerTest {
 
         first.fail = true;
         assertEquals(State.MONITOR_FAILED, f.state(AddressFamily.IPV4));
-        f.clock.addAndGet(StunObservation.RETRY_DELAY.toNanos() - 1);
+        f.clock.addAndGet(StunObserver.RETRY_DELAY.toNanos() - 1);
         assertEquals(State.MONITOR_FAILED, f.state(AddressFamily.IPV4));
         assertEquals(2, f.opens, "No new monitor before the delay");
 

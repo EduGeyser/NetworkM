@@ -1,5 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint.StunReading;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
+
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateMethod;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityCheck;
@@ -63,7 +66,7 @@ class MaintainedCandidatePublisherTest {
             nanos += millis * 1000000;
         }
 
-        final class Monitor implements StunMonitor {
+        final class Monitor implements StunObserver.Monitor {
             final InetSocketAddress server;
             InetSocketAddress mapped;
             long succeededAt, sequence, revision = 1, failed;
@@ -84,7 +87,7 @@ class MaintainedCandidatePublisherTest {
             }
 
             @Override
-            public StunReading read() {
+            public List<StunReading> read() {
                 if (broken) {
                     throw new IllegalStateException("monitor unavailable");
                 }
@@ -94,7 +97,7 @@ class MaintainedCandidatePublisherTest {
                 } else if (sequence == 0) {
                     state = StunReading.State.PENDING;
                 }
-                return new StunReading(
+                return List.of(new StunReading(
                                 server,
                                 null,
                                 mapped,
@@ -104,7 +107,7 @@ class MaintainedCandidatePublisherTest {
                                 revision,
                                 sequence == 0
                                         ? Optional.empty()
-                                        : Optional.of(Duration.ofNanos(nanos - succeededAt)));
+                                        : Optional.of(Duration.ofNanos(nanos - succeededAt))));
             }
 
             @Override
