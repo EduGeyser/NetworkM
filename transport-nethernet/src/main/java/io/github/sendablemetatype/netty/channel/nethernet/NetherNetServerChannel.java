@@ -51,7 +51,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -66,8 +65,9 @@ import java.util.function.Supplier;
  * {@link NetherNetChildChannel} per admitted join, like any Netty server channel.
  *
  * <p><b>Sources.</b> {@link #addSource} adds a source before or after bind; it starts once the
- * endpoint is bound. {@link #removeSource} stops and closes one. Neither touches connected
- * players, since every join replies through its own {@link io.github.sendablemetatype.netty.channel.nethernet.signaling.ReplyPath}.
+ * endpoint is bound and its ICE port is open. {@link #removeSource} stops and closes one.
+ * Neither touches connected players, since every join replies through its own
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.signaling.ReplyPath}.
  * A source is started once; to restart one, remove it and add a new instance. Closing the
  * endpoint closes its sources.
  *
@@ -87,7 +87,9 @@ import java.util.function.Supplier;
  * fails without one.
  *
  * <p><b>ICE.</b> By default every peer gathers its host candidates on one UDP port at the address
- * and port this channel binds (port 0 picks a free one). With
+ * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
+ * opens the port after bind returned, and the sources start once it is open; a port that fails
+ * to open then closes the endpoint, with the error logged. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
  * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead.
  *
@@ -98,12 +100,6 @@ import java.util.function.Supplier;
 public class NetherNetServerChannel extends AbstractServerChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetServerChannel.class);
     private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
-    /**
-     * How long bind waits for the engine to open the shared ICE port. Netty's bind completes
-     * when doBind returns, and a taken port has to fail it, so this is the one place the event
-     * loop waits for the engine.
-     */
-    private static final long ENDPOINT_OPEN_TIMEOUT_SECONDS = 10;
 
     private final DefaultNetherServerChannelConfig config;
     private final EngineRef engine;
@@ -120,6 +116,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private boolean sourcesStarted;
 
     private volatile InetSocketAddress localAddress;
+    /**
+     * The shared ICE port, opening from bind on and owned by this channel from then: whatever it
+     * yields closes with the channel, also when it opens after the channel closed. Null when each
+     * session takes its own ports.
+     */
+    private volatile CompletionStage<IceEndpoint> iceEndpoint;
     private volatile Bound bound;
     private volatile boolean open = true;
 
@@ -157,7 +159,19 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /**
-     * What bind decided, fixed for the endpoint's life.
+     * What bind decided before the shared ICE port opened.
+     *
+     * @param answers what every join answers with
+     * @param relays the PROXY protocol relays in front of the ICE port, empty for none
+     * @param advertised the advertised addresses, resolved
+     * @param offerCheck checks every join's identity
+     */
+    private record BindPlan(ServerJoin.Settings answers, List<String> relays, List<InetSocketAddress> advertised,
+                            OfferCheck offerCheck) {
+    }
+
+    /**
+     * What the endpoint takes joins with, fixed for its life once its ICE port is open.
      *
      * @param answers what every join answers with
      * @param iceEndpoint the shared ICE port, or null when each session takes its own
@@ -183,7 +197,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /**
-     * Adds a join source. A bound endpoint starts it at once, otherwise binding starts it.
+     * Adds a join source. An endpoint that takes joins already starts it at once, otherwise the
+     * endpoint starts it once it is bound and its ICE port is open.
      *
      * @param source the source; this endpoint starts it and closes it with itself
      * @param policy which identity check results this source's joins need
@@ -296,32 +311,105 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
 
         NetherNetEngine current = engine.get();
-        IceEndpoint iceEndpoint = null;
         InetSocketAddress local = address;
+        int icePort = 0;
+        CompletionStage<IceEndpoint> opening = null;
         if (shared) {
-            int port = address.getPort() != 0 ? address.getPort() : freeUdpPort(address);
             InetAddress host = address.getAddress();
+            icePort = probeUdpPort(address);
             List<InetAddress> addresses = host == null || host.isAnyLocalAddress() ? List.of() : List.of(host);
-            iceEndpoint = await(current.openEndpoint(new EndpointConfig(port, addresses)));
-            if (relayed) {
-                iceEndpoint.proxyRelays(proxies.proxyProtocol().entries());
-            }
-            // NXS stateless joins are no join source: they arrive here, as checks the port holds
-            // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
-            local = new InetSocketAddress(host, port);
+            opening = current.openEndpoint(new EndpointConfig(icePort, addresses));
+            this.iceEndpoint = opening;
+            local = new InetSocketAddress(host, icePort);
         }
+        this.localAddress = local;
 
         OfferCheck offerCheck = config.getOfferCheck();
-        ExecutorService checkExecutor = checkExecutors.get();
         // Off the event loop, and off the bounded check executor, whose slots belong to joins: the
         // first join should not wait for the issuers' keys.
         Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
-        ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(),
-                iceEndpoint == null ? 0 : iceEndpoint.port(), relayed);
-        this.bound = new Bound(answers, iceEndpoint, advertised, offerCheck, checkExecutor);
-        this.localAddress = local;
-        log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", local,
-                shared ? "shared ICE port" : "ICE ports per session", identity.fingerprint());
+        ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(), icePort,
+                relayed);
+        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), advertised,
+                offerCheck);
+
+        CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
+                : opening.toCompletableFuture();
+        if (opened.isDone()) {
+            // Ports per session, or an engine that opened the port at once: a failure fails the bind.
+            IceEndpoint endpoint;
+            try {
+                endpoint = opened.join();
+            } catch (CompletionException e) {
+                throw e.getCause() instanceof Exception cause ? cause : e;
+            }
+            ready(plan, endpoint);
+            return;
+        }
+        // The engine opens the port on its own thread; this loop does not wait for it (ruling A-4).
+        opening.whenComplete((endpoint, failure) -> {
+            try {
+                eventLoop().execute(() -> opened(plan, endpoint, failure));
+            } catch (RejectedExecutionException gone) {
+                // No loop left to close this channel on, so nothing else would close the port.
+                if (endpoint != null) {
+                    endpoint.close();
+                }
+            }
+        });
+    }
+
+    /**
+     * Binds the shared ICE port once and lets it go again, so a taken port fails the bind before
+     * doBind returns, as Netty needs; the engine opens the port later, on its own thread, and
+     * checks it again then. A plain socket bind, which waits on nothing. Port 0 picks a free port.
+     */
+    private static int probeUdpPort(InetSocketAddress address) throws IOException {
+        InetAddress host = address.getAddress();
+        // Where the engine binds: every address for the wildcard, else the one address.
+        InetSocketAddress probed = host == null || host.isAnyLocalAddress()
+                ? new InetSocketAddress(address.getPort()) : address;
+        try (DatagramSocket probe = new DatagramSocket(null)) {
+            probe.setReuseAddress(false);
+            probe.bind(probed);
+            return probe.getLocalPort();
+        }
+    }
+
+    /** The shared ICE port opened, or failed to, after bind returned. Event loop. */
+    private void opened(BindPlan plan, IceEndpoint endpoint, Throwable failure) {
+        if (!open) {
+            // doClose closes the port, now that it opened.
+            return;
+        }
+        if (failure != null) {
+            Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                    ? failure.getCause() : failure;
+            log.error("The NetherNet endpoint at {} could not open its ICE port, closing it: {}", localAddress,
+                    cause.toString());
+            close();
+            return;
+        }
+        try {
+            ready(plan, endpoint);
+        } catch (RuntimeException e) {
+            log.error("The NetherNet endpoint at {} could not set up its ICE port, closing it: {}", localAddress,
+                    e.toString());
+            close();
+        }
+    }
+
+    /** The ICE port is open, if it is shared: the endpoint takes joins from now on. Event loop. */
+    private void ready(BindPlan plan, IceEndpoint endpoint) {
+        if (endpoint != null && !plan.relays().isEmpty()) {
+            endpoint.proxyRelays(plan.relays());
+        }
+        // NXS stateless joins are no join source: they arrive at the shared port, as checks it holds
+        // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
+        this.bound = new Bound(plan.answers(), endpoint, plan.advertised(), plan.offerCheck(), checkExecutors.get());
+        log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
+                endpoint != null ? "shared ICE port" : "ICE ports per session",
+                plan.answers().identity().fingerprint());
 
         List<Registration> toStart;
         synchronized (sourcesLock) {
@@ -329,27 +417,6 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             toStart = List.copyOf(sources.values());
         }
         toStart.forEach(Registration::start);
-    }
-
-    /**
-     * A free UDP port for a bind that asked for any. The engine binds the shared port lazily, so it
-     * needs a fixed one; it checks again that the port is free before the bind succeeds.
-     */
-    private static int freeUdpPort(InetSocketAddress address) throws IOException {
-        try (DatagramSocket probe = new DatagramSocket(new InetSocketAddress(address.getAddress(), 0))) {
-            return probe.getLocalPort();
-        }
-    }
-
-    private static <T> T await(CompletionStage<T> stage) throws Exception {
-        try {
-            return stage.toCompletableFuture().get(ENDPOINT_OPEN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (ExecutionException e) {
-            if (e.getCause() instanceof Exception cause) {
-                throw cause;
-            }
-            throw e;
-        }
     }
 
     @Override
@@ -379,12 +446,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if (settings != null) {
             settings.checkExecutor().shutdownNow();
         }
-        // The shared port closes once no peer uses it anymore, then an owned engine releases its
-        // threads; a shared engine stays with its owner.
-        IceEndpoint iceEndpoint = settings == null ? null : settings.iceEndpoint();
+        // The shared port closes once no peer uses it anymore, also when it is still opening, then
+        // an owned engine releases its threads; a shared engine stays with its owner.
+        CompletionStage<IceEndpoint> port = iceEndpoint;
         CompletableFuture.allOf(terminations.toArray(CompletableFuture[]::new))
-                .thenCompose(ignored -> iceEndpoint == null ? CompletableFuture.completedFuture(null)
-                        : iceEndpoint.close())
+                .thenCompose(ignored -> port == null ? CompletableFuture.<IceEndpoint>completedFuture(null)
+                        : port.handle((endpoint, failure) -> endpoint))
+                .thenCompose(endpoint -> endpoint == null ? CompletableFuture.<Void>completedFuture(null)
+                        : endpoint.close())
                 .whenComplete((ignored, failure) -> engine.release());
     }
 

@@ -267,7 +267,8 @@ class NetherNetServerAdmissionTest {
         reply.assertRefused(JoinRefusal.CAPACITY);
         assertEquals(1, reply.finished.get());
         assertTrue(queued.isCancelled(), "the check is withdrawn");
-        assertEquals(List.of(FakeJoinSource.CLIENT), throttle.closed, "a throttle another endpoint reuses keeps no count");
+        assertEquals(List.of(FakeJoinSource.CLIENT), throttle.closed,
+                "a throttle another endpoint reuses keeps no count");
         assertEquals(0, gate.pending());
         assertEquals(0, gate.sessions());
     }

@@ -5,12 +5,16 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOp
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -22,9 +26,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.net.BindException;
+import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -94,6 +103,68 @@ class NetherNetServerChannelTest {
         assertEquals(2, harness.engine.peers().size());
         assertEquals(0, harness.engine.closeCalls());
         harness.server = null;
+    }
+
+    @Test
+    void bindingDoesNotWaitForTheIcePortToOpen() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        try {
+            FakeJoinSource source = new FakeJoinSource(true);
+            server.addSource(source, EndpointHarness.ADMIT_ALL);
+            harness.sync();
+            assertTrue(server.isActive());
+            assertEquals(0, source.starts.get(), "sources start once the port is open");
+
+            engine.open.complete(null);
+            harness.sync();
+            assertEquals(1, source.starts.get());
+            source.offer(1, OFFER);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (engine.fake.peers().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertSame(engine.opened.getFirst(), engine.fake.peer(0).config().endpoint());
+        } finally {
+            server.close().sync();
+        }
+    }
+
+    @Test
+    void aTakenIcePortFailsTheBind() throws Exception {
+        try (DatagramSocket taken = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
+                    .awaitUninterruptibly();
+            assertInstanceOf(BindException.class, bind.cause());
+            assertFalse(bind.channel().isOpen());
+        }
+    }
+
+    @Test
+    void anIcePortThatFailsToOpenAfterBindClosesTheEndpoint() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        Channel server = bootstrap(EngineRef.shared(engine)).bind(new InetSocketAddress("127.0.0.1", 0)).sync()
+                .channel();
+
+        engine.open.completeExceptionally(new BindException("taken after the probe"));
+
+        assertTrue(server.closeFuture().await(2, TimeUnit.SECONDS));
+        assertEquals(0, engine.fake.closeCalls(), "a shared engine stays with its owner");
+    }
+
+    @Test
+    void anIcePortThatOpensAfterTheEndpointClosedIsClosed() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        ChannelFuture bind = bootstrap(EngineRef.shared(engine)).bind(new InetSocketAddress("127.0.0.1", 0))
+                .awaitUninterruptibly();
+        bind.channel().close().sync();
+
+        engine.open.complete(null);
+        harness.sync();
+
+        assertEquals(1, engine.opened.size());
+        assertTrue(engine.opened.getFirst().closed(), "the endpoint owned the port while it was opening");
     }
 
     @Test
@@ -332,11 +403,41 @@ class NetherNetServerChannelTest {
     }
 
     private ServerBootstrap owned(Supplier<? extends NetherNetEngine> engines) {
+        return bootstrap(EngineRef.owned(engines));
+    }
+
+    /** An endpoint on the harness's event loop that checks no issuer. */
+    private ServerBootstrap bootstrap(EngineRef engine) {
         return new ServerBootstrap()
                 .group(harness.group)
-                .channelFactory(() -> new NetherNetServerChannel(EngineRef.owned(engines), OfferCheck::newExecutor))
+                .channelFactory(() -> new NetherNetServerChannel(engine, OfferCheck::newExecutor))
                 .option(NetherChannelOption.NETHER_SERVER_IDENTITY, EndpointHarness.IDENTITY)
                 .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, new OfferCheck(List.of()))
                 .childHandler(new ChannelInboundHandlerAdapter());
+    }
+
+    /** The fake engine, with shared ICE ports that open only once the test completes {@link #open}. */
+    private static final class HeldEndpointEngine implements NetherNetEngine {
+        final FakeEngine fake = new FakeEngine();
+        final CompletableFuture<Void> open = new CompletableFuture<>();
+        final List<FakeIceEndpoint> opened = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Peer createPeer(PeerConfig config, PeerListener listener) {
+            return fake.createPeer(config, listener);
+        }
+
+        @Override
+        public CompletionStage<IceEndpoint> openEndpoint(EndpointConfig config) {
+            return open.thenCompose(ignored -> fake.openEndpoint(config)).thenApply(endpoint -> {
+                opened.add((FakeIceEndpoint) endpoint);
+                return endpoint;
+            });
+        }
+
+        @Override
+        public CompletionStage<Void> close() {
+            return fake.close();
+        }
     }
 }
