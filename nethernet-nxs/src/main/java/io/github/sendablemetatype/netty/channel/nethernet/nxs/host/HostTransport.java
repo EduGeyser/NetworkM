@@ -622,8 +622,10 @@ public final class HostTransport implements ProviderTransport {
                 return false;
             }
         });
-        TicketLedger.Reservation reservation = ledger.reserveAuthenticated(admission, null, millis.getAsLong(),
-                nanos.getAsLong());
+        // A provider may hand over a ufrag the stateless path admits, valid for longer than the join
+        long tokenExpiresAt = validator.expiry(join.localUfrag(), admission.remoteUfrag());
+        TicketLedger.Reservation reservation = ledger.reserveAuthenticated(admission, null, tokenExpiresAt,
+                millis.getAsLong(), nanos.getAsLong());
         if (reservation == null) {
             throw new IllegalStateException("The assisted join was refused: replayed, or no room for its record");
         }

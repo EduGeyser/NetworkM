@@ -28,6 +28,10 @@ import java.util.*;
  * new admissions are refused rather than old records evicted. A reservation ends only by {@link #finish}, once the
  * peer's resources are gone.
  *
+ * <p>A record is kept by the ticket's token, the host's ICE ufrag, whichever way the ticket came in: an assisted
+ * join's ufrag is itself an {@code NXS1} token, which the stateless path would otherwise admit again once the
+ * assisted session ended.
+ *
  * <p>The ledger holds no capacity of its own: sessions and pending handshakes are the NetherNet endpoint's one budget
  * for every join source (ruling A-2), which each admitted ticket passes after the ledger. The used-ticket records
  * are bounded here, since only NXS has them.
@@ -61,16 +65,20 @@ public final class TicketLedger {
     public static final class Reservation {
         private AdmissionContext admission;
         private final TicketId ticketId;
+        /** The key of the used-ticket record: the token's ticket ID, which for a stateless ticket is its ID. */
+        private final TicketId token;
         private final InetSocketAddress tuple;
-        private final long expiresAt, acceptedNanos, loginDeadlineNanos;
+        private final long recordUntil, acceptedNanos, loginDeadlineNanos;
         private final IdentityKeyVerifier verifier;
         private boolean ready, connected, closing, closed;
 
-        private Reservation(AdmissionContext admission, InetSocketAddress tuple, long millis, long nanos) {
+        private Reservation(AdmissionContext admission, TicketId token, InetSocketAddress tuple, long recordUntil,
+                            long millis, long nanos) {
             this.admission = admission;
             this.ticketId = admission.ticketId();
+            this.token = token;
             this.tuple = tuple;
-            this.expiresAt = admission.expiresAt();
+            this.recordUntil = recordUntil;
             this.acceptedNanos = nanos;
             this.loginDeadlineNanos = nanos + (admission.expiresAt() - millis) * 1_000_000L;
             this.verifier = new LoginVerifier(admission.loginBinding());
@@ -132,24 +140,28 @@ public final class TicketLedger {
             invalid++;
             return null;
         }
-        return reserveAuthenticated(verified, request.address(), nowMillis, nowNanos);
+        return reserveAuthenticated(verified, request.address(), verified.expiresAt(), nowMillis, nowNanos);
     }
 
     /**
      * Reserves a join authenticated some other way, such as an assisted join over the provider's WebSocket. Releases
      * the admission's login binding when it refuses.
      *
-     * @param address The source tuple the ticket holds; null for an assisted join, which only knows the candidates
-     *                the client claims, so it is kept by its ticket alone (area 9, finding F4)
+     * @param address        The source tuple the ticket holds; null for an assisted join, which only knows the
+     *                       candidates the client claims, so it is kept by its ticket alone (area 9, finding F4)
+     * @param tokenExpiresAt When the admission's token expires if that is later than the admission itself, as for an
+     *                       assisted join whose ufrag is a token that outlives the join; 0 when unknown. The record
+     *                       stays until both passed.
      */
     public synchronized Reservation reserveAuthenticated(AdmissionContext admission, InetSocketAddress address,
-                                                         long nowMillis, long nowNanos) {
+                                                         long tokenExpiresAt, long nowMillis, long nowNanos) {
         if (closed || admission.networkId().matches("0+") || admission.expiresAt() <= nowMillis) {
             invalid++;
             admission.loginBinding().release();
             return null;
         }
-        if (claims.containsKey(admission.ticketId()) || (address != null && tuples.containsKey(address))) {
+        TicketId token = TicketId.ofToken(admission.localUfrag());
+        if (claims.containsKey(token) || (address != null && tuples.containsKey(address))) {
             replayRejected++;
             admission.loginBinding().release();
             return null;
@@ -159,8 +171,9 @@ public final class TicketLedger {
             admission.loginBinding().release();
             return null;
         }
-        Reservation reservation = new Reservation(admission, address, nowMillis, nowNanos);
-        claims.put(reservation.ticketId, reservation);
+        Reservation reservation = new Reservation(admission, token, address,
+                Math.max(admission.expiresAt(), tokenExpiresAt), nowMillis, nowNanos);
+        claims.put(token, reservation);
         if (address != null) {
             tuples.put(address, reservation);
         }
@@ -220,13 +233,13 @@ public final class TicketLedger {
         reservation.admission = null;
         // A copied ticket with forged STUN integrity must not consume the real client's ticket
         if (!reservation.ready || closed) {
-            claims.remove(reservation.ticketId);
+            claims.remove(reservation.token);
         }
         return true;
     }
 
     private boolean current(Reservation reservation) {
-        return !reservation.closed && claims.get(reservation.ticketId) == reservation;
+        return !reservation.closed && claims.get(reservation.token) == reservation;
     }
 
     /**
@@ -249,7 +262,7 @@ public final class TicketLedger {
                 timedOut.add(reservation);
             }
         }
-        claims.values().removeIf(reservation -> reservation.closed && reservation.expiresAt <= nowMillis);
+        claims.values().removeIf(reservation -> reservation.closed && reservation.recordUntil <= nowMillis);
         return timedOut;
     }
 

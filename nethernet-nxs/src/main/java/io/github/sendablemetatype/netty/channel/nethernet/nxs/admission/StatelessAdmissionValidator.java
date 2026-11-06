@@ -301,6 +301,29 @@ public final class StatelessAdmissionValidator implements AdmissionValidator {
         }
     }
 
+    /**
+     * When a token expires, as the installed key it names reads it, without the checks admission applies. For a token
+     * that reached this host another way, such as an assisted join's ufrag: its used-ticket record must last as long
+     * as {@link #validate} could still admit it.
+     *
+     * @param clientUfrag The client's ICE ufrag the token is bound to
+     * @return Epoch milliseconds, or 0 when no installed key opens the token for this client ufrag
+     */
+    public synchronized long expiry(String token, String clientUfrag) {
+        if (token.length() < 8 || !token.startsWith(TOKEN_PREFIX)) {
+            return 0;
+        }
+        Material key = keys.get(token.substring(4, 8));
+        if (key == null) {
+            return 0;
+        }
+        try {
+            return StatelessAdmissionCodec.open(key.encryption, audience, token, clientUfrag).expiresAt();
+        } catch (RuntimeException unreadable) {
+            return 0;
+        }
+    }
+
     private static byte[] utf8(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }

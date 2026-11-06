@@ -5,6 +5,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
@@ -240,6 +241,30 @@ class HostTransportTest {
     }
 
     @Test
+    void aTokenAnAssistedJoinUsedIsNotAdmittedAgainStatelessly() throws Exception {
+        fixture.start(new HostTransport.Settings(HostTransport.Publication.MAINTAINED, List.of(), false, true, false,
+                TicketLedger.Limits.defaults()));
+        fixture.installKey();
+        // The provider hands the host a real token as the assisted ufrag, which the client learns from the answer
+        StatelessAdmissionCodec.Credentials ticket = fixture.mint(30);
+        answerAssistedWith(ticket.localUfrag(), ticket.icePwd());
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
+        fixture.transport.assistedJoin(assistedJoin(fixture.transport.incarnation(), ticket.localUfrag(),
+                ticket.icePwd()), deadline, OwnershipGuard.ALWAYS).toCompletableFuture().get(5, TimeUnit.SECONDS);
+        FakePeer peer = fixture.lastPeer();
+        fixture.child();
+        peer.closed(CloseCause.REMOTE_CLOSED);
+        await(() -> fixture.transport.ledgerStats().sessions() == 0, "the assisted session to end");
+        // Past the join's own deadline, well before the token's
+        TimeUnit.NANOSECONDS.sleep(Math.max(0, deadline - System.nanoTime()) + TimeUnit.MILLISECONDS.toNanos(300));
+
+        HostFixture.Check replay = fixture.hold(ticket.localUfrag(), new InetSocketAddress("203.0.113.70", 50010));
+        replay.rejected.get(5, TimeUnit.SECONDS);
+        assertEquals(1, fixture.transport.ledgerStats().replayRejected());
+        assertEquals(1, fixture.answerers().size(), "the token got no second peer");
+    }
+
+    @Test
     void anAssistedJoinForAnotherIncarnationIsRefused() throws Exception {
         fixture.start(new HostTransport.Settings(HostTransport.Publication.MAINTAINED, List.of(), false, true, false,
                 TicketLedger.Limits.defaults()));
@@ -257,6 +282,26 @@ class HostTransportTest {
     }
 
     private AssistedJoin assistedJoin(String incarnation) {
+        return assistedJoin(incarnation, "NXS1K001assisted", "assistedpassword0123456789");
+    }
+
+    /** Lets assisted peers answer with these credentials, through a STUN mapping of the gameplay port. */
+    private void answerAssistedWith(String ufrag, String password) throws Exception {
+        String hostAnswer = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
+                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n"
+                + "a=ice-ufrag:" + ufrag + "\r\na=ice-pwd:" + password + "\r\n"
+                + "a=fingerprint:" + fixture.identity.fingerprint().value() + "\r\na=setup:active\r\na=mid:0\r\n"
+                + "a=sctp-port:5000\r\na=max-message-size:262144\r\n";
+        fixture.engine.answerWith(hostAnswer);
+        fixture.engine.gatherWith(hostAnswer + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
+                + "a=end-of-candidates\r\n");
+        InetSocketAddress stun = new InetSocketAddress("192.0.2.7", 3478);
+        fixture.transport.configureStunServers(List.of(new StunServer("192.0.2.7", 3478))).toCompletableFuture()
+                .get(5, TimeUnit.SECONDS);
+        fixture.endpoint.mapStun(stun, new InetSocketAddress("93.184.216.40", fixture.endpoint.port()));
+    }
+
+    private AssistedJoin assistedJoin(String incarnation, String localUfrag, String localPassword) {
         String offer = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
                 + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n"
                 + "a=ice-ufrag:clnt\r\na=ice-pwd:clientpassword0123456789\r\n"
@@ -266,7 +311,7 @@ class HostTransportTest {
         return new AssistedJoin("0123456789abcdef0123456789abcdef", "instance", 1, incarnation, HostFixture.KEY_ID,
                 fixture.identity.fingerprint(), System.currentTimeMillis() + 20_000, "42",
                 Base64.getEncoder().encodeToString(IdentityPublicKey.canonical(fixture.clientKey.getPublic())),
-                "NXS1K001assisted", "assistedpassword0123456789", offer);
+                localUfrag, localPassword, offer);
     }
 
     private static boolean isCurrent(OwnershipGuard guard) {

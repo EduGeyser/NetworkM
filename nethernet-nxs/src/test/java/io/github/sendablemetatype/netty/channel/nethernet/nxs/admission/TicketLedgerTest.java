@@ -217,8 +217,8 @@ class TicketLedgerTest extends AdmissionFixture {
         // An assisted join knows only the candidates the client claims, which must not block a tuple
         var gate = gate();
         var assisted = validator().validate(request(), now);
-        assertNotNull(gate.reserveAuthenticated(assisted, null, now, 0));
-        assertNull(gate.reserveAuthenticated(validator().validate(request(), now), null, now, 0),
+        assertNotNull(gate.reserveAuthenticated(assisted, null, 0, now, 0));
+        assertNull(gate.reserveAuthenticated(validator().validate(request(), now), null, 0, now, 0),
                 "the same ticket twice is a replay");
 
         assertNotNull(gate.reserve(request(anotherToken(), remote), now, 0),
