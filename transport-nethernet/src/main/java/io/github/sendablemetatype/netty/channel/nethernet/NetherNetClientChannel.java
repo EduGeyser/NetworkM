@@ -613,8 +613,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     @Override
     void followPath(TransportPath path) {
         InetSocketAddress remote = path.remote();
-        media = new SourcedAddress(remote, path.remoteType() == TransportPath.CandidateType.RELAY
-                ? AddressSource.TURN : AddressSource.ICE, null);
+        media = SourcedAddress.selectedPair(remote, candidateType(path.remoteType()), false, null);
         if (remoteAddress instanceof InetSocketAddress && !remote.equals(remoteAddress)) {
             remoteAddress = remote;
         }
