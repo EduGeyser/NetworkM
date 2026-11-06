@@ -28,6 +28,13 @@ import java.net.InetSocketAddress;
  */
 public interface NetherServerMetrics {
 
+    /**
+     * A join became a child channel.
+     *
+     * @param networkId the remote peer's network ID from signaling
+     * @param verifiedIdentity whether a trusted issuer attested the offer's
+     *        token; false for a proven key with a self-signed token
+     */
     default void connectionAccepted(String networkId, boolean verifiedIdentity) {
     }
 
