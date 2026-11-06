@@ -97,10 +97,10 @@ public final class ClientIdentity {
      *
      * @param offerSdp the offer without an identity line
      * @return the offer with the identity inserted, line endings kept
-     * @throws JoseException            if signing fails
+     * @throws GeneralSecurityException if the key cannot sign
      * @throws IllegalArgumentException if the offer has no well-formed fingerprint line
      */
-    public String withAssertion(String offerSdp) throws JoseException {
+    public String withAssertion(String offerSdp) throws GeneralSecurityException {
         return signer.withAssertion(offerSdp, token, idpDomain);
     }
 }

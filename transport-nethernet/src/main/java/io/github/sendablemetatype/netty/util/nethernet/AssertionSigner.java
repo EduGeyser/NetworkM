@@ -39,6 +39,7 @@ final class AssertionSigner {
 
     private final PrivateKey privateKey;
     private final ECPublicKey publicKey;
+    private final String owner;
 
     /**
      * @param pair  the key pair
@@ -49,17 +50,20 @@ final class AssertionSigner {
     AssertionSigner(KeyPair pair, String owner) throws GeneralSecurityException {
         this.privateKey = pair.getPrivate();
         this.publicKey = IdentityPublicKey.fromCanonical(IdentityPublicKey.canonical(pair.getPublic()));
+        this.owner = owner;
         // A private key that does not belong to the public key signs assertions no peer accepts,
         // which players only see as "not invited"; fail at startup instead.
+        boolean matches;
         try {
             JsonWebSignature check = new JsonWebSignature();
             check.setCompactSerialization(sign("{}"));
             check.setKey(publicKey);
-            if (!check.verifySignature()) {
-                throw new InvalidKeyException("The " + owner + "'s private and public keys do not match");
-            }
+            matches = check.verifySignature();
         } catch (JoseException e) {
-            throw new GeneralSecurityException("Cannot sign with the " + owner + "'s key", e);
+            throw signingFailed(e);
+        }
+        if (!matches) {
+            throw new InvalidKeyException("The " + owner + "'s private and public keys do not match");
         }
     }
 
@@ -68,13 +72,32 @@ final class AssertionSigner {
         return publicKey;
     }
 
-    /** @return the compact ES384 JWS of the payload */
-    String sign(String payload) throws JoseException {
+    /**
+     * @return the compact ES384 JWS of the payload
+     * @throws GeneralSecurityException if the key cannot sign
+     */
+    String sign(String payload) throws GeneralSecurityException {
         JsonWebSignature jws = new JsonWebSignature();
         jws.setPayload(payload);
         jws.setKey(privateKey);
         jws.setAlgorithmHeaderValue(ALG);
-        return jws.getCompactSerialization();
+        try {
+            return jws.getCompactSerialization();
+        } catch (JoseException e) {
+            throw signingFailed(e);
+        }
+    }
+
+    /**
+     * jose4j stays an implementation detail: its exception is not passed on, only the JCA failure
+     * under it, which names no token contents.
+     */
+    private GeneralSecurityException signingFailed(JoseException e) {
+        GeneralSecurityException failure = new GeneralSecurityException("Cannot sign with the " + owner + "'s key");
+        if (e.getCause() instanceof GeneralSecurityException cause) {
+            failure.initCause(cause);
+        }
+        return failure;
     }
 
     /**
@@ -86,9 +109,10 @@ final class AssertionSigner {
      * @param token     the token naming this key in its {@code cpk} claim
      * @param idpDomain the envelope's {@code idp.domain}
      * @return the description with the identity inserted, line endings kept
+     * @throws GeneralSecurityException if the key cannot sign
      * @throws IllegalArgumentException if the description has no well-formed fingerprint line
      */
-    String withAssertion(String sdp, String token, String idpDomain) throws JoseException {
+    String withAssertion(String sdp, String token, String idpDomain) throws GeneralSecurityException {
         String[] signed = sign(OfferAssertion.localFingerprintJson(sdp)).split("\\.");
         Identity.Assertion assertion = new Identity.Assertion(token, signed[0] + ".." + signed[2]);
         String line = "a=identity:" + new Identity(new Identity.Idp(idpDomain, "default"), assertion).toBase64();

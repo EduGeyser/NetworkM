@@ -19,7 +19,6 @@ import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.jose4j.lang.JoseException;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -28,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
@@ -365,7 +365,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             String signed;
             try {
                 signed = signed(offer);
-            } catch (JoseException | IllegalArgumentException e) {
+            } catch (GeneralSecurityException | IllegalArgumentException e) {
                 failHandshake(gen, "Could not sign the offer with the client identity", e);
                 return;
             }
@@ -392,7 +392,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     }
 
     /** The offer with the configured identity's assertion, or as it is without one. */
-    private String signed(String offer) throws JoseException {
+    private String signed(String offer) throws GeneralSecurityException {
         ClientIdentity identity = clientConfig.getIdentity();
         return identity == null ? offer : identity.withAssertion(offer);
     }
