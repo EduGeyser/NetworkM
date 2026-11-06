@@ -33,6 +33,11 @@ final class HttpConnection {
         channel.closeFuture().addListener(future -> release());
     }
 
+    /** The client: the one a trusted proxy declared in its PROXY header, else the connection's peer. */
+    InetSocketAddress client() {
+        return proxyDeclared != null ? proxyDeclared : (InetSocketAddress) channel.remoteAddress();
+    }
+
     /**
      * Counts this connection against the client it now serves. A connection counts under one
      * address at a time: when a proxy sends another client's request on it, the count moves to

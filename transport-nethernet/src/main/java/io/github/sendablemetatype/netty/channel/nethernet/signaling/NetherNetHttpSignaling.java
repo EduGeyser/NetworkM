@@ -21,6 +21,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMet
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusProvider;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsContextSelector;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsHandshakeFailure;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -85,7 +86,8 @@ import java.util.function.Supplier;
  * <p>TLS and plain HTTP share the port: each connection's first bytes say which it is. A TLS
  * connection asks the {@link TlsContextSelector} with the server name it requested; null closes
  * it, which clients read as TLS refused. With {@code requiresTls}, plain HTTP is always answered
- * {@code 426}, also while no certificate is available.
+ * {@code 426}, also while no certificate is available. A handshake that starts and fails, as when a
+ * client rejects the certificate, goes to the {@link Builder#tlsHandshakeFailures listener}.
  *
  * <p>Behind proxies, configure {@link TrustedProxies}: a PROXY protocol header (v1 or v2) from a
  * trusted PROXY proxy wins over {@code X-Forwarded-For} from a trusted forwarder; nobody else can
@@ -132,6 +134,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
     private final HttpStatusService statusService;
     private final ExecutorService ownedStatusExecutor;
     private final NetherServerMetrics metrics;
+    private final Consumer<? super TlsHandshakeFailure> tlsHandshakeFailures;
 
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
@@ -157,6 +160,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         this.maxRequestBodyBytes = builder.maxRequestBodyBytes;
         this.limits = new HttpConnectionLimits(builder.maxConnections, builder.maxConnectionsPerAddress);
         this.metrics = builder.metrics;
+        this.tlsHandshakeFailures = builder.tlsHandshakeFailures;
         if (builder.statusProvider == null) {
             this.ownedStatusExecutor = null;
             this.statusService = null;
@@ -408,8 +412,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
 
     /** A request on this connection did not arrive whole within its deadline. */
     void requestTimedOut(HttpConnection connection) {
-        InetSocketAddress client = connection.proxyDeclared != null ? connection.proxyDeclared
-                : (InetSocketAddress) connection.channel.remoteAddress();
+        InetSocketAddress client = connection.client();
         metrics(metrics -> metrics.requestTimedOut(client));
     }
 
@@ -450,6 +453,18 @@ public final class NetherNetHttpSignaling implements JoinSource {
                     + "plain HTTP: these clients get no NetherNet signaling at all", serverName, reason);
         } else {
             log.debug("Refused TLS signaling for server name {}: {}", serverName, reason);
+        }
+    }
+
+    /** A TLS handshake on this connection started and failed. On the connection's loop. */
+    void tlsHandshakeFailed(HttpConnection connection, String serverName, Throwable cause) {
+        if (tlsHandshakeFailures == null) {
+            return;
+        }
+        try {
+            tlsHandshakeFailures.accept(new TlsHandshakeFailure(connection.client(), serverName, cause));
+        } catch (RuntimeException e) {
+            log.debug("The TLS handshake failure listener failed", e);
         }
     }
 
@@ -543,6 +558,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         private int maxConnectionsPerAddress = DEFAULT_MAX_CONNECTIONS_PER_ADDRESS;
         private int maxRequestBodyBytes = DEFAULT_MAX_REQUEST_BODY_BYTES;
         private NetherServerMetrics metrics;
+        private Consumer<? super TlsHandshakeFailure> tlsHandshakeFailures;
 
         private Builder(EventLoopGroup workerGroup) {
             this.workerGroup = Objects.requireNonNull(workerGroup, "workerGroup");
@@ -558,6 +574,20 @@ public final class NetherNetHttpSignaling implements JoinSource {
          */
         public Builder tls(TlsContextSelector selector) {
             this.tlsSelector = selector;
+            return this;
+        }
+
+        /**
+         * Tells the listener about every TLS handshake that started and failed, with the client's
+         * address after PROXY protocol, if any. Runs on the connection's I/O thread and must not
+         * block. Anyone can fail handshakes at will, so a listener that logs should limit itself. A
+         * listener that throws is logged at debug and ignored.
+         *
+         * @param listener the listener, or null (the default) for none
+         * @return this builder
+         */
+        public Builder tlsHandshakeFailures(Consumer<? super TlsHandshakeFailure> listener) {
+            this.tlsHandshakeFailures = listener;
             return this;
         }
 
