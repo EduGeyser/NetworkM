@@ -53,11 +53,11 @@ tasks.jar {
 }
 
 // The fake engine and the other test helpers, for the tests of modules built on this one. Never published.
-val testJar by tasks.registering(Jar::class) {
+val testJar = tasks.register<Jar>("testJar") {
     archiveClassifier.set("tests")
     from(sourceSets.test.get().output)
 }
-val testHelpers by configurations.creating {
+val testHelpers = configurations.create("testHelpers") {
     isCanBeConsumed = true
     isCanBeResolved = false
 }
