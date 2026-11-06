@@ -37,6 +37,7 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -366,7 +367,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
     }
 
     /** Completes once the Netty future is done, whatever its outcome. */
-    private static CompletableFuture<Void> whenDone(io.netty.util.concurrent.Future<?> future) {
+    private static CompletableFuture<Void> whenDone(Future<?> future) {
         CompletableFuture<Void> done = new CompletableFuture<>();
         future.addListener(ignored -> done.complete(null));
         return done;
