@@ -158,6 +158,19 @@ public final class AnswerCandidates {
     }
 
     /**
+     * Sets each m-section's {@code m=} port and {@code c=} address from the candidates the
+     * description now announces, as {@link #fullAnswer} does after its rewrite, for a caller that
+     * replaced the candidates itself: the engine set both from what it gathered, so they would
+     * keep naming a candidate the description no longer announces.
+     *
+     * @param sdp The description
+     * @return The description, each line ended by CRLF and blank lines removed
+     */
+    public static String withConnectionAddresses(String sdp) {
+        return SdpText.join(withConnectionAddresses(SdpText.lines(sdp)));
+    }
+
+    /**
      * Sets each m-section's {@code m=} port and {@code c=} address from its candidates as
      * libwebrtc does ({@code UpdateConnectionAddress} in {@code api/jsep.cc}): component 1 UDP
      * candidates only, relayed over reflexive over host within a family, the first of equals,

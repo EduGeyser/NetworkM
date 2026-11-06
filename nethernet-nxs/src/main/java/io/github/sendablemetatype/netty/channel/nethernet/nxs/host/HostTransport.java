@@ -102,7 +102,7 @@ import java.util.function.LongSupplier;
  * peer answers the offer the token implies with the token as its ufrag and the derived password.</li>
  * <li><b>Assisted joins.</b> A join the provider pushes is delivered the same way, with the provider's offer and
  * credentials; its answer goes back through the provider's control socket, cut to one candidate on the gameplay port
- * as upstream builds it.</li>
+ * as upstream builds it, with {@code m=} and {@code c=} naming that candidate.</li>
  * <li><b>Profile.</b> It publishes the shared port's candidates (configured, local, or maintained with STUN through
  * the provider's servers), the one DTLS identity every NXS peer presents, and the admission parameters.</li>
  * </ul>

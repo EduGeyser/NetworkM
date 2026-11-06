@@ -16,6 +16,8 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.transport;
 
+import io.github.sendablemetatype.netty.channel.nethernet.ice.AnswerCandidates;
+
 import java.net.InetSocketAddress;
 import java.security.GeneralSecurityException;
 
@@ -41,7 +43,9 @@ public record AssistedAnswer(String sdp) {
 
     /**
      * Builds the answer for a peer created on the gameplay port: the peer's local description with its gathered
-     * candidates replaced by the one public endpoint gathered for this join, then signed.
+     * candidates replaced by the one public endpoint gathered for this join, then signed. The {@code m=} port and
+     * {@code c=} address follow that one candidate. Upstream keeps the engine's, which libwebrtc sets from the
+     * gathered candidates, so the answer would still name a private address and port it no longer announces.
      *
      * @param localDescription The answering peer's local description
      * @param candidate        The endpoint the client should check, on the gameplay port
@@ -49,13 +53,13 @@ public record AssistedAnswer(String sdp) {
      */
     public static AssistedAnswer build(String localDescription, InetSocketAddress candidate, CandidateType type,
                                        AnswerSigner signer) throws GeneralSecurityException {
-        String answer = String.join("\r\n", localDescription.lines()
+        String answer = AnswerCandidates.withConnectionAddresses(String.join("\r\n", localDescription.lines()
                 .filter(line -> !line.startsWith("a=candidate:")
                         && !line.startsWith("a=remote-candidates:")
                         && !line.equals("a=end-of-candidates"))
                 .toList())
                 + "\r\na=candidate:1 1 UDP 2130706431 " + candidate.getAddress().getHostAddress()
-                + " " + candidate.getPort() + " typ " + type.wire() + "\r\na=end-of-candidates\r\n";
+                + " " + candidate.getPort() + " typ " + type.wire() + "\r\na=end-of-candidates\r\n");
         return new AssistedAnswer(signer == null ? answer : signer.sign(answer));
     }
 
