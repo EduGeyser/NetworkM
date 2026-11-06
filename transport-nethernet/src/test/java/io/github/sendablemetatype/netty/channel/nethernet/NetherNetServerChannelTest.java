@@ -15,6 +15,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -25,6 +26,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.BindException;
 import java.net.DatagramSocket;
@@ -137,8 +140,10 @@ class NetherNetServerChannelTest {
             ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
                     .awaitUninterruptibly();
             assertInstanceOf(BindException.class, bind.cause());
-            // The bootstrap closes a channel whose bind failed from a listener on the event loop
-            assertTrue(bind.channel().closeFuture().await(2, TimeUnit.SECONDS));
+            // Netty closes a channel whose bind failed from a listener, which can run after the
+            // bind future woke this thread.
+            assertTrue(bind.channel().closeFuture().awaitUninterruptibly(2, TimeUnit.SECONDS),
+                    "the channel closes after its bind failed");
         }
     }
 
@@ -286,9 +291,11 @@ class NetherNetServerChannelTest {
         assertTrue(reply.answer().contains("a=identity:"));
         assertEquals("candidate candidate:1 1 udp 1 192.0.2.1 5000 typ host", reply.next(),
                 "local candidates follow the answer");
+        assertEquals(0, reply.connected.get());
 
         harness.activate(peer);
         assertTrue(child.isActive());
+        assertEquals(1, reply.connected.get(), "the source learns the join went active");
     }
 
     @Test
@@ -303,6 +310,35 @@ class NetherNetServerChannelTest {
         reply.assertRefused(JoinRefusal.INTERNAL);
         assertEquals(List.of(), reply.drain());
         assertEquals(1, peer.closeCalls());
+        assertEquals(1, reply.finished.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void anOfferTheEngineRefusesIsABadOffer(boolean closedFirst) throws Exception {
+        List<Integer> refused = new CopyOnWriteArrayList<>();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_METRICS, new NetherServerMetrics() {
+            @Override
+            public void joinRefused(int httpStatus) {
+                refused.add(httpStatus);
+            }
+        });
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer("4", OFFER);
+        FakePeer peer = harness.negotiating();
+        if (closedFirst) {
+            peer.closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
+        }
+        peer.failAnswer(new RemoteDescriptionRejectedException("SetRemoteDescription failed: no data channel"));
+        if (!closedFirst) {
+            harness.sync();
+            peer.closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
+        }
+        harness.sync();
+
+        reply.assertRefused(JoinRefusal.BAD_OFFER);
+        assertEquals(List.of(), reply.drain());
+        assertEquals(List.of(400), refused, "a refusal after the child exists is reported too");
         assertEquals(1, reply.finished.get());
     }
 

@@ -96,6 +96,7 @@ final class FakeJoinSource implements JoinSource {
         private Consumer<RemoteSignal> handler;
         final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         final AtomicInteger finished = new AtomicInteger();
+        final AtomicInteger connected = new AtomicInteger();
 
         Reply(boolean trickles) {
             this.trickles = trickles;
@@ -142,6 +143,11 @@ final class FakeJoinSource implements JoinSource {
         @Override
         public void finished() {
             finished.incrementAndGet();
+        }
+
+        @Override
+        public void connected() {
+            connected.incrementAndGet();
         }
 
         /** The client sends a signal for this join. */

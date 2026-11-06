@@ -41,6 +41,7 @@ final class HttpSourceCounter extends ChannelInboundHandlerAdapter {
             if (!connection.countAddress(source.address().getAddress())) {
                 NetherNetHttpSignaling.log.debug("Refused a signaling connection for {}: its address holds its share",
                         source);
+                signaling.addressRefused(source.address());
                 refused = true;
                 ReferenceCountUtil.release(msg);
                 ctx.close();

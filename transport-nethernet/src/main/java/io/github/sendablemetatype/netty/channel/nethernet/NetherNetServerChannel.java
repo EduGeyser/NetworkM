@@ -6,6 +6,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherServerChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerJoinFilter;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerThrottle;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
@@ -62,6 +63,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -82,10 +84,12 @@ import java.util.function.Supplier;
  * budget for sessions and pending handshakes shared by all sources
  * ({@link NetherChannelOption#NETHER_SERVER_MAX_SESSIONS},
  * {@link NetherChannelOption#NETHER_SERVER_MAX_PENDING_JOINS}), and the offer's identity check
- * ({@link NetherChannelOption#NETHER_SERVER_OFFER_CHECK}) under the source's {@link OfferPolicy}.
- * The check runs off the event loop with a deadline. A join whose source authenticated the client
- * itself ({@link Join.Authenticated}, NXS) skips the check and brings the binding that decides its
- * login; the throttle and the budget apply to it all the same. A refused join gets a typed
+ * ({@link NetherChannelOption#NETHER_SERVER_OFFER_CHECK}) under the source's {@link OfferPolicy},
+ * then the host's join filter ({@link NetherChannelOption#NETHER_SERVER_JOIN_FILTER}), if one is
+ * set. The check and the filter run off the event loop under one deadline. A join whose source
+ * authenticated the client itself ({@link Join.Authenticated}, NXS) skips the check and brings the
+ * binding that decides its login; the throttle, the budget and the filter apply to it all the
+ * same. A refused join gets a typed
  * {@link JoinRefusal} through its reply path and creates nothing. A join holds its share of the
  * budget and its throttle entry until its child's {@linkplain NetherNetChannel#termination()
  * termination} completed.
@@ -122,6 +126,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final Set<Admission> admitting = ConcurrentHashMap.newKeySet();
     /** The one source's hold on the shared port's held checks, if any source took them. */
     private final AtomicReference<HeldCheckClaim> heldChecks = new AtomicReference<>();
+    private final AtomicBoolean joinFilterWarned = new AtomicBoolean();
 
     private final Object sourcesLock = new Object();
     // Guarded by sourcesLock.
@@ -788,9 +793,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /**
      * One join from the moment it holds its share of the budget until it becomes a child or is
-     * refused. Its steps run on the event loop. It ends exactly once, whoever ends it: its check,
-     * its deadline, its client leaving, or {@link #withdraw} when the endpoint closes or its source
-     * is removed, which can happen on any thread.
+     * refused. Its steps run on the event loop, and its off-loop steps (the identity check, then the
+     * host's join filter) share one deadline. It ends exactly once, whoever ends it: a step, its
+     * deadline, its client leaving, or {@link #withdraw} when the endpoint closes or its source is
+     * removed, which can happen on any thread.
      */
     private final class Admission {
         private final Registration from;
@@ -802,9 +808,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         private final InetSocketAddress throttled;
         private final AtomicBoolean settled = new AtomicBoolean();
         private int maxMessageSize;
-        private volatile CompletableFuture<OfferCheckResult> check;
+        /** The off-loop step running now, which the deadline times out and a withdrawal cancels. */
+        private volatile CompletableFuture<?> step;
         private volatile ScheduledFuture<?> deadline;
-        /** When the check started and how long it may take, on the event loop's clock. */
+        /** When the check started and how long it and the filter may take, on the event loop's clock. */
         private long startedNanos;
         private long timeoutNanos;
 
@@ -824,16 +831,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 maxMessageSize = NetherNetConstants.parseMaxMessageSize(join.offer());
             } catch (IllegalArgumentException e) {
                 log.debug("Refusing join {}: {}", id, e.getMessage());
-                fail(JoinRefusal.INTERNAL);
+                fail(JoinRefusal.BAD_OFFER);
                 return;
             }
-            if (join.authenticated() != null) {
-                // The source authenticated the client, and its binding decides the login: no offer check.
-                if (!open || from.removed) {
-                    fail(JoinRefusal.CAPACITY);
-                } else if (settle()) {
-                    createChild(this, null);
-                }
+            NetherServerJoinFilter filter = config.getJoinFilter();
+            if (join.authenticated() != null && filter == null) {
+                // The source authenticated the client, and its binding decides the login: no offer
+                // check, and with no filter to ask, nothing to wait for.
+                admit(null);
                 return;
             }
             admitting.add(this);
@@ -845,43 +850,48 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             join.reply().abandoned().whenComplete((ignored, failure) -> onLoop(this::abandoned));
             timeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.getOfferCheckTimeoutMillis());
             startedNanos = eventLoop().ticker().nanoTime();
-            CompletableFuture<OfferCheckResult> started = settings.offerCheck().checkAsync(join.offer(),
-                    settings.checkExecutor());
-            check = started;
-            // A check that finishes after this admits nothing: its stage is already complete.
-            ScheduledFuture<?> timer = eventLoop().schedule(() -> {
-                started.completeExceptionally(new TimeoutException());
+            // A step that finishes after this admits nothing: its stage is already complete.
+            deadline = eventLoop().schedule(() -> {
+                CompletableFuture<?> current = step;
+                if (current != null) {
+                    current.completeExceptionally(new TimeoutException());
+                }
             }, timeoutNanos, TimeUnit.NANOSECONDS);
-            deadline = timer;
+            if (join.authenticated() != null) {
+                filter(filter, null);
+            } else {
+                await(settings.offerCheck().checkAsync(join.offer(), settings.checkExecutor()), this::checked);
+            }
+        }
+
+        /** Waits for an off-loop step, whose result then comes back on the event loop. */
+        private <T> void await(CompletableFuture<T> started, BiConsumer<T, Throwable> next) {
+            step = started;
             if (settled.get()) {
-                // Withdrawn on another thread while the check was being set up.
+                // Withdrawn on another thread while the step was being set up.
                 started.cancel(true);
-                timer.cancel(false);
+                ScheduledFuture<?> timer = deadline;
+                if (timer != null) {
+                    timer.cancel(false);
+                }
                 return;
             }
-            started.whenComplete((result, failure) -> onLoop(() -> checked(result, failure)));
+            started.whenComplete((result, failure) -> onLoop(() -> next.accept(result, failure)));
         }
 
         private void checked(OfferCheckResult result, Throwable failure) {
             if (settled.get()) {
                 return;
             }
-            // The deadline only fires once this loop gets to it: a loop that ran late can see a
-            // result that came in past the deadline before the deadline fired.
-            if (failure == null && eventLoop().ticker().nanoTime() - startedNanos >= timeoutNanos) {
+            if (failure == null && late()) {
                 log.debug("Refusing join {}: its identity check finished after its deadline", id);
                 fail(JoinRefusal.NO_ANSWER_IN_TIME);
                 return;
             }
             if (failure != null) {
-                Throwable cause = failure instanceof CompletionException ? failure.getCause() : failure;
-                JoinRefusal refusal = switch (cause) {
-                    case TimeoutException late -> JoinRefusal.NO_ANSWER_IN_TIME;
-                    case RejectedExecutionException full -> JoinRefusal.CAPACITY;
-                    default -> JoinRefusal.INTERNAL;
-                };
+                Throwable cause = unwrap(failure);
                 log.debug("Refusing join {}: its identity check did not finish ({})", id, cause.toString());
-                fail(refusal);
+                fail(stepRefusal(cause));
                 return;
             }
             Optional<IdentityRefusal> refused = from.policy.refusal(result);
@@ -889,22 +899,82 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 // Diagnostics hold no token, and their text is sanitized for logs.
                 log.info("Refused join {} from {}: {} ({}, {})", id, join.source().address(), refused.get(),
                         result.reason(), result.diagnostics());
-                fail(refusalOf(refused.get()));
+                fail(refusalOf(refused.get(), result));
                 return;
             }
-            if (!open || from.removed) {
+            NetherServerJoinFilter filter = config.getJoinFilter();
+            if (filter == null) {
+                admit(result);
+            } else {
+                filter(filter, result);
+            }
+        }
+
+        /** Asks the host's filter off the event loop, on the check executor. */
+        private void filter(NetherServerJoinFilter filter, OfferCheckResult result) {
+            Join.Addressed addressed = join.addressed();
+            NetherServerJoinFilter.Request request = new NetherServerJoinFilter.Request(from.source,
+                    join.remoteNetworkId(), join.source(), addressed == null ? null : addressed.host(),
+                    addressed == null ? null : addressed.client(), result);
+            CompletableFuture<Boolean> filtering;
+            try {
+                filtering = CompletableFuture.supplyAsync(() -> filter.allows(request), settings.checkExecutor());
+            } catch (RejectedExecutionException full) {
+                log.debug("Refusing join {}: no room to run the join filter", id);
                 fail(JoinRefusal.CAPACITY);
                 return;
             }
-            if (settle()) {
+            await(filtering, (allowed, failure) -> filtered(result, allowed, failure));
+        }
+
+        private void filtered(OfferCheckResult result, Boolean allowed, Throwable failure) {
+            if (settled.get()) {
+                return;
+            }
+            if (failure == null && late()) {
+                log.debug("Refusing join {}: the join filter answered after the deadline", id);
+                fail(JoinRefusal.NO_ANSWER_IN_TIME);
+                return;
+            }
+            if (failure != null) {
+                Throwable cause = unwrap(failure);
+                if (cause instanceof TimeoutException) {
+                    log.debug("Refusing join {}: the join filter did not answer in time", id);
+                } else if (!(cause instanceof RejectedExecutionException)) {
+                    joinFilterFailed(id, cause);
+                }
+                fail(stepRefusal(cause));
+                return;
+            }
+            if (!allowed) {
+                log.debug("Refused join {} from {}: the join filter turned it away", id, join.source().address());
+                fail(JoinRefusal.HOST_REFUSED);
+                return;
+            }
+            admit(result);
+        }
+
+        /**
+         * The deadline only fires once this loop gets to it: a loop that ran late can see a result
+         * that came in past the deadline before the deadline fired.
+         */
+        private boolean late() {
+            return eventLoop().ticker().nanoTime() - startedNanos >= timeoutNanos;
+        }
+
+        /** Creates the child, unless the endpoint or the source went away meanwhile. */
+        private void admit(OfferCheckResult result) {
+            if (!open || from.removed) {
+                fail(JoinRefusal.CAPACITY);
+            } else if (settle()) {
                 createChild(this, result);
             }
         }
 
-        /** The client left before the check finished: nothing to answer, nothing to create. */
+        /** The client left before its admission ended: nothing to answer, nothing to create. */
         private void abandoned() {
             if (settle()) {
-                cancelCheck();
+                cancelStep();
                 release();
                 join.reply().finished();
             }
@@ -916,15 +986,18 @@ public class NetherNetServerChannel extends AbstractServerChannel {
          */
         void withdraw() {
             if (settle()) {
-                cancelCheck();
+                cancelStep();
                 release();
                 refuse(join, JoinRefusal.CAPACITY);
             }
         }
 
-        /** Withdraws the check: a queued one never runs, a running one is interrupted. */
-        private void cancelCheck() {
-            CompletableFuture<OfferCheckResult> pending = check;
+        /**
+         * Withdraws the running step: a queued check or filter never runs, a running check is
+         * interrupted, and a running filter's answer is ignored.
+         */
+        private void cancelStep() {
+            CompletableFuture<?> pending = step;
             if (pending != null) {
                 pending.cancel(true);
             }
@@ -970,6 +1043,31 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
+    private static Throwable unwrap(Throwable failure) {
+        return failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+    }
+
+    /** What a join whose off-loop step did not finish gets: the filter follows the check's rules. */
+    private static JoinRefusal stepRefusal(Throwable cause) {
+        return switch (cause) {
+            case TimeoutException _ -> JoinRefusal.NO_ANSWER_IN_TIME;
+            case RejectedExecutionException _ -> JoinRefusal.CAPACITY;
+            default -> JoinRefusal.INTERNAL;
+        };
+    }
+
+    /**
+     * A throwing filter is a host bug that every join would repeat, so it warns once and logs the
+     * rest at debug.
+     */
+    private void joinFilterFailed(String id, Throwable cause) {
+        if (joinFilterWarned.compareAndSet(false, true)) {
+            log.warn("The NetherNet join filter failed, refusing join {} (further failures log at debug)", id, cause);
+        } else {
+            log.debug("The NetherNet join filter failed, refusing join {}: {}", id, cause.toString());
+        }
+    }
+
     /** Ends the admission of every join from this source that has no child yet. Any thread. */
     private void withdrawAdmissions(Registration from) {
         for (Admission admission : admitting) {
@@ -979,7 +1077,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
-    private static JoinRefusal refusalOf(IdentityRefusal refusal) {
+    /**
+     * The refusal for an offer the source's policy turned away. An SDP the check could not read
+     * is a bad offer whatever the policy wanted of its identity.
+     */
+    private static JoinRefusal refusalOf(IdentityRefusal refusal, OfferCheckResult result) {
+        if (result.reason() == OfferCheckResult.Reason.MALFORMED_SDP) {
+            return JoinRefusal.BAD_OFFER;
+        }
         return switch (refusal) {
             case IDENTITY_MISSING -> JoinRefusal.IDENTITY_MISSING;
             case IDENTITY_INVALID, NOT_ATTESTED -> JoinRefusal.IDENTITY_INVALID;
@@ -1007,7 +1112,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         RemoteCandidateIntake intake = relayed ? RemoteCandidateIntake.relayed() : RemoteCandidateIntake.server();
         AdmissionGate.Reservation reservation = admission.reservation;
         ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake,
-                announcement(join, settings, advertised), reservation::handshakeDone);
+                announcement(join, settings, advertised), reservation::handshakeDone,
+                refusal -> serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus())));
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);

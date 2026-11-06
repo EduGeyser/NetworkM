@@ -57,8 +57,9 @@ class WebRtcPeerTest {
     private final FakeNative.Listener listener = new FakeNative.Listener();
 
     @ParameterizedTest
-    @CsvSource({"SET_REMOTE,SetRemoteDescription", "CREATE_ANSWER,CreateAnswer", "SET_LOCAL,SetLocalDescription"})
-    void anAnswerStepFailingLaterFailsTheStageAndReportsOnce(Step step, String operation) {
+    @CsvSource({"SET_REMOTE,SetRemoteDescription,REMOTE_DESCRIPTION_REJECTED",
+            "CREATE_ANSWER,CreateAnswer,NEGOTIATION_FAILED", "SET_LOCAL,SetLocalDescription,NEGOTIATION_FAILED"})
+    void anAnswerStepFailingLaterFailsTheStageAndReportsOnce(Step step, String operation, CloseCause cause) {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         CompletableFuture<String> stage = answerUpTo(peer, step).toCompletableFuture();
 
@@ -72,20 +73,21 @@ class WebRtcPeerTest {
         control.runAll();
 
         assertFailedWith(stage, operation + " failed");
-        assertEquals(List.of("closed NEGOTIATION_FAILED"), listener.snapshot());
+        assertEquals(List.of("closed " + cause), listener.snapshot());
         assertEquals(operations, nativeLog.size());
     }
 
     @ParameterizedTest
-    @CsvSource({"SET_REMOTE,SetRemoteDescription", "CREATE_ANSWER,CreateAnswer", "SET_LOCAL,SetLocalDescription"})
-    void anAnswerStepThrowingFailsTheSameWay(Step step, String operation) {
+    @CsvSource({"SET_REMOTE,SetRemoteDescription,REMOTE_DESCRIPTION_REJECTED",
+            "CREATE_ANSWER,CreateAnswer,NEGOTIATION_FAILED", "SET_LOCAL,SetLocalDescription,NEGOTIATION_FAILED"})
+    void anAnswerStepThrowingFailsTheSameWay(Step step, String operation, CloseCause cause) {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         connection.throwAt = step;
 
         CompletableFuture<String> stage = answerUpTo(peer, step).toCompletableFuture();
 
         assertFailedWith(stage, operation + " failed");
-        assertEquals(List.of("closed NEGOTIATION_FAILED"), listener.snapshot());
+        assertEquals(List.of("closed " + cause), listener.snapshot());
     }
 
     @ParameterizedTest
@@ -106,7 +108,9 @@ class WebRtcPeerTest {
             connection.remote.onFailure("[INVALID_PARAMETER] bad answer");
             assertFailedWith(applied, "SetRemoteDescription failed");
         }
-        assertEquals(List.of("closed NEGOTIATION_FAILED"), listener.snapshot());
+        // The answer is the remote side's input; the offer is ours.
+        assertEquals(List.of("closed " + (answerStep ? CloseCause.REMOTE_DESCRIPTION_REJECTED
+                : CloseCause.NEGOTIATION_FAILED)), listener.snapshot());
     }
 
     @ParameterizedTest

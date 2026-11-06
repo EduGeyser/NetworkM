@@ -37,12 +37,23 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
             valueOf(NetherChannelOption.class, "NETHER_SERVER_OFFER_CHECK");
 
     /**
-     * How long a server channel waits for an offer's identity check, in milliseconds, 10,000 by
-     * default. A join whose check takes longer is refused with
-     * {@link JoinRefusal#NO_ANSWER_IN_TIME}, and a check that finishes later admits nothing.
+     * How long a server channel waits for an offer's identity check, and then for the
+     * {@linkplain #NETHER_SERVER_JOIN_FILTER join filter}, in milliseconds, 10,000 by default. A
+     * join whose check and filter take longer together is refused with
+     * {@link JoinRefusal#NO_ANSWER_IN_TIME}, and an answer that comes later admits nothing.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS");
+
+    /**
+     * The host's filter for joins, asked off the I/O loops for every join of a server channel,
+     * whatever its source, once its identity check passed; a join it refuses gets
+     * {@link JoinRefusal#HOST_REFUSED}. Its time counts against
+     * {@link #NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS}. None by default: every join that passes
+     * the identity check and the budget is let in.
+     */
+    public static final ChannelOption<NetherServerJoinFilter> NETHER_SERVER_JOIN_FILTER =
+            valueOf(NetherChannelOption.class, "NETHER_SERVER_JOIN_FILTER");
 
     /**
      * Limits the joins one address may start and the connections it may hold, on every join

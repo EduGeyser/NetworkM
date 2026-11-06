@@ -6,10 +6,11 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
  * Xbox RPC, LAN and NXS. Never a success status: a 2xx would leave the client parsing an answer
  * that was never written.
  *
- * <p>The statuses follow the initial table of ruling E-7. The error codes are positions in the
- * vanilla client's signaling error enumeration, as go-nethernet lists it ({@code signal.go},
- * {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a signed 32-bit
- * decimal number. Which message each status or code makes the client show is still to be
+ * <p>The statuses follow the initial table of ruling E-7, with {@link #BAD_OFFER} and
+ * {@link #DUPLICATE} added by the later endpoint and HTTP rulings. The error codes are positions
+ * in the vanilla client's signaling error enumeration, as go-nethernet lists it
+ * ({@code signal.go}, {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a
+ * signed 32-bit decimal number. Which message each status or code makes the client show is still to be
  * captured (real-client check 6).
  */
 public enum JoinRefusal {
@@ -25,11 +26,25 @@ public enum JoinRefusal {
     TRUST_SOURCE_UNREACHABLE(500, JoinRefusal.GENERIC_FAILURE),
     /** No answer was ready in time. */
     NO_ANSWER_IN_TIME(504, JoinRefusal.NEGOTIATION_TIMEOUT),
+    /**
+     * The offer is unusable: empty, sent for a network ID that does not decode, an SDP the
+     * identity check could not read, an unusable {@code a=max-message-size}, or a description the
+     * engine refused. The client's input is at fault, not the server.
+     */
+    BAD_OFFER(400, JoinRefusal.FAILED_TO_SET_REMOTE_DESCRIPTION),
+    /**
+     * Another offer with the same network ID is still pending (HTTP signaling): it has not gone
+     * active nor failed yet. The source refuses the second offer before the endpoint sees it and
+     * leaves the first alone. Its error code is IncomingConnectionIgnored, as for the admission
+     * refusals, since the server ignores this offer and nothing failed.
+     */
+    DUPLICATE(409, JoinRefusal.INCOMING_CONNECTION_IGNORED),
     /** Something failed on the server while answering. */
     INTERNAL(500, JoinRefusal.FAILED_TO_CREATE_ANSWER);
 
     private static final int NEGOTIATION_TIMEOUT = 2;
     private static final int FAILED_TO_CREATE_ANSWER = 11;
+    private static final int FAILED_TO_SET_REMOTE_DESCRIPTION = 13;
     private static final int INCOMING_CONNECTION_IGNORED = 16;
     private static final int GENERIC_FAILURE = 35;
 

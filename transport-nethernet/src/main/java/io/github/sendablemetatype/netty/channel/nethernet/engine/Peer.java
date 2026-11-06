@@ -15,7 +15,11 @@ public interface Peer {
     /**
      * Answerer only: applies the remote offer, then creates and applies the
      * answer. The engine removes {@code a=identity} lines before it parses the
-     * offer; the caller passes the offer as received.
+     * offer; the caller passes the offer as received. A failed step fails the
+     * stage and ends the peer. An offer the engine refuses fails it with a
+     * {@link RemoteDescriptionRejectedException} and ends the peer with
+     * {@link CloseCause#REMOTE_DESCRIPTION_REJECTED}; any other step with
+     * {@link CloseCause#NEGOTIATION_FAILED}.
      *
      * @param offer the remote offer SDP
      * @return completes with the local answer SDP, without candidates gathered
@@ -33,7 +37,9 @@ public interface Peer {
 
     /**
      * Offerer only: applies the remote answer. The engine removes
-     * {@code a=identity} lines first.
+     * {@code a=identity} lines first. An answer the engine refuses fails the
+     * stage with a {@link RemoteDescriptionRejectedException} and ends the peer
+     * with {@link CloseCause#REMOTE_DESCRIPTION_REJECTED}.
      *
      * @param answer the remote answer SDP
      * @return completes once the answer has been applied

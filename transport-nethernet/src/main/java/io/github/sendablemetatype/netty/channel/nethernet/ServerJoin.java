@@ -4,6 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.JoinFailedMessage.Join
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AnswerCandidates;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateAnnouncement;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidate;
@@ -20,9 +21,11 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +60,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     private final CandidateAnnouncement announcement;
     private final TrickledAnswerCandidates trickled;
     private final Runnable handshakeDone;
+    private final Consumer<JoinRefusal> onRefused;
     private volatile NetherNetChildChannel child;
     private volatile JoinProgress progress = JoinProgress.NONE;
     private volatile boolean answerHandedOn;
@@ -71,9 +75,10 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
 
     /**
      * @param handshakeDone gives the join's pending handshake back, once it went active
+     * @param onRefused told about the refusal this join sends, if it sends one
      */
     ServerJoin(Join join, Settings settings, RemoteCandidateIntake intake, CandidateAnnouncement announcement,
-               Runnable handshakeDone) {
+               Runnable handshakeDone, Consumer<JoinRefusal> onRefused) {
         this.join = join;
         this.id = join.connectionId();
         this.settings = settings;
@@ -84,6 +89,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         this.announcement = announcement;
         this.trickled = join.reply().trickles() ? AnswerCandidates.trickled(announcement) : null;
         this.handshakeDone = handshakeDone;
+        this.onRefused = onRefused;
     }
 
     String id() {
@@ -259,9 +265,11 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     }
 
     private void negotiationFailed(Throwable failure) {
-        log.debug("Negotiation for join {} failed: {}", id, failure.toString());
+        Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                ? failure.getCause() : failure;
+        log.debug("Negotiation for join {} failed: {}", id, cause.toString());
         child.connectionFailed(NetherConnectionFailure.NEGOTIATION_FAILED);
-        refuse(JoinRefusal.INTERNAL);
+        refuse(cause instanceof RemoteDescriptionRejectedException ? JoinRefusal.BAD_OFFER : JoinRefusal.INTERNAL);
         child.close();
     }
 
@@ -273,6 +281,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         if (!refused.compareAndSet(false, true) || (trickled == null && answerHandedOn)) {
             return;
         }
+        onRefused.accept(refusal);
         try {
             sent(join.reply().refuse(refusal), "refusal");
         } catch (RuntimeException e) {
@@ -290,12 +299,17 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     @Override
     public void activated() {
         handshakeDone.run();
+        join.reply().connected();
     }
 
     @Override
     public void failed(CloseCause cause) {
         switch (cause) {
             case NEGOTIATION_FAILED -> refuse(JoinRefusal.INTERNAL);
+            case REMOTE_DESCRIPTION_REJECTED -> {
+                log.debug("Join {} sent an offer the engine refused", id);
+                refuse(JoinRefusal.BAD_OFFER);
+            }
             // The client left; nothing a host could fix.
             case REMOTE_CLOSED, REMOTE_ABORTED -> log.debug("Join {} ended by the client before it went active", id);
             case ICE_FAILED, TRANSPORT_FAILED, UNKNOWN -> warn("the peer connection failed: " + cause);

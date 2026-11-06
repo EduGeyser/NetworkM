@@ -17,6 +17,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusProvider;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsContextSelector;
@@ -46,6 +47,8 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -68,7 +71,9 @@ import java.util.function.Supplier;
  *   (not started, closed, or the endpoint's {@link JoinSink#admits} says no).</li>
  *   <li>{@code POST /v1/join/{networkId}}: the body is the client's SDP offer; the response is
  *   the full answer ({@code application/sdp}) or a {@link JoinRefusal}'s status with an empty
- *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle.</li>
+ *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle. A
+ *   second offer for a network ID whose join has neither failed nor gone active yet is refused
+ *   with {@link JoinRefusal#DUPLICATE} before it reaches the endpoint.</li>
  * </ul>
  * Everything else is a {@code 404}, as on vanilla.
  *
@@ -88,6 +93,10 @@ import java.util.function.Supplier;
  * trusted PROXY proxy wins over {@code X-Forwarded-For} from a trusted forwarder; nobody else can
  * declare a source. Connections count against a global cap and a per-address cap (IPv6 by /64,
  * proxied clients by the source the proxy declares).
+ *
+ * <p>What this source refuses on its own goes to the {@link Builder#metrics metrics}. Every request
+ * logs one debug line with the requester, method, path (without its query), status and time,
+ * under the logger {@code io.github.sendablemetatype.netty.channel.nethernet.signaling.HttpAccessLog}.
  *
  * <p>Bind with {@link #bind}, then hand the source to an endpoint, which calls {@link #start}.
  * Closed instances cannot be bound again.
@@ -124,10 +133,13 @@ public final class NetherNetHttpSignaling implements JoinSource {
     private final HttpConnectionLimits limits;
     private final HttpStatusService statusService;
     private final ExecutorService ownedStatusExecutor;
+    private final NetherServerMetrics metrics;
 
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
     private final List<Consumer<SignalingHealth>> healthListeners = new CopyOnWriteArrayList<>();
+    /** The pending offer of each network ID, see {@link #claimPending}. */
+    private final ConcurrentMap<String, ReplyPath> pendingOffers = new ConcurrentHashMap<>();
     private final AtomicLong nextPlaintextWarning = new AtomicLong(System.nanoTime());
     private final AtomicLong nextTlsWarning = new AtomicLong(System.nanoTime());
     private volatile JoinSink sink;
@@ -148,6 +160,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         this.negotiationTimeout = builder.negotiationTimeout;
         this.maxRequestBodyBytes = builder.maxRequestBodyBytes;
         this.limits = new HttpConnectionLimits(builder.maxConnections, builder.maxConnectionsPerAddress);
+        this.metrics = builder.metrics;
         if (builder.statusProvider == null) {
             this.ownedStatusExecutor = null;
             this.statusService = null;
@@ -316,6 +329,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
                 channel.close();
             }
             connections.close();
+            pendingOffers.clear();
         } finally {
             try {
                 if (ownedStatusExecutor != null) {
@@ -350,6 +364,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         // request's headers (HttpSourceCounter)
         if (!trustedProxies.isProxy(peer) && !connection.countAddress(peer.getAddress())) {
             log.debug("Refused a signaling connection from {}: its address holds its share", peer);
+            addressRefused(peer);
             channel.close();
             return;
         }
@@ -361,11 +376,27 @@ public final class NetherNetHttpSignaling implements JoinSource {
         HttpServerCodec codec = new HttpServerCodec();
         pipeline.addLast(codec);
         pipeline.addLast(new HttpRequestBudget(connection, codec));
+        pipeline.addLast(new HttpAccessLog(this, connection));
         if (trustedProxies.isProxy(peer)) {
             pipeline.addLast(new HttpSourceCounter(this, connection));
         }
         pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
         pipeline.addLast(new HttpRequestHandler(this, connection));
+    }
+
+    /**
+     * Holds a network ID for an offer until the offer's join fails or goes active.
+     *
+     * @return false when another offer holds it; a second offer for a pending join is a
+     *         {@link JoinRefusal#DUPLICATE}
+     */
+    boolean claimPending(String networkId, ReplyPath offer) {
+        return pendingOffers.putIfAbsent(networkId, offer) == null;
+    }
+
+    /** Lets go of a network ID this offer held, if it still holds it. Any thread, any number of times. */
+    void releasePending(String networkId, ReplyPath offer) {
+        pendingOffers.remove(networkId, offer);
     }
 
     /** Where a request came from. */
@@ -378,13 +409,40 @@ public final class NetherNetHttpSignaling implements JoinSource {
         if (!connection.countAddress(declared.getAddress())) {
             log.debug("Refused a signaling connection for {} via {}: its address holds its share", declared,
                     connection.channel.remoteAddress());
+            addressRefused(declared);
             connection.channel.close();
         }
     }
 
-    void plaintextRefused(SocketAddress peer) {
+    /** A connection for this client was refused: its address holds its share of connections. */
+    void addressRefused(InetSocketAddress client) {
+        metrics(metrics -> metrics.addressRefused(client));
+    }
+
+    void plaintextRefused(InetSocketAddress client) {
         warnSparingly(nextPlaintextWarning, "Refused plain HTTP signaling from {}: requiresTls is set, so only "
-                + "TLS is served", peer);
+                + "TLS is served", client);
+        metrics(metrics -> metrics.plaintextRefused(client));
+    }
+
+    /**
+     * An offer this source refused itself, before or instead of the endpoint. The endpoint
+     * reports the refusals it decides.
+     */
+    void joinRefused(JoinRefusal refusal) {
+        metrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+    }
+
+    /** Reports to the metrics, which must never break signaling. */
+    private void metrics(Consumer<NetherServerMetrics> event) {
+        if (metrics == null) {
+            return;
+        }
+        try {
+            event.accept(metrics);
+        } catch (RuntimeException e) {
+            log.debug("NetherNet server metrics failed", e);
+        }
     }
 
     void tlsRefused(String serverName, String reason) {
@@ -485,6 +543,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         private int maxConnections = DEFAULT_MAX_CONNECTIONS;
         private int maxConnectionsPerAddress = DEFAULT_MAX_CONNECTIONS_PER_ADDRESS;
         private int maxRequestBodyBytes = DEFAULT_MAX_REQUEST_BODY_BYTES;
+        private NetherServerMetrics metrics;
 
         private Builder(EventLoopGroup workerGroup) {
             this.workerGroup = Objects.requireNonNull(workerGroup, "workerGroup");
@@ -593,6 +652,25 @@ public final class NetherNetHttpSignaling implements JoinSource {
          */
         public Builder maxRequestBodyBytes(int maxRequestBodyBytes) {
             this.maxRequestBodyBytes = positive(maxRequestBodyBytes, "maxRequestBodyBytes");
+            return this;
+        }
+
+        /**
+         * Reports what this source refuses on its own: connections whose address holds its share
+         * ({@link NetherServerMetrics#addressRefused}), plain HTTP under {@link #requiresTls}
+         * ({@link NetherServerMetrics#plaintextRefused}), and offers it answers with a
+         * {@link JoinRefusal} before or instead of the endpoint, such as a {@code 504} past the
+         * negotiation deadline or a {@code 409} duplicate ({@link NetherServerMetrics#joinRefused}).
+         * Give it the metrics the endpoint has as
+         * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_SERVER_METRICS}:
+         * the endpoint reports the refusals it decides, so nothing is counted twice. A hook that
+         * throws is logged at debug and ignored.
+         *
+         * @param metrics the metrics, or null (the default) for none
+         * @return this builder
+         */
+        public Builder metrics(NetherServerMetrics metrics) {
+            this.metrics = metrics;
             return this;
         }
 

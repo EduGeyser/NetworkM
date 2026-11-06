@@ -3,6 +3,8 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanAdvertiser;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanServerData;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.util.ReferenceCountUtil;
@@ -29,7 +31,8 @@ import java.util.function.Consumer;
  *
  * <p>As a {@link JoinSource}, it listens on the address it was created with, usually
  * {@code 0.0.0.0:7551} ({@link io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants#DISCOVERY_PORT}),
- * answers discovery requests with {@link #setServerData the server data}, and turns each
+ * answers discovery requests with fixed {@linkplain #setServerData server data} or what an
+ * {@linkplain #setAdvertiser advertiser} gives per request, and turns each
  * {@code CONNECTREQUEST} into a {@link Join}. Replies go to the address the offer came from, pinned
  * then, and to the client's network ID; the join takes later signals only from both. Anyone on the
  * network can forge a datagram's source, so joins carry it as {@link AddressSource#SIGNALING_LAN}.
@@ -300,7 +303,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     }
 
     /**
-     * Sets the server data discovery responses carry.
+     * Answers every discovery request with this server data. Replaces an advertiser.
      *
      * @param data the advertisement
      * @throws IllegalArgumentException if it does not fit one datagram
@@ -308,6 +311,16 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
      */
     public void setServerData(LanServerData.V7 data) {
         this.discovery.setServerData(data);
+    }
+
+    /**
+     * Asks the advertiser what to answer each discovery request with. Replaces fixed server data.
+     *
+     * @param advertiser the advertiser
+     * @see NetherNetDiscovery#setAdvertiser(LanAdvertiser)
+     */
+    public void setAdvertiser(LanAdvertiser advertiser) {
+        this.discovery.setAdvertiser(advertiser);
     }
 
     @Override

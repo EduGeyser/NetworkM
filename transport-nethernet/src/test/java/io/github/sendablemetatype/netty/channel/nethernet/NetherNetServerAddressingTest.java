@@ -169,9 +169,9 @@ class NetherNetServerAddressingTest {
 
         FakeJoinSource source = harness.source(false);
         String answer = source.offer("1", OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
-                new Join.Addressed("8.8.8.8:19132", 19132, false)).answer();
+                new Join.Addressed("8.8.8.8:19132", 19132, false, null)).answer();
         String proxied = source.offer("2", OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
-                new Join.Addressed("8.8.8.8:19132", 19132, true)).answer();
+                new Join.Addressed("8.8.8.8:19132", 19132, true, null)).answer();
 
         assertTrue(answer.contains(" 8.8.8.8 " + icePort + " typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
         assertFalse(proxied.contains(" 8.8.8.8 "), "A trusted proxy's Host names the proxy: " + proxied);
@@ -282,7 +282,7 @@ class NetherNetServerAddressingTest {
         // The typed endpoint would be announced on a direct host
         String answer = harness.source(false).offer("1", OFFER,
                 new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
-                new Join.Addressed("8.8.8.8:19132", 19132, false)).answer();
+                new Join.Addressed("8.8.8.8:19132", 19132, false, null)).answer();
 
         assertEquals(1, answer.split("a=candidate:", -1).length - 1, answer);
         assertTrue(answer.contains("a=candidate:3 1 udp 41885439 192.0.2.80 40000 typ relay raddr 0.0.0.0 rport 0\r\n"),

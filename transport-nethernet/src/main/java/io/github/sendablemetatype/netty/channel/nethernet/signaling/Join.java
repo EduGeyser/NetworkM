@@ -4,6 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChildChannel;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 
 import java.util.Objects;
@@ -52,8 +53,9 @@ public record Join(String connectionId, String remoteNetworkId, String offer, So
     }
 
     /**
-     * What the client reached, as an HTTP request shows it. The endpoint announces the endpoint the
-     * player typed from it (ruling G-2), see {@code CandidateAnnouncement.typedEndpoint}.
+     * What the client reached and said about itself, as an HTTP request shows it. The endpoint
+     * announces the endpoint the player typed from it (ruling G-2), see
+     * {@code CandidateAnnouncement.typedEndpoint}, and shows it to the host's join filter.
      *
      * @param host the request's {@code Host} header, or null when it had none. Clients put what the
      *        player reached there: a domain, or the IP a server listing returned
@@ -61,8 +63,10 @@ public record Join(String connectionId, String remoteNetworkId, String offer, So
      *        shares it
      * @param viaTrustedProxy whether a trusted proxy sent the request, in either role; its
      *        {@code Host} then names the proxy, not this server
+     * @param client what the request's query said about the client, or null when it said nothing
+     *        usable
      */
-    public record Addressed(String host, int localPort, boolean viaTrustedProxy) {
+    public record Addressed(String host, int localPort, boolean viaTrustedProxy, ClientInfo client) {
     }
 
     /**

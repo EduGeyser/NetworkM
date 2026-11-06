@@ -2,10 +2,12 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.codec.NetherNetServerDataCodec;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanAdvertiser;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanDiscoveryRequest;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanServerData;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling.SignalHandler;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -24,9 +26,13 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -34,8 +40,6 @@ import java.util.function.Supplier;
 
 public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPacket> {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetDiscovery.class);
-    // Hex expansion, 24 plaintext header bytes, a 32-byte MAC and AES padding must fit a 65,507-byte UDP payload.
-    private static final int MAX_SERVER_DATA_BYTES = 32_723;
 
     private final long networkId;
     private final Map<String, ClientHandler> signalHandlers = new ConcurrentHashMap<>();
@@ -46,15 +50,12 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private final AtomicReference<DiscoveryCallback> discoveryCallback = new AtomicReference<>();
     private EventLoopGroup eventLoops;
     private volatile Channel channel;
-    private volatile byte[] serverData;
+    private final LanAdvertisements advertisements;
+    /** Runs the advertiser's calls when the creator gave no executor; closed with this instance. */
+    private final ExecutorService ownedAdvertiserExecutor;
     private volatile OfferHandler offerHandler;
     private volatile boolean closed;
 
-    /**
-     * Creates a NetherNetDiscovery instance with the specified Network ID.
-     *
-     * @param networkId The Network ID to use for discovery.
-     */
     /** Receives offers for connection IDs that have no signal handler yet. */
     @FunctionalInterface
     interface OfferHandler {
@@ -76,6 +77,11 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     /** Where a join's offer came from, pinned then, and where its later signals go. */
     private record JoinRoute(InetSocketAddress sender, SignalHandler handler) { }
 
+    /**
+     * Creates discovery with its own event loop, bound later with {@link #bind}.
+     *
+     * @param networkId the network ID this side announces
+     */
     public NetherNetDiscovery(long networkId) {
         this(networkId, () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()));
     }
@@ -85,9 +91,23 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     }
 
     NetherNetDiscovery(long networkId, Supplier<? extends EventLoopGroup> eventLoopFactory, DiscoveryPeerRegistry peerAddresses) {
+        this(networkId, eventLoopFactory, peerAddresses, LanAdvertisements.ADVERTISER_TIMEOUT, null);
+    }
+
+    /**
+     * @param advertiserTimeout how long one {@link LanAdvertiser} call may take
+     * @param advertiserExecutor runs the advertiser's calls, or null for a virtual thread each
+     */
+    NetherNetDiscovery(long networkId, Supplier<? extends EventLoopGroup> eventLoopFactory,
+                       DiscoveryPeerRegistry peerAddresses, Duration advertiserTimeout, Executor advertiserExecutor) {
         this.networkId = networkId;
         this.eventLoopFactory = Objects.requireNonNull(eventLoopFactory, "eventLoopFactory");
         this.peerAddresses = Objects.requireNonNull(peerAddresses, "peerAddresses");
+        this.ownedAdvertiserExecutor = advertiserExecutor == null
+                ? Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("nethernet-lan-advertiser-", 0).factory())
+                : null;
+        this.advertisements = new LanAdvertisements(advertiserTimeout,
+                advertiserExecutor != null ? advertiserExecutor : ownedAdvertiserExecutor);
     }
 
     public void bind() {
@@ -194,37 +214,28 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private record DiscoveryCallback(BiConsumer<Long, ByteBuf> consumer, InetSocketAddress expectedSender) { }
 
     /**
-     * Sets the server data every discovery response carries. It is encoded once here and cached.
-     * Only v7 is advertised: current clients do not send offers to a server that answers in an
-     * older version (claimed by upstream for 1.26.51 clients; see {@link NetherNetServerDataCodec}).
+     * Answers every discovery request with this server data, encoded once here. Replaces an
+     * {@linkplain #setAdvertiser advertiser}. Only v7 is advertised: current clients do not send
+     * offers to a server that answers in an older version (claimed by upstream for 1.26.51
+     * clients; see {@link NetherNetServerDataCodec}).
      *
      * @param data the advertisement
      * @throws IllegalArgumentException if the encoded advertisement does not fit one datagram;
      *         the previous advertisement stays in place
      */
     public void setServerData(LanServerData.V7 data) {
-        Objects.requireNonNull(data, "data");
-        ByteBuf buf = Unpooled.buffer(128, MAX_SERVER_DATA_BYTES);
-        byte[] hexBytes;
-        try {
-            NetherNetServerDataCodec.encode(buf, data);
-            hexBytes = ByteBufUtil.hexDump(buf).getBytes(StandardCharsets.US_ASCII);
-        } catch (IndexOutOfBoundsException e) {
-            throw new IllegalArgumentException("LAN advertisement exceeds the UDP payload limit", e);
-        } finally {
-            buf.release();
-        }
+        advertisements.fix(data);
+    }
 
-        ByteBuf response = Unpooled.buffer();
-        try {
-            response.writeIntLE(hexBytes.length);
-            response.writeBytes(hexBytes);
-            byte[] serverData = new byte[response.readableBytes()];
-            response.readBytes(serverData);
-            this.serverData = serverData;
-        } finally {
-            response.release();
-        }
+    /**
+     * Asks the advertiser what to answer each discovery request with, once the request passed
+     * decryption and validation. Replaces fixed {@linkplain #setServerData server data}. See
+     * {@link LanAdvertiser} for its deadline and what goes out when it does not deliver.
+     *
+     * @param advertiser the advertiser
+     */
+    public void setAdvertiser(LanAdvertiser advertiser) {
+        advertisements.ask(advertiser);
     }
 
     /**
@@ -391,7 +402,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                         return;
                     }
                     log.trace("Handled discovery request from {}", packet.sender());
-                    handleRequest(senderId, packet.sender());
+                    handleRequest(ctx, senderId, packet.sender());
                 }
                 case NetherNetConstants.ID_DISCOVERY_MESSAGE -> {
                     log.trace("Handled discovery message from {}", packet.sender());
@@ -425,17 +436,26 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }
     }
 
-    private void handleRequest(long senderId, InetSocketAddress sender) {
-        byte[] serverData = this.serverData;
-        if (serverData == null) return;
+    private void handleRequest(ChannelHandlerContext ctx, long senderId, InetSocketAddress sender) {
+        advertisements.answer(new LanDiscoveryRequest(sender, Long.toUnsignedString(senderId)), ctx.executor())
+                .thenAccept(payload -> payload.ifPresent(serverData -> respond(serverData, sender)));
+    }
 
-        ByteBuf buf = Unpooled.buffer();
+    /** Sends a discovery response; any thread. */
+    private void respond(byte[] serverData, InetSocketAddress sender) {
+        if (closed) {
+            return;
+        }
+        ByteBuf buf = Unpooled.buffer(18 + serverData.length);
         buf.writeShortLE(NetherNetConstants.ID_DISCOVERY_RESPONSE);
         buf.writeLongLE(this.networkId);
         buf.writeZero(8);
         buf.writeBytes(serverData);
-
-        sendPacket(buf, sender);
+        try {
+            sendPacket(buf, sender);
+        } catch (RuntimeException e) {
+            log.debug("Could not answer the discovery request from {}: {}", sender, e.toString());
+        }
     }
 
     private void handleMessage(ByteBuf data, long senderId, InetSocketAddress sender) {
@@ -567,6 +587,9 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 channel.close();
             }
         } finally {
+            if (ownedAdvertiserExecutor != null) {
+                ownedAdvertiserExecutor.shutdownNow();
+            }
             if (group != null) {
                 group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
             }

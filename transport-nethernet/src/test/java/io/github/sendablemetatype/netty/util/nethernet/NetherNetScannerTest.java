@@ -1,7 +1,7 @@
 package io.github.sendablemetatype.netty.util.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.LanServerData;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanServerData;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetDiscovery;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
