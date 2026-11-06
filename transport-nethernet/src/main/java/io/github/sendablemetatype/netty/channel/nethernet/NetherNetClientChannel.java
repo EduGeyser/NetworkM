@@ -18,6 +18,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetCli
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
@@ -470,6 +471,17 @@ public class NetherNetClientChannel extends NetherNetChannel {
             }
             if (!isOpen() || handshakeComplete) return;
             if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)) {
+                ServerTrust trust = clientConfig.getServerTrust();
+                if (trust != null) {
+                    // Pure computation, two signature checks; another attempt would meet the same server.
+                    try {
+                        trust.verify(data);
+                    } catch (ServerTrust.Refused refused) {
+                        connectionFailed(NetherConnectionFailure.SERVER_IDENTITY_REFUSED);
+                        failHandshake(generation, refused.getMessage(), refused);
+                        return;
+                    }
+                }
                 try {
                     setMaxOutboundMessageSize(NetherNetConstants.parseMaxMessageSize(data));
                 } catch (IllegalArgumentException e) {

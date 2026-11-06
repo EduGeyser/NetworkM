@@ -31,5 +31,10 @@ public enum NetherConnectionFailure {
     /** The peer closed before the channel became active. */
     PEER_CLOSED,
     /** Exchanging or applying the descriptions, or creating the peer, failed. */
-    NEGOTIATION_FAILED
+    NEGOTIATION_FAILED,
+    /**
+     * A client refused the identity the server answered with
+     * ({@link NetherChannelOption#NETHER_CLIENT_SERVER_TRUST}).
+     */
+    SERVER_IDENTITY_REFUSED
 }

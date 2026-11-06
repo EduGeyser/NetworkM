@@ -5,13 +5,14 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.S
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.channel.Channel;
 
 import java.util.List;
 
 /**
  * The config of a NetherNet client channel: the connection's options, plus how its peer gathers
- * candidates, how the handshake is attempted, and the identity it presents.
+ * candidates, how the handshake is attempted, and the identities it presents and accepts.
  */
 public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig {
     public static final int DEFAULT_HANDSHAKE_TIMEOUT_MILLIS = 3000;
@@ -26,6 +27,8 @@ public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig
     private final Setting<Integer> maxHandshakeAttempts = options.add(
             NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, DEFAULT_MAX_HANDSHAKE_ATTEMPTS, Rule.atLeast(1));
     private final Setting<ClientIdentity> identity = options.add(NetherChannelOption.NETHER_CLIENT_IDENTITY,
+            null, Rule.orNone());
+    private final Setting<ServerTrust> serverTrust = options.add(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
             null, Rule.orNone());
 
     public DefaultNetherClientChannelConfig(Channel channel) {
@@ -52,5 +55,10 @@ public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig
     /** @return the identity the offer presents, or null for none */
     public ClientIdentity getIdentity() {
         return identity.get();
+    }
+
+    /** @return the trust the server's answer identity is checked against, or null when it is not checked */
+    public ServerTrust getServerTrust() {
+        return serverTrust.get();
     }
 }

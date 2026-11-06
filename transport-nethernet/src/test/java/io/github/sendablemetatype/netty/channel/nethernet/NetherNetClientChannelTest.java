@@ -21,6 +21,8 @@ import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
@@ -216,6 +218,59 @@ class NetherNetClientChannelTest {
             String offer = h.signaling.sent.getFirst().split(" ", 3)[2];
             OfferCheckResult result = new OfferCheck(List.of()).check(offer);
             assertEquals(OfferCheckResult.Level.KEY_PROVEN, result.level());
+        }
+    }
+
+    @Test
+    void aPinnedServerTrustRefusesAnAnswerWithoutTheIdentityAndMakesNoOtherAttempt() {
+        try (Harness h = new Harness()) {
+            List<NetherConnectionFailure> failures = new ArrayList<>();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void connectionFailed(NetherConnectionFailure reason) {
+                    failures.add(reason);
+                }
+            });
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
+                    ServerTrust.pinnedTo(ServerIdentity.ephemeral("self").publicKey()));
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            h.pump();
+
+            h.signaling.signalHandlers.getLast().onSignal(
+                    NetherNetConstants.buildSignalConnectResponse(h.connectionId(), ANSWER));
+            h.pump();
+            ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
+            assertEquals("The server's answer carries no identity", failure.getMessage());
+            assertEquals(ServerTrust.Refusal.MISSING,
+                    assertInstanceOf(ServerTrust.Refused.class, failure.getCause()).refusal());
+            assertEquals(List.of(NetherConnectionFailure.SERVER_IDENTITY_REFUSED), failures);
+            assertTrue(peer.remoteAnswers().isEmpty(), "a refused answer never reaches the engine");
+            assertFalse(h.channel.isOpen());
+            h.advance(1000);
+            assertEquals(1, h.signaling.connections.size());
+        }
+    }
+
+    @Test
+    void aPinnedServerTrustPassesTheAnswerOfThePinnedServer() throws Exception {
+        try (Harness h = new Harness()) {
+            ServerIdentity server = ServerIdentity.ephemeral("self");
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
+                    ServerTrust.pinnedTo(server.publicKey()));
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            h.pump();
+
+            String answer = server.augmentAnswer(OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            h.signaling.signalHandlers.getLast().onSignal(
+                    NetherNetConstants.buildSignalConnectResponse(h.connectionId(), answer));
+            h.pump();
+            assertEquals(List.of(answer), peer.remoteAnswers());
+            assertFalse(connect.isDone());
+            assertTrue(h.channel.isOpen());
         }
     }
 

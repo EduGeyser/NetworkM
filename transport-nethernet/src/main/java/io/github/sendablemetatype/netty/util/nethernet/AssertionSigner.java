@@ -113,7 +113,7 @@ final class AssertionSigner {
      * @throws IllegalArgumentException if the description has no well-formed fingerprint line
      */
     String withAssertion(String sdp, String token, String idpDomain) throws GeneralSecurityException {
-        String[] signed = sign(OfferAssertion.localFingerprintJson(sdp)).split("\\.");
+        String[] signed = sign(SdpAssertion.localFingerprintJson(sdp)).split("\\.");
         Identity.Assertion assertion = new Identity.Assertion(token, signed[0] + ".." + signed[2]);
         String line = "a=identity:" + new Identity(new Identity.Idp(idpDomain, "default"), assertion).toBase64();
         String eol = sdp.contains("\r\n") ? "\r\n" : "\n";

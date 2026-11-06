@@ -20,6 +20,7 @@ import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
@@ -52,14 +54,16 @@ import static io.github.sendablemetatype.netty.util.nethernet.OfferFixtures.educ
 import static io.github.sendablemetatype.netty.util.nethernet.OfferFixtures.educationToken;
 import static io.github.sendablemetatype.netty.util.nethernet.OfferFixtures.keyPair;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A client channel joining a server endpoint through HTTP signaling on libwebrtc, as a proxy joins
  * a server behind it: the probe, a full-ICE offer signed with the client's identity, the answer,
- * data both ways and the reason the client gets when the server ends the connection. Signaling
- * runs over TCP loopback; runs where the build provides webrtc-java natives.
+ * data both ways, the reason the client gets when the server ends the connection, the statistics
+ * both ends report, and the client's check of the server's identity against a pinned key.
+ * Signaling runs over TCP loopback; runs where the build provides webrtc-java natives.
  */
 @EnabledIfSystemProperty(named = "webrtc.nativeTests", matches = "true")
 @Timeout(60)
@@ -149,6 +153,30 @@ class NetherNetHttpNativeTest {
         child.close().sync();
         assertEquals(TransportMetrics.NONE, child.transportMetrics().toCompletableFuture().get());
         assertEquals(Optional.of(childPath), child.selectedPath(), "the pair stays readable after close");
+    }
+
+    @Test
+    void aClientPinningTheServersKeyConnects() throws Exception {
+        ServerIdentity identity = ServerIdentity.ephemeral("test");
+        NetherNetHttpSignaling http = bindServer(identity);
+        client = connect(http, bootstrap -> bootstrap.option(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
+                ServerTrust.pinnedTo(identity.publicKey()))).sync().channel();
+        echo();
+    }
+
+    @Test
+    void aClientPinningAnotherKeyRefusesTheServer() throws Exception {
+        NetherNetHttpSignaling http = bindServer(ServerIdentity.ephemeral("test"));
+        ServerIdentity other = ServerIdentity.ephemeral("other");
+        ChannelFuture connect = connect(http, bootstrap -> bootstrap.option(
+                NetherChannelOption.NETHER_CLIENT_SERVER_TRUST, ServerTrust.pinnedTo(other.publicKey())));
+        client = connect.channel();
+        assertTrue(connect.await(WAIT_SECONDS, TimeUnit.SECONDS));
+        ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
+        assertEquals(ServerTrust.Refusal.NOT_PINNED,
+                assertInstanceOf(ServerTrust.Refused.class, failure.getCause()).refusal(), failure.getMessage());
+        assertTrue(client.closeFuture().await(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertTrue(clientReads.isEmpty());
     }
 
     /** Binds an endpoint with {@code identity} and its HTTP signaling on loopback. */

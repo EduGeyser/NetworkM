@@ -10,6 +10,7 @@ import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.channel.ChannelOption;
 
 import java.net.InetSocketAddress;
@@ -231,6 +232,17 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      */
     public static final ChannelOption<ClientIdentity> NETHER_CLIENT_IDENTITY =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_IDENTITY");
+
+    /**
+     * The server identities a client channel accepts, or null (the default) to leave the answer's
+     * identity unchecked. When set, the {@code a=identity} of the server's answer must name a key the trust
+     * pins, be self-signed by it, carry a valid signature over the answer's DTLS fingerprints, and
+     * not be expired. An answer without an identity, with one that does not verify, or with a key
+     * that is not pinned fails the connect at once, without another attempt, since every attempt
+     * meets the same server. See {@link ServerTrust#pinnedTo}.
+     */
+    public static final ChannelOption<ServerTrust> NETHER_CLIENT_SERVER_TRUST =
+            valueOf(NetherChannelOption.class, "NETHER_CLIENT_SERVER_TRUST");
 
     /**
      * How long a server's child may take from its admission to going active, in seconds: 30 by

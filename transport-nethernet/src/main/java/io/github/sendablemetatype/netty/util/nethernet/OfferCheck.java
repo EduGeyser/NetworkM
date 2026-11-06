@@ -63,7 +63,7 @@ public final class OfferCheck {
             AlgorithmIdentifiers.ECDSA_USING_P256_CURVE_AND_SHA256,
             AlgorithmIdentifiers.ECDSA_USING_P384_CURVE_AND_SHA384,
             AlgorithmIdentifiers.ECDSA_USING_P521_CURVE_AND_SHA512);
-    private static final long CLOCK_SKEW_SECONDS = 30;
+    static final long CLOCK_SKEW_SECONDS = 30;
 
     private final Map<String, TrustedIssuer> issuers;
 
@@ -158,16 +158,42 @@ public final class OfferCheck {
     public OfferCheckResult check(String offerSdp) {
         Facts facts = new Facts();
         try {
-            OfferAssertion assertion = OfferAssertion.parse(offerSdp);
-            facts.idpDomain = assertion.idpDomain();
-            facts.idpProtocol = assertion.idpProtocol();
-            return proveAndAttest(assertion, facts);
-        } catch (OfferAssertion.Stop stop) {
+            Proven proven = prove(offerSdp, facts);
+            Reason unattested = attest(proven.token(), proven.claims(), facts.issuer);
+            Level level = unattested == null ? Level.ATTESTED : Level.KEY_PROVEN;
+            return new OfferCheckResult(level, proven.key(), proven.claims().getClaimsMap(), unattested,
+                    facts.diagnostics());
+        } catch (SdpAssertion.Stop stop) {
             return OfferCheckResult.stopped(stop.reason, facts.diagnostics());
         }
     }
 
-    private OfferCheckResult proveAndAttest(OfferAssertion assertion, Facts facts) throws OfferAssertion.Stop {
+    /**
+     * Steps 1 and 2 on any description that carries an identity assertion: an offer, or a server's
+     * answer, which uses the same envelope and proof.
+     *
+     * @param token  the token, its header and payload read but not verified
+     * @param claims the token's claims, unverified
+     * @param key    the key the token names in {@code cpk}, canonical secp384r1, which signed the
+     *               description's fingerprints
+     */
+    record Proven(JsonWebSignature token, JwtClaims claims, ECPublicKey key) {
+    }
+
+    /**
+     * Parses a description's assertion and proves its key over the description's fingerprints.
+     *
+     * @throws SdpAssertion.Stop with a {@link Level#NO_ASSERTION}, {@link Level#MALFORMED} or
+     *                           {@link Level#PROOF_FAILED} reason
+     */
+    static Proven prove(String sdp) throws SdpAssertion.Stop {
+        return prove(sdp, new Facts());
+    }
+
+    private static Proven prove(String sdp, Facts facts) throws SdpAssertion.Stop {
+        SdpAssertion assertion = SdpAssertion.parse(sdp);
+        facts.idpDomain = assertion.idpDomain();
+        facts.idpProtocol = assertion.idpProtocol();
         JsonWebSignature token = new JsonWebSignature();
         JwtClaims claims;
         try {
@@ -176,29 +202,26 @@ public final class OfferCheck {
             facts.keyId = token.getKeyIdHeaderValue();
             claims = JwtClaims.parse(token.getUnverifiedPayload());
         } catch (JoseException | InvalidJwtException | RuntimeException e) {
-            throw new OfferAssertion.Stop(Reason.MALFORMED_TOKEN);
+            throw new SdpAssertion.Stop(Reason.MALFORMED_TOKEN);
         }
         facts.issuer = claims.getClaimValue("iss") instanceof String issuer ? issuer : null;
         facts.audience = audienceOf(claims.getClaimValue("aud"));
         Object cpk = claims.getClaimValue("cpk");
         facts.cpkEncoding = IdentityPublicKey.encodingOf(cpk);
 
-        ECPublicKey clientKey;
+        ECPublicKey key;
         try {
-            clientKey = IdentityPublicKey.fromClaim(cpk);
+            key = IdentityPublicKey.fromClaim(cpk);
         } catch (IllegalArgumentException e) {
-            throw new OfferAssertion.Stop(Reason.INVALID_CLIENT_KEY);
+            throw new SdpAssertion.Stop(Reason.INVALID_CLIENT_KEY);
         }
-        if (!proves(assertion, clientKey)) {
-            throw new OfferAssertion.Stop(Reason.PROOF_INVALID);
+        if (!proves(assertion, key)) {
+            throw new SdpAssertion.Stop(Reason.PROOF_INVALID);
         }
-
-        Reason unattested = attest(token, claims, facts.issuer);
-        Level level = unattested == null ? Level.ATTESTED : Level.KEY_PROVEN;
-        return new OfferCheckResult(level, clientKey, claims.getClaimsMap(), unattested, facts.diagnostics());
+        return new Proven(token, claims, key);
     }
 
-    private static boolean proves(OfferAssertion assertion, ECPublicKey clientKey) {
+    private static boolean proves(SdpAssertion assertion, ECPublicKey key) {
         try {
             JsonWebSignature proof = new JsonWebSignature();
             proof.setCompactSerialization(assertion.fingerprintProof());
@@ -209,7 +232,7 @@ public final class OfferCheck {
                 return false;
             }
             proof.setAlgorithmConstraints(new AlgorithmConstraints(ConstraintType.PERMIT, PROOF_ALGORITHM));
-            proof.setKey(clientKey);
+            proof.setKey(key);
             proof.setPayload(assertion.fingerprintJson());
             return proof.verifySignature();
         } catch (JoseException | RuntimeException e) {
