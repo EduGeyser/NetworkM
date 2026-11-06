@@ -117,6 +117,37 @@ class NetherNetMessageAssemblerTest {
     }
 
     @Test
+    void aFailingFragmentMetricKeepsTheSplitMessageWhole() {
+        NetherChannelMetrics failing = new NetherChannelMetrics() {
+            @Override
+            public void fragmentsIn(int count) {
+                throw new IllegalStateException("metrics down");
+            }
+        };
+        assertNull(assembler.decode(segment(1, 1), allocator, CAP, failing));
+        ByteBuf message = assembler.decode(segment(0, 2), allocator, CAP, failing);
+        try {
+            assertArrayEquals(new byte[]{1, 2}, ByteBufUtil.getBytes(message));
+        } finally {
+            message.release();
+        }
+        assertReleased();
+    }
+
+    @Test
+    void aFailingFailureMetricStillEndsTheStream() {
+        NetherChannelMetrics failing = new NetherChannelMetrics() {
+            @Override
+            public void decodeFail(int count) {
+                throw new IllegalStateException("metrics down");
+            }
+        };
+        NetherNetFramingException broken = assertThrows(NetherNetFramingException.class,
+                () -> assembler.decode(segment(0), allocator, CAP, failing));
+        assertEquals(TransportDisconnectReason.BAD_PACKET, broken.reason());
+    }
+
+    @Test
     void closingReleasesAPartialMessageAndIgnoresLaterSegments() {
         assertNull(decode(segment(1, 42)));
         assembler.close();

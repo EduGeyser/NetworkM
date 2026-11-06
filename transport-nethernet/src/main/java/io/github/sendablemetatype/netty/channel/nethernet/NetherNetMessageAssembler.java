@@ -21,6 +21,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.CompositeByteBuf;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.nio.ByteBuffer;
 
@@ -42,6 +44,8 @@ import java.nio.ByteBuffer;
  * <p>Not used for the unreliable channel, which carries only unsplit messages.
  */
 final class NetherNetMessageAssembler {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetMessageAssembler.class);
+
     private CompositeByteBuf assembly;
     private int expected = -1;
     private boolean closed;
@@ -91,7 +95,12 @@ final class NetherNetMessageAssembler {
             if (countdown != 0) {
                 expected = countdown - 1;
                 if (metrics != null) {
-                    metrics.fragmentsIn(1);
+                    // A failing metric must not reach the catch below, which drops the partial message.
+                    try {
+                        metrics.fragmentsIn(1);
+                    } catch (RuntimeException e) {
+                        log.debug("NetherNet metrics failed", e);
+                    }
                 }
                 return null;
             }
@@ -115,7 +124,12 @@ final class NetherNetMessageAssembler {
                                              String what) {
         close();
         if (metrics != null) {
-            metrics.decodeFail(1);
+            // A failing metric must not replace the framing exception the channel closes on.
+            try {
+                metrics.decodeFail(1);
+            } catch (RuntimeException e) {
+                log.debug("NetherNet metrics failed", e);
+            }
         }
         return new NetherNetFramingException(reason, what + " on the reliable channel");
     }
