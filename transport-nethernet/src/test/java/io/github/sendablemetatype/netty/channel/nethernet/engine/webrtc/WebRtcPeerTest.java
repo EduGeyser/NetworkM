@@ -304,6 +304,38 @@ class WebRtcPeerTest {
     }
 
     @Test
+    void aRemoteChannelArrivingAfterCloseIsReleasedUnannounced() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        peer.close();
+        control.runAll();
+        nativeLog.clear();
+        FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+
+        peer.onRemoteChannel(channel);
+        control.runAll();
+
+        assertEquals(List.of("close ReliableDataChannel", "dispose ReliableDataChannel"), nativeLog);
+        assertTrue(listener.snapshot().isEmpty());
+    }
+
+    @Test
+    void aPeerClosedBeforeItsConnectionExistsNeverCreatesOne() {
+        WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null);
+        List<String> created = new ArrayList<>();
+        peer.start(observer -> {
+            created.add("created");
+            return connection;
+        });
+
+        CompletableFuture<Void> closed = peer.close().toCompletableFuture();
+        control.runAll();
+
+        assertTrue(created.isEmpty());
+        assertTrue(closed.isDone());
+        assertTrue(nativeLog.isEmpty());
+    }
+
+    @Test
     void aKeptRemoteChannelIsAnnouncedBeforeItOpensAndCarriesMessages() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
