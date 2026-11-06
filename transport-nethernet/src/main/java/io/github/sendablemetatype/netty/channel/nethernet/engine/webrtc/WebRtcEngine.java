@@ -391,7 +391,9 @@ public final class WebRtcEngine implements NetherNetEngine {
          * SLF4J logger {@value NativeLogBridge#LOGGER_NAME}, or
          * {@link Severity#NONE} for none. Which of them are written stays with
          * the host's logging configuration: errors log as ERROR, warnings as
-         * WARN, INFO as DEBUG and VERBOSE as TRACE.
+         * WARN, INFO as DEBUG and VERBOSE as TRACE. A few errors and warnings
+         * that report routine events, such as the abort every client quit
+         * logs, log as DEBUG.
          *
          * <p>webrtc-java fixes its own threshold when it loads its library,
          * from the system property

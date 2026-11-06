@@ -796,6 +796,13 @@ warnings as WARN, INFO as DEBUG and VERBOSE as TRACE. Which of them are written
 stays with the host's logging configuration. `nativeLogThreshold` on the engine
 builder sets the lowest severity forwarded at all, `WARNING` by default.
 
+A few errors and warnings report routine events, so they log as DEBUG: the
+abort libwebrtc logs at ERROR when a client quits (a peer-reported
+"User-Initiated Abort"), STUN and TURN host lookups that fail on an IPv6
+network, and TURN permissions the server refuses with 403. The bridge matches
+them by libwebrtc source file and message text; every other line keeps its
+level.
+
 webrtc-java fixes its own threshold once, when it loads its native library, from
 the system property `io.github.sendablemetatype.webrtc.logging.severity`. If the
 host has not set that property, the engine sets it before it first uses
