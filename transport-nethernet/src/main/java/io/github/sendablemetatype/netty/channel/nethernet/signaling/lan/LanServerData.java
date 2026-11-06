@@ -1,4 +1,4 @@
-package io.github.sendablemetatype.netty.channel.nethernet.signaling;
+package io.github.sendablemetatype.netty.channel.nethernet.signaling.lan;
 
 import java.util.Objects;
 

@@ -268,7 +268,7 @@ class HttpSignalingStatusTest {
         EmbeddedChannel loop = new EmbeddedChannel();
         try {
             StatusRequest request = new StatusRequest(null, SourcedAddress.unknown(), null, null);
-            for (int i = 0; i < HttpStatusService.MAX_CONCURRENT_CALLS; i++) {
+            for (int i = 0; i < ProviderCalls.MAX_CONCURRENT_CALLS; i++) {
                 assertFalse(service.query(request, loop.eventLoop()).isDone());
             }
 
