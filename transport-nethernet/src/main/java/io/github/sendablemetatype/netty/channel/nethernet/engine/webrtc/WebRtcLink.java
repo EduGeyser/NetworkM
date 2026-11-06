@@ -9,10 +9,12 @@ import io.github.sendablemetatype.webrtc.RTCDataChannelSendObserver;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -47,11 +49,12 @@ final class WebRtcLink implements DataLink {
     private final AtomicLong queued = new AtomicLong();
     private volatile long lowWatermark;
 
-    // Sends handed to the engine whose result has not arrived. A send counts
-    // itself before it reads stopped, and stopSending sets stopped before it
-    // reads the count, so a send either fails at once or is waited for.
-    private final AtomicInteger outstanding = new AtomicInteger();
-    private volatile boolean stopped;
+    private final Object sends = new Object();
+    // Guarded by sends: the sends handed to libwebrtc whose completion has not
+    // finished, and whether sending stopped. Sends register only before the
+    // stop, so after it the set only shrinks.
+    private final Set<PendingSend> pending = new HashSet<>();
+    private boolean stopped;
     private final CompletableFuture<Void> settled = new CompletableFuture<>();
 
     private final AtomicBoolean openReported = new AtomicBoolean();
@@ -72,36 +75,28 @@ final class WebRtcLink implements DataLink {
     public void send(ByteBuffer message, Consumer<Throwable> completion) {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(completion, "completion");
-        int size = message.remaining();
-        outstanding.incrementAndGet();
         NativeLink target = channel;
-        if (stopped || target == null) {
-            settle(completion, new IllegalStateException(stopped ? "Data link is closed" : "Data link is not open"));
+        PendingSend send = new PendingSend(message.remaining(), completion);
+        String refused;
+        synchronized (sends) {
+            refused = stopped ? "Data link is closed" : target == null ? "Data link is not open" : null;
+            if (refused == null) {
+                pending.add(send);
+            }
+        }
+        if (refused != null) {
+            completion.accept(new IllegalStateException(refused));
             return;
         }
-        queued.addAndGet(size);
+        queued.addAndGet(send.size);
         try {
-            target.sendAsync(message, new RTCDataChannelSendObserver() {
-                @Override
-                public void onSuccess() {
-                    settle(completion, null);
-                }
-
-                @Override
-                public void onFailure(String error) {
-                    if (DISCARDED.equals(error)) {
-                        queued.addAndGet(-size);
-                    }
-                    settle(completion, new IOException("Native send failed: " + error));
-                }
-            });
+            target.sendAsync(message, send);
         } catch (RuntimeException | Error e) {
             if (!NativeErrors.isCallFailure(e)) {
                 throw e;
             }
             // No result follows a send that threw; libwebrtc never saw it.
-            queued.addAndGet(-size);
-            settle(completion, e);
+            send.settle(e, true);
         }
     }
 
@@ -116,16 +111,6 @@ final class WebRtcLink implements DataLink {
             throw new IllegalArgumentException("Negative low watermark: " + bytes);
         }
         lowWatermark = bytes;
-    }
-
-    private void settle(Consumer<Throwable> completion, Throwable cause) {
-        try {
-            completion.accept(cause);
-        } finally {
-            if (outstanding.decrementAndGet() == 0 && stopped) {
-                settled.complete(null);
-            }
-        }
     }
 
     /** Gives a link opened locally its native channel, once it exists. */
@@ -145,18 +130,97 @@ final class WebRtcLink implements DataLink {
     /**
      * Refuses further sends.
      *
-     * @return completes once every send already handed to the engine has its result
+     * @return completes once the completion of every send already handed to
+     *         libwebrtc has run
      */
     CompletableFuture<Void> stopSending() {
-        stopped = true;
-        if (outstanding.get() == 0) {
+        boolean idle;
+        synchronized (sends) {
+            stopped = true;
+            idle = pending.isEmpty();
+        }
+        if (idle) {
             settled.complete(null);
         }
         return settled;
     }
 
+    /**
+     * Fails every send whose result has not arrived. A result that arrives
+     * later finds its send settled and is dropped. Call after
+     * {@link #stopSending()}.
+     *
+     * @return the stage {@link #stopSending()} returned
+     */
+    CompletableFuture<Void> abandonSends() {
+        List<PendingSend> left;
+        synchronized (sends) {
+            left = List.copyOf(pending);
+        }
+        IOException cause = new IOException("The data link closed before the engine reported the send's result");
+        left.forEach(send -> send.settle(cause, false));
+        return settled;
+    }
+
     NativeLink channel() {
         return channel;
+    }
+
+    /**
+     * A send handed to libwebrtc. Its completion runs once: with the result
+     * webrtc-java reports, or with a failure when teardown stops waiting.
+     */
+    private final class PendingSend implements RTCDataChannelSendObserver {
+        private final int size;
+        private final Consumer<Throwable> completion;
+        // Guarded by sends.
+        private boolean claimed;
+
+        PendingSend(int size, Consumer<Throwable> completion) {
+            this.size = size;
+            this.completion = completion;
+        }
+
+        @Override
+        public void onSuccess() {
+            settle(null, false);
+        }
+
+        @Override
+        public void onFailure(String error) {
+            settle(new IOException("Native send failed: " + error), DISCARDED.equals(error));
+        }
+
+        /**
+         * Runs the completion unless the send is settled already.
+         *
+         * @param cause the failure, or null for success
+         * @param uncounted whether libwebrtc never counted the message, so it
+         *        leaves the queued bytes here
+         */
+        void settle(Throwable cause, boolean uncounted) {
+            synchronized (sends) {
+                if (claimed) {
+                    return;
+                }
+                claimed = true;
+            }
+            try {
+                if (uncounted) {
+                    queued.addAndGet(-size);
+                }
+                completion.accept(cause);
+            } finally {
+                boolean last;
+                synchronized (sends) {
+                    pending.remove(this);
+                    last = stopped && pending.isEmpty();
+                }
+                if (last) {
+                    settled.complete(null);
+                }
+            }
+        }
     }
 
     private final class Observer implements RTCDataChannelObserver {

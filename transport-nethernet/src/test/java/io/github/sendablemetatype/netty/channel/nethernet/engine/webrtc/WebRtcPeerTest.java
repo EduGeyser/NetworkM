@@ -29,12 +29,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -264,6 +267,30 @@ class WebRtcPeerTest {
         assertTrue(closed.toCompletableFuture().isDone());
         assertEquals(before, listener.snapshot());
         assertEquals(1, connection.closes);
+    }
+
+    @Test
+    void teardownFailsASendWithoutResultOnceAndDropsTheLateResult() throws InterruptedException {
+        WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null, Duration.ZERO);
+        peer.start(observer -> connection);
+        control.runAll();
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        List<Throwable> results = Collections.synchronizedList(new ArrayList<>());
+        listener.remoteLinks.getFirst().send(ByteBuffer.allocate(10), result -> {
+            results.add(result);
+            nativeLog.add("send settled");
+        });
+
+        CompletableFuture<Void> closed = peer.close().toCompletableFuture();
+        // The timeout fires on another thread and hands the rest back to the control thread.
+        runControlUntil(closed::isDone);
+
+        assertEquals(List.of("send settled", "dispose ReliableDataChannel"), nativeLog.subList(3, nativeLog.size()));
+        assertEquals(1, results.size());
+        assertInstanceOf(IOException.class, results.getFirst());
+
+        reliable.send(0).onSuccess();
+        assertEquals(1, results.size());
     }
 
     @Test
@@ -501,6 +528,16 @@ class WebRtcPeerTest {
         }
         if (connection.local != null) {
             connection.local.onSuccess();
+        }
+    }
+
+    private void runControlUntil(BooleanSupplier done) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        control.runAll();
+        while (!done.getAsBoolean()) {
+            assertTrue(System.nanoTime() < deadline, "The control thread never got the work it waited for");
+            Thread.sleep(1);
+            control.runAll();
         }
     }
 

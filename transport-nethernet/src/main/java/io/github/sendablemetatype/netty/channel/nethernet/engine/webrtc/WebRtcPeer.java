@@ -30,6 +30,7 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -60,16 +61,17 @@ final class WebRtcPeer implements Peer {
     private static final int SCTP_USER_INITIATED_ABORT = 12;
 
     /**
-     * How long teardown waits for send results before it releases the data
-     * channels anyway. libwebrtc settles every send when the connection
-     * closes, so this only bounds a lost result.
+     * How long teardown waits for send results before it fails the sends
+     * still without one and releases the data channels. libwebrtc settles
+     * every send when the connection closes, so this only bounds a lost result.
      */
-    private static final long SEND_SETTLE_TIMEOUT_SECONDS = 10;
+    private static final Duration SEND_SETTLE_TIMEOUT = Duration.ofSeconds(10);
 
     private final Role role;
     private final PeerListener listener;
     private final Executor control;
     private final IceCredentials localCredentials;
+    private final Duration sendSettleTimeout;
 
     private final AtomicBoolean closeRequested = new AtomicBoolean();
     private volatile boolean listening = true;
@@ -96,10 +98,16 @@ final class WebRtcPeer implements Peer {
     private final List<WebRtcLink> links = new ArrayList<>();
 
     WebRtcPeer(Role role, PeerListener listener, Executor control, IceCredentials localCredentials) {
+        this(role, listener, control, localCredentials, SEND_SETTLE_TIMEOUT);
+    }
+
+    WebRtcPeer(Role role, PeerListener listener, Executor control, IceCredentials localCredentials,
+               Duration sendSettleTimeout) {
         this.role = Objects.requireNonNull(role, "role");
         this.listener = Objects.requireNonNull(listener, "listener");
         this.control = Objects.requireNonNull(control, "control");
         this.localCredentials = localCredentials;
+        this.sendSettleTimeout = Objects.requireNonNull(sendSettleTimeout, "sendSettleTimeout");
     }
 
     /**
@@ -383,16 +391,18 @@ final class WebRtcPeer implements Peer {
         if (peer != null) {
             quietly("closing a peer connection", peer::close);
         }
-        // libwebrtc settles every pending send once the connection is closed;
-        // the data channels are released after that, so no send result
-        // follows the close stage.
+        // libwebrtc settles every pending send once the connection is closed.
+        // A result still missing at the timeout fails its send, and arrives
+        // to no one if it ever comes; the data channels are released after
+        // that, so no send completion follows the close stage.
         CompletableFuture.allOf(settled.toArray(CompletableFuture[]::new))
-                .completeOnTimeout(null, SEND_SETTLE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .whenComplete((ignored, error) -> {
-                    if (!execute(() -> release(current))) {
-                        release(current);
-                    }
-                });
+                .completeOnTimeout(null, sendSettleTimeout.toNanos(), TimeUnit.NANOSECONDS)
+                .whenComplete((ignored, error) -> onControl(() -> abandonSends(current)));
+    }
+
+    private void abandonSends(List<WebRtcLink> current) {
+        CompletableFuture.allOf(current.stream().map(WebRtcLink::abandonSends).toArray(CompletableFuture[]::new))
+                .whenComplete((ignored, error) -> onControl(() -> release(current)));
     }
 
     private void release(List<WebRtcLink> current) {
@@ -678,6 +688,17 @@ final class WebRtcPeer implements Peer {
     private void requireRole(Role required, String method) {
         if (role != required) {
             throw new IllegalStateException(method + "() is for an " + required.name().toLowerCase() + " peer");
+        }
+    }
+
+    /**
+     * Runs a teardown step on the control thread, or here if the engine has
+     * stopped it: the control thread lives until every peer of the engine has
+     * terminated, so then nothing else runs there.
+     */
+    private void onControl(Runnable task) {
+        if (!execute(task)) {
+            task.run();
         }
     }
 
