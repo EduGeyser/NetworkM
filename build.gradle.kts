@@ -41,16 +41,19 @@ subprojects {
     version = networkVersion
 
     repositories {
-        mavenLocal()
         mavenCentral()
+        // Local webrtc-java builds under test; last and filtered, so a stale local artifact never shadows Central.
+        mavenLocal {
+            content {
+                includeGroupAndSubgroups("io.github.sendablemetatype")
+            }
+        }
     }
 
     configure<JavaPluginExtension> {
         toolchain {
             languageVersion.set(JavaLanguageVersion.of(27))
         }
-        sourceCompatibility = JavaVersion.VERSION_25
-        targetCompatibility = JavaVersion.VERSION_25
         withJavadocJar()
         withSourcesJar()
     }
@@ -130,6 +133,7 @@ subprojects {
         withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
             options.release.set(25)
+            options.compilerArgs.add("-Xlint:deprecation,removal")
         }
         withType<Javadoc>().configureEach {
             (options as StandardJavadocDocletOptions).apply {

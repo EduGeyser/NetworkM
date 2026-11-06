@@ -1,7 +1,3 @@
-plugins {
-    id("com.gradleup.nmcp")
-}
-
 description = "NetherNet transport for Netty"
 
 val webrtcNativePlatform = providers.gradleProperty("webrtcNativePlatform")
