@@ -52,7 +52,7 @@
       // The root build hands this catalog version to the JaCoCo plugin, so no library references it
       customType: 'regex',
       managerFilePatterns: ['/(^|/)gradle/libs\\.versions\\.toml$/'],
-      matchStrings: ['jacoco ="(?<currentValue>[^"]+)"'],
+      matchStrings: ['jacoco = "(?<currentValue>[^"]+)"'],
       depNameTemplate: 'org.jacoco:org.jacoco.agent',
       datasourceTemplate: 'maven',
     },
