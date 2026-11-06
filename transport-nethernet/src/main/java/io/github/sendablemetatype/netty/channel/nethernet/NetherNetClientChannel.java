@@ -19,6 +19,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateInt
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalType;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
@@ -422,7 +423,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             }
             try {
                 signaling.sendSignal(targetNetworkId,
-                        NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, signed));
+                        new Signal(SignalType.CONNECT_REQUEST, attemptConnectionId, signed).wire());
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
                 retryOrFail("Could not send the offer");
@@ -462,7 +463,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     private boolean sendLocalCandidate(String attemptConnectionId, String candidate) {
         try {
             signaling.sendSignal(targetNetworkId,
-                    NetherNetConstants.buildSignalCandidateAdd(attemptConnectionId, candidate));
+                    new Signal(SignalType.CANDIDATE_ADD, attemptConnectionId, candidate).wire());
             return true;
         } catch (Exception e) {
             log.debug("Failed to send ICE candidate", e);
@@ -473,7 +474,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     private void handleSignal(Signal signal) {
         final int generation = attemptGeneration;
-        String type = signal.type();
+        SignalType type = signal.type();
         String idStr = signal.connectionId();
         String data = signal.payload();
 
@@ -501,7 +502,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 log.debug("Ignored a signal for ID {} that came before the offer went out", idStr);
                 return;
             }
-            if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)) {
+            if (type == SignalType.CONNECT_RESPONSE) {
                 ServerTrust trust = clientConfig.getServerTrust();
                 if (trust != null) {
                     // Pure computation, two signature checks; another attempt would meet the same server.
@@ -528,7 +529,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             if (current == null) return;
 
             switch (type) {
-                case NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE ->
+                case CONNECT_RESPONSE ->
                         current.applyAnswer(candidates.remoteDescription(data)).whenComplete((ignored, failure) -> {
                             if (failure != null) {
                                 // The handshake timeout retries.
@@ -536,9 +537,9 @@ public class NetherNetClientChannel extends NetherNetChannel {
                             }
                         });
                 // The engine holds candidates until the answer applied.
-                case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> candidates.trickled(data)
+                case CANDIDATE_ADD -> candidates.trickled(data)
                         .ifPresent(taken -> current.addRemoteCandidate(taken.sdp(), taken.sdpMid()));
-                case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
+                case CONNECT_ERROR -> {
                     log.error("Received SIGNAL_CONNECT_ERROR for {}.", this.connectionId);
                     connectionFailed(NetherConnectionFailure.CONNECT_ERROR);
                     if (connectPromise != null && !connectPromise.isDone()) {
@@ -546,7 +547,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                     }
                     close();
                 }
-                default -> log.debug("Received unknown signal type: {}", type);
+                case CONNECT_REQUEST -> log.debug("Ignored a CONNECTREQUEST for ID {}", idStr);
             }
         });
     }

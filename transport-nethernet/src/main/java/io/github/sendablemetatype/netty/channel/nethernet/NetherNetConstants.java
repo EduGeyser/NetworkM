@@ -22,12 +22,6 @@ public class NetherNetConstants {
     public static final int ID_DISCOVERY_RESPONSE = 0x01;
     public static final int ID_DISCOVERY_MESSAGE = 0x02;
 
-    // WebRTC Negotiation Message Types
-    public static final String RTC_NEGOTIATION_CONNECT_REQUEST = "CONNECTREQUEST";
-    public static final String RTC_NEGOTIATION_CONNECT_RESPONSE = "CONNECTRESPONSE";
-    public static final String RTC_NEGOTIATION_CANDIDATE_ADD = "CANDIDATEADD";
-    public static final String RTC_NEGOTIATION_CONNECT_ERROR = "CONNECTERROR";
-
     // Signaling User Agent String
     public static final String SIGNALING_USER_AGENT = "libHttpClient/1.0.0.0";
 
@@ -164,51 +158,6 @@ public class NetherNetConstants {
         DiscoveryCrypto() throws Exception {
             mac.init(INTEGRITY_KEY);
         }
-    }
-
-    /**
-     * Builds a signaling message for a CONNECTREQUEST.
-     *
-     * @param connectionId   The unique connection ID.
-     * @param sdp            The SDP payload.
-     * @return The formatted signaling message.
-     */
-    public static String buildSignalConnectRequest(String connectionId, String sdp) {
-        return RTC_NEGOTIATION_CONNECT_REQUEST + " " + connectionId + " " + sdp;
-    }
-
-    /**
-     * Builds a signaling message for a CONNECTRESPONSE.
-     *
-     * @param connectionId   The unique connection ID.
-     * @param sdp            The SDP payload.
-     * @return The formatted signaling message.
-     */
-    public static String buildSignalConnectResponse(String connectionId, String sdp) {
-        return RTC_NEGOTIATION_CONNECT_RESPONSE + " " + connectionId + " " + sdp;
-    }
-
-    /**
-     * Builds a signaling message for a CANDIDATEADD.
-     *
-     * @param connectionId   The unique connection ID.
-     * @param candidateSdp   The candidate SDP string.
-     * @return The formatted signaling message.
-     */
-    public static String buildSignalCandidateAdd(String connectionId, String candidateSdp) {
-        return RTC_NEGOTIATION_CANDIDATE_ADD + " " + connectionId + " " + candidateSdp;
-    }
-
-    /**
-     * Builds a signaling message for a CONNECTERROR. Vanilla reads the payload as a signed 32-bit
-     * decimal number from its signaling error enumeration.
-     *
-     * @param connectionId the unique connection ID
-     * @param errorCode the error code
-     * @return the formatted signaling message
-     */
-    public static String buildSignalConnectError(String connectionId, int errorCode) {
-        return RTC_NEGOTIATION_CONNECT_ERROR + " " + connectionId + " " + errorCode;
     }
 
     /**

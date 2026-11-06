@@ -491,14 +491,8 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         if (signal == null) {
             return;
         }
-        String type = signal.type();
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)) {
-            return;
-        }
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type) && signal.payload().isEmpty()) {
+        SignalType type = signal.type();
+        if (type != SignalType.CONNECT_ERROR && signal.payload().isEmpty()) {
             return;
         }
         String connectionId = signal.connectionId();
@@ -524,7 +518,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             return;
         }
 
-        if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
+        if (type == SignalType.CONNECT_REQUEST) {
             OfferHandler offers = offerHandler;
             if (offers == null) {
                 log.debug("Received a CONNECTREQUEST, but nothing takes offers");
@@ -533,7 +527,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 offers.onOffer(connectionId, senderId, signal.payload(), sender);
             }
         } else {
-            log.debug("Unhandled signal type: {}", type);
+            log.debug("Received a {} signal for no attempt or join", type.wireName());
         }
     }
 
