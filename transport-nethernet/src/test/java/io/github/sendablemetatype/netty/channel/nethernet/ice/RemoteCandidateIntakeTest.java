@@ -18,10 +18,14 @@ package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
 import org.junit.jupiter.api.Test;
 
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -48,8 +52,16 @@ class RemoteCandidateIntakeTest {
             + "a=candidate:3 1 tcp 2122063615 10.7.0.2 9 typ host tcptype active\r\n"
             + "a=mid:0\r\n";
 
+    private final ManualResolver resolver = new ManualResolver();
+    private final List<RemoteCandidate> lookedUp = new CopyOnWriteArrayList<>();
+
     private static long candidates(String sdp) {
         return sdp.lines().filter(line -> line.startsWith("a=candidate:")).count();
+    }
+
+    /** A client attempt's intake whose lookups the test answers, recording what they hand on. */
+    private RemoteCandidateIntake client(String offer) {
+        return RemoteCandidateIntake.client(offer, resolver, lookedUp::add);
     }
 
     // The remote description
@@ -95,13 +107,134 @@ class RemoteCandidateIntakeTest {
         assertTrue(intake.trickled("candidate:1 1 udp 2122194687 203.0.113.7 54321 typ host").isEmpty());
     }
 
+    // Names, on a client
+
     @Test
-    void aClientAlsoTakesNames() {
-        // A server may name a host inside its own network for the engine to resolve
-        String filtered = RemoteCandidateIntake.client(OFFER).remoteDescription(
-                "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-                        + "a=candidate:1 1 udp 2130706431 node.cluster.local 5000 typ host\r\n");
-        assertTrue(filtered.contains("node.cluster.local"));
+    void aClientLooksNamesUpAndHandsOnTheirLiteralsInsteadOfTheNames() {
+        RemoteCandidateIntake intake = client(OFFER);
+        String filtered = intake.remoteDescription("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                + "a=mid:0\r\n"
+                + "a=candidate:1 1 udp 2130706431 node.cluster.local 5000 typ host\r\n"
+                + "a=candidate:2 1 udp 2130706431 203.0.113.10 5001 typ host\r\n");
+        Optional<RemoteCandidate> trickled = intake.trickled("candidate:3 1 udp 2130706431 relay.example 5002 typ relay"
+                + " raddr 0.0.0.0 rport 0");
+
+        assertEquals(0, filtered.lines().filter(line -> line.contains(".local")).count(), "the engine never sees a name");
+        assertEquals(1, candidates(filtered), "the literal stays in the description");
+        assertTrue(trickled.isEmpty(), "a name follows once looked up");
+        assertEquals(List.of("node.cluster.local", "relay.example"), resolver.names());
+
+        resolver.answer("relay.example", "2001:db8::7");
+        resolver.answer("node.cluster.local", "::ffff:10.0.0.7");
+        assertEquals(List.of(
+                new RemoteCandidate("candidate:3 1 udp 2130706431 2001:db8::7 5002 typ relay raddr 0.0.0.0 rport 0", "0", 0),
+                new RemoteCandidate("candidate:1 1 udp 2130706431 10.0.0.7 5000 typ host", "0", 0)), lookedUp);
+        assertTrue(intake.isPeerRelay(new InetSocketAddress("2001:db8::7", 5002)), "a looked-up relay is noted");
+    }
+
+    @Test
+    void aNameIsCheckedAtTheAddressItResolvesTo() throws Exception {
+        RemoteCandidateIntake intake = client(OFFER);
+        // As glibc reads them; the JDK refuses some of these spellings and the name is dropped then
+        List<String> names = List.of("0xe00000fb", "0340.0.0.373", "bcast.example", "any.example", "mapped.example",
+                "missing.example");
+        for (String name : names) {
+            intake.trickled("candidate:1 1 udp 2130706431 " + name + " 5000 typ host");
+        }
+
+        resolver.answer("0xe00000fb", "224.0.0.251");
+        resolver.answer("0340.0.0.373", "224.0.0.251");
+        resolver.answer("bcast.example", "255.255.255.255");
+        resolver.answer("any.example", "::");
+        resolver.answer("mapped.example", Inet6Address.getByAddress(null,
+                new byte[] {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, (byte) 255, (byte) 255, (byte) 224, 0, 0, (byte) 251}, -1));
+        resolver.fail("missing.example");
+
+        assertEquals(names, resolver.names());
+        assertEquals(List.of(), lookedUp);
+    }
+
+    /**
+     * The system resolver reads these spellings itself, or refuses them, without asking DNS: the
+     * JDK parses the decimal forms and refuses ambiguous ones such as {@code 0xe00000fb}.
+     */
+    @Test
+    void theSystemResolverMeetsNumericSpellingsAsTheAddressesTheyStandFor() throws Exception {
+        List<CompletableFuture<InetAddress>> lookups = new CopyOnWriteArrayList<>();
+        RemoteCandidateIntake intake = RemoteCandidateIntake.client(OFFER, name -> {
+            CompletableFuture<InetAddress> lookup = RemoteCandidateIntake.Resolver.SYSTEM.resolve(name)
+                    .toCompletableFuture();
+            lookups.add(lookup);
+            return lookup;
+        }, lookedUp::add);
+        for (String name : List.of("3758096635", "224.251", "4294967295", "0", "0xe00000fb", "1.2.3")) {
+            intake.trickled("candidate:1 1 udp 2130706431 " + name + " 5000 typ host");
+        }
+        for (CompletableFuture<InetAddress> lookup : lookups) {
+            lookup.handle((address, failure) -> null).get(10, TimeUnit.SECONDS);
+        }
+
+        assertEquals(InetAddress.ofLiteral("224.0.0.251"), lookups.getFirst().get());
+        // Follow-ups run once their lookup completed, on its thread
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (lookedUp.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(List.of(new RemoteCandidate("candidate:1 1 udp 2130706431 1.2.0.3 5000 typ host", "0", 0)),
+                lookedUp, "only 1.2.3, which stands for 1.2.0.3, is usable");
+    }
+
+    @Test
+    void aClientLooksUpAtMostTheCapOfNamesPerAttempt() {
+        RemoteCandidateIntake intake = client(OFFER);
+        StringBuilder answer = new StringBuilder("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n");
+        for (int i = 0; i < 20; i++) {
+            answer.append("a=candidate:").append(i).append(" 1 udp 1 answer").append(i).append(".example 5000 typ host\r\n");
+        }
+        intake.remoteDescription(answer.toString());
+        for (int i = 0; i < 20; i++) {
+            intake.trickled("candidate:" + i + " 1 udp 1 trickled" + i + ".example 5000 typ host");
+        }
+
+        assertEquals(RemoteCandidateIntake.MAX_LOOKUPS, resolver.names().size());
+        assertEquals("trickled11.example", resolver.names().getLast(), "in the order the names came");
+    }
+
+    @Test
+    void aNameHoldsItsPlaceUnderTheCapWhileLookedUpAndOnlyNamesAreLookedUp() {
+        RemoteCandidateIntake intake = client(OFFER);
+        intake.trickled("candidate:1 1 udp 1 first.example 5000 typ host");
+        intake.trickled("candidate:3 1 tcp 1 tcp.example 9 typ host tcptype active");
+        intake.trickled("candidate:4 1 udp 1  5000 typ host");
+        int taken = 0;
+        for (int i = 0; i < 40; i++) {
+            if (intake.trickled("candidate:" + i + " 1 udp 1 203.0.113.7 " + (1000 + i) + " typ host").isPresent()) {
+                taken++;
+            }
+        }
+        intake.trickled("candidate:2 1 udp 1 late.example 5000 typ host");
+
+        assertEquals(RemoteCandidateIntake.MAX_CANDIDATES - 1, taken);
+        assertEquals(List.of("first.example"), resolver.names(), "no TCP, nothing past the cap, no empty name");
+    }
+
+    @Test
+    void aNameKeepsTheSectionItWasTaggedWithWhenItArrived() {
+        RemoteCandidateIntake intake = client(OFFER.replace("a=mid:0", "a=mid:offer"));
+        intake.trickled("candidate:1 1 udp 1 early.example 5000 typ host");
+        intake.remoteDescription("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:answer\r\n");
+
+        resolver.answer("early.example", "203.0.113.7");
+        assertEquals("offer", lookedUp.getFirst().sdpMid());
+    }
+
+    @Test
+    void aServerLooksNothingUp() {
+        RemoteCandidateIntake intake = RemoteCandidateIntake.server();
+        intake.remoteDescription("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+                + "a=candidate:1 1 udp 2130706431 0xe00000fb 5000 typ host\r\n");
+
+        assertTrue(intake.trickled("candidate:1 1 udp 2130706431 3758096635 5000 typ host").isEmpty());
     }
 
     // Trickled candidates
@@ -118,7 +251,7 @@ class RemoteCandidateIntakeTest {
 
     @Test
     void aClientTagsCandidatesTrickledAheadOfTheAnswerWithItsOffersMid() {
-        RemoteCandidateIntake intake = RemoteCandidateIntake.client(OFFER.replace("a=mid:0", "a=mid:data"));
+        RemoteCandidateIntake intake = client(OFFER.replace("a=mid:0", "a=mid:data"));
 
         assertEquals("data", intake.trickled("candidate:1 1 udp 1 203.0.113.7 1 typ host").orElseThrow().sdpMid());
         intake.remoteDescription("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n");
@@ -194,7 +327,7 @@ class RemoteCandidateIntakeTest {
         for (String address : UNUSABLE) {
             offer.append("a=candidate:1 1 udp 2122194687 ").append(address).append(" 5000 typ host\r\n");
         }
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client(OFFER))) {
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), client(OFFER))) {
             assertEquals(0, candidates(intake.remoteDescription(offer.toString())));
             for (String address : UNUSABLE) {
                 assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isEmpty(),
@@ -206,7 +339,7 @@ class RemoteCandidateIntakeTest {
     @Test
     void loopbackAndLinkLocalCandidatesStay() {
         List<String> kept = List.of("127.0.0.1", "::1", "169.254.10.20", "fe80::1", "::ffff:169.254.10.20");
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client(OFFER))) {
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), client(OFFER))) {
             intake.remoteDescription(OFFER);
             for (String address : kept) {
                 assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isPresent(),
@@ -339,7 +472,7 @@ class RemoteCandidateIntakeTest {
 
     @Test
     void infersNothingAsAClientOrBehindRelays() {
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.client(OFFER), RemoteCandidateIntake.relayed())) {
+        for (RemoteCandidateIntake intake : List.of(client(OFFER), RemoteCandidateIntake.relayed())) {
             intake.remoteDescription(HOST_ONLY_OFFER);
             assertTrue(intake.inferredCandidates("v=0\r\n", PUBLIC_PEER).isEmpty());
         }

@@ -14,6 +14,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidate;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
@@ -57,6 +58,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     private final EngineRef engine;
     private final NetherNetClientSignaling signaling;
+    /** Looks up the names in the server's candidates; see {@link RemoteCandidateIntake#client}. */
+    private final RemoteCandidateIntake.Resolver resolver;
     private final DefaultNetherClientChannelConfig clientConfig;
     private final Object attemptLock = new Object();
 
@@ -83,7 +86,9 @@ public class NetherNetClientChannel extends NetherNetChannel {
     private volatile int attemptGeneration;
 
     // Event loop confined, per attempt: local candidates wait until the offer is out, and the
-    // server's candidates go through the attempt's intake, which exists once the offer does.
+    // server's candidates go through the attempt's intake, which exists once the offer does. A
+    // name's lookup ends on another thread and comes back through executeForAttempt, so a
+    // retired attempt applies nothing.
     private boolean offerSent;
     private List<String> pendingLocalCandidates = new ArrayList<>();
     private RemoteCandidateIntake intake;
@@ -119,10 +124,22 @@ public class NetherNetClientChannel extends NetherNetChannel {
         this(EngineRef.owned(engineSupplier), signaling);
     }
 
+    /** A client on the caller's engine that looks names up with this resolver; a test seam. */
+    NetherNetClientChannel(NetherNetEngine engine, NetherNetClientSignaling signaling,
+                           RemoteCandidateIntake.Resolver resolver) {
+        this(EngineRef.shared(engine), signaling, resolver);
+    }
+
     private NetherNetClientChannel(EngineRef engine, NetherNetClientSignaling signaling) {
+        this(engine, signaling, RemoteCandidateIntake.Resolver.SYSTEM);
+    }
+
+    private NetherNetClientChannel(EngineRef engine, NetherNetClientSignaling signaling,
+                                   RemoteCandidateIntake.Resolver resolver) {
         super(null, null, null);
         this.engine = engine;
         this.signaling = signaling;
+        this.resolver = resolver;
         this.connectionId = this.cycleConnectionId();
         this.clientConfig = new DefaultNetherClientChannelConfig(this);
         this.config = clientConfig;
@@ -394,7 +411,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 log.debug("Creating the offer failed: {}", failure.toString());
                 return;
             }
-            intake = RemoteCandidateIntake.client(offer);
+            intake = RemoteCandidateIntake.client(offer, resolver,
+                    lookedUp -> executeForAttempt(gen, () -> applyLookedUp(lookedUp)));
             String signed;
             try {
                 signed = signed(offer);
@@ -422,6 +440,17 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 }
             }
         }));
+    }
+
+    /**
+     * Hands the engine a candidate the server named by a host name, once its lookup is done and
+     * the address passed the intake, under the rule its signal had: only while this attempt is
+     * still connecting. The engine holds candidates until the answer applied.
+     */
+    private void applyLookedUp(RemoteCandidate candidate) {
+        Peer current = peer();
+        if (!isOpen() || handshakeComplete || current == null) return;
+        current.addRemoteCandidate(candidate.sdp(), candidate.sdpMid());
     }
 
     /** The offer with the configured identity's assertion, or as it is without one. */

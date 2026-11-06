@@ -152,6 +152,26 @@ public final class CandidateLine {
     }
 
     /**
+     * The same candidate at another connection address, written in canonical form: an IPv4-mapped
+     * IPv6 address as the IPv4 address, no zone.
+     *
+     * @param address The address, such as the one a name in this candidate resolved to
+     * @return The candidate at that address
+     */
+    public CandidateLine withAddress(InetAddress address) {
+        InetAddress plain;
+        try {
+            // Turns an IPv4-mapped address into the IPv4 one and drops the zone
+            plain = InetAddress.getByAddress(address.getAddress());
+        } catch (UnknownHostException impossible) {
+            throw new IllegalArgumentException("An address of " + address.getAddress().length + " bytes", impossible);
+        }
+        String[] tokens = this.tokens.clone();
+        tokens[4] = NetUtil.toAddressString(plain);
+        return new CandidateLine(String.join(" ", tokens), tokens, this.type, this.port);
+    }
+
+    /**
      * The same candidate with its related address, which names where a reflexive or relayed
      * candidate came from, replaced by the unspecified address and port 0. A candidate without
      * one comes back as it is.
