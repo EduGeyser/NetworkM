@@ -55,6 +55,16 @@ application supports:
 | macOS x86-64 | `macos-x86_64` |
 | macOS ARM64 | `macos-aarch64` |
 
+Each classifier holds one library under its own platform name, so several can
+sit on one class path; the loader picks the one for the running platform. Linux
+builds that use musl, such as Alpine, are not supported yet.
+
+Java 25 to 27 print a warning when the native library loads, and a future Java
+release will block the load, unless native access is enabled. Pass
+`--enable-native-access=ALL-UNNAMED` when webrtc-java is on the class path, or
+`--enable-native-access=io.github.sendablemetatype.webrtc` when it is on the
+module path.
+
 See [RakNet configuration](transport-raknet/README.md) and
 [NetherNet setup](transport-nethernet/README.md) for transport configuration.
 
