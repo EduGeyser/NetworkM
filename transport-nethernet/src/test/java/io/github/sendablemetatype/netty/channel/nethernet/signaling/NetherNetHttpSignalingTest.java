@@ -5,9 +5,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChildChannel;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.ClientAssertionFixtures;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcServerBackend;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSession;
-import io.github.sendablemetatype.netty.channel.nethernet.backend.WebRtcSessionListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -23,10 +21,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.ByteBuffer;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,9 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Exercises the HTTP signaling front end against the real netty stack and
- * server channel, with the WebRTC engine replaced by a scripted backend: an
+ * server channel, with the WebRTC engine replaced by the fake engine: an
  * accepted offer produces a canned full ICE answer on a separate thread,
- * mirroring how the engine reports the answer after gathering completes.
+ * mirroring how the engine reports the description after gathering completes.
  */
 class NetherNetHttpSignalingTest {
 
@@ -49,55 +43,23 @@ class NetherNetHttpSignalingTest {
     private static MultiThreadIoEventLoopGroup group;
     private static NetherNetHttpSignaling signaling;
     private static Channel serverChannel;
-    private static ScriptedBackend backend;
+    private static FakeEngine engine;
     private static HttpClient client;
     private static String baseUrl;
     private static final LinkedBlockingQueue<ClientIdentity> authenticatedChildren = new LinkedBlockingQueue<>();
 
-    /** Records accepts and answers each offer with the canned SDP. */
-    private static final class ScriptedBackend implements WebRtcServerBackend {
-        final List<Boolean> fullIceFlags = new CopyOnWriteArrayList<>();
-        volatile boolean answerOffers = true;
-
-        @Override
-        public WebRtcSession accept(String offerSdp, List<NetherNetSignaling.IceServerInfo> iceServers,
-                                    WebRtcSessionListener listener, boolean fullIceAnswer) {
-            fullIceFlags.add(fullIceAnswer);
-            if (answerOffers) {
-                // Engine threads report the answer asynchronously; model that.
-                CompletableFuture.runAsync(() -> listener.onAnswerReady(CANNED_ANSWER));
-            }
-            return new WebRtcSession() {
-                @Override
-                public void send(ByteBuffer data, java.util.function.Consumer<Throwable> completion) {
-                    completion.accept(null);
-                }
-
-                @Override
-                public void addRemoteCandidate(String candidateSdp) {
-                }
-
-                @Override
-                public void close() {
-                }
-            };
-        }
-
-        @Override
-        public void close() {
-        }
-    }
-
     @BeforeAll
     static void setUp() throws Exception {
         group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
-        backend = new ScriptedBackend();
+        engine = new FakeEngine();
+        engine.answerWith("v=0\r\n");
+        engine.gatherWith(CANNED_ANSWER);
         signaling = new NetherNetHttpSignaling((SslContext) null, group);
-        signaling.setOfferValidator(null); // The scripted backend uses unsigned offers.
+        signaling.setOfferValidator(null); // The fake engine takes unsigned offers.
 
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(group, group)
-                .channelFactory(() -> new NetherNetServerChannel(backend, signaling))
+                .channelFactory(() -> new NetherNetServerChannel(engine, signaling))
                 .childHandler(new ChannelInitializer<NetherNetChildChannel>() {
                     @Override protected void initChannel(NetherNetChildChannel channel) {
                         ClientIdentity identity = channel.getClientIdentity();
@@ -133,7 +95,7 @@ class NetherNetHttpSignalingTest {
     }
 
     @Test
-    void validatesBeforeBackendCreationAndPublishesTheIdentity() throws Exception {
+    void validatesBeforePeerCreationAndPublishesTheIdentity() throws Exception {
         AtomicBoolean validatedOnIoLoop = new AtomicBoolean();
         var validator = ClientAssertionFixtures.validator();
         signaling.setOfferValidator(sdp -> {
@@ -144,10 +106,10 @@ class NetherNetHttpSignalingTest {
         });
         try {
             String valid = ClientAssertionFixtures.validOffer();
-            int previousAccepts = backend.fullIceFlags.size();
+            int previousAccepts = engine.peers().size();
             assertEquals(400, post("/v1/join/opaque-peer",
                     valid.replace(ClientAssertionFixtures.DIGEST, "CD:".repeat(31) + "CD")).statusCode());
-            assertEquals(previousAccepts, backend.fullIceFlags.size());
+            assertEquals(previousAccepts, engine.peers().size());
             assertEquals(200, post("/v1/join/opaque-peer", valid).statusCode());
             ClientIdentity identity = authenticatedChildren.poll(3, TimeUnit.SECONDS);
             assertNotNull(identity);
@@ -217,8 +179,8 @@ class NetherNetHttpSignalingTest {
         assertTrue(response.body().startsWith(CANNED_ANSWER));
         assertTrue(response.body().contains("a=identity:"));
         assertTrue(response.headers().firstValue("connection").orElse("").equalsIgnoreCase("close"));
-        // The channel must have requested a full ICE answer from the backend.
-        assertTrue(backend.fullIceFlags.stream().allMatch(Boolean::booleanValue));
+        // The channel must have waited for the gathered description.
+        assertTrue(engine.peers().stream().allMatch(peer -> peer.gatheredRequests() == 1));
     }
 
     @Test
