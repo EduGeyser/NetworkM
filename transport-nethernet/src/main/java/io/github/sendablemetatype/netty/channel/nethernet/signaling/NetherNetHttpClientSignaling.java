@@ -246,13 +246,17 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         if (signal == null) {
             return;
         }
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type())
-                || signal.payload().isEmpty()) {
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type())) {
             log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type());
             return;
         }
         String connectionId = signal.connectionId();
         Target current = target;
+        if (signal.payload().isEmpty()) {
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
+                    JoinRefusal.INTERNAL.errorCode(), "The offer is empty"));
+            return;
+        }
         if (closed || current == null) {
             fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
                     JoinRefusal.INTERNAL.errorCode(), "HTTP client signaling is " + (closed ? "closed" : "not connected")));

@@ -363,6 +363,30 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void anEmptyOfferFailsTheAttempt() throws Exception {
+        startServer(null);
+        BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
+        NetherNetHttpClientSignaling client = connected(trusting());
+        client.setSignalHandler(CONNECTION_ID, "server", new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(Signal signal) {
+                signals.add(signal);
+            }
+
+            @Override
+            public void onFailure(String connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        });
+
+        client.sendSignal("0", NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST + " " + CONNECTION_ID + " ");
+
+        assertEquals(new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED, JoinRefusal.INTERNAL.errorCode(),
+                "The offer is empty"), failures.poll(5, TimeUnit.SECONDS));
+        assertTrue(signals.isEmpty());
+    }
+
+    @Test
     void answerWaitIsConfigurable() throws Exception {
         startServer(null);
         NetherNetHttpClientSignaling client = connected(trusting().withAnswerTimeout(Duration.ofMillis(300)));
