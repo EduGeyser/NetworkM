@@ -17,6 +17,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
+import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;

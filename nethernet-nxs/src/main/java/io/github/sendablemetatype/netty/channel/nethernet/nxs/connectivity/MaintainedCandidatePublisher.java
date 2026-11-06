@@ -8,6 +8,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.Connecti
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.OwnershipGuard;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ProfileReplacedException;
+import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;

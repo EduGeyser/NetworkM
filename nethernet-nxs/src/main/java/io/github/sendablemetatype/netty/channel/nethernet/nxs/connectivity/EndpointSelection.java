@@ -1,6 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
+import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 
 import java.io.IOException;
 import java.net.*;

@@ -17,6 +17,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
+import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 import io.netty.util.NetUtil;
 
 import java.io.IOException;
