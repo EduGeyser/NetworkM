@@ -15,9 +15,11 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.ManualResolver;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalType;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -87,8 +89,8 @@ class NetherNetClientChannelTest {
 
             // Ahead of the answer, a candidate takes the offer's mid, which the answer mirrors
             String remote = "candidate:9 1 udp 2122194687 203.0.113.10 5000 typ host";
-            h.signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, id, remote);
-            h.signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, id, ANSWER);
+            h.signal(SignalType.CANDIDATE_ADD, id, remote);
+            h.signal(SignalType.CONNECT_RESPONSE, id, ANSWER);
             h.pump();
             assertEquals(List.of(new FakePeer.RemoteCandidate(remote, "0")), peer.remoteCandidates());
             assertEquals(List.of(ANSWER), peer.remoteAnswers());
@@ -105,7 +107,6 @@ class NetherNetClientChannelTest {
     void eachAttemptAppliesOnlyTheServerCandidatesItsIntakeTakes() {
         List<String> offered = List.of(
                 "candidate:1 1 udp 2122194687 203.0.113.10 5000 typ host",
-                "candidate:2 1 udp 2122194687 node.cluster.local 5001 typ host",
                 "candidate:3 1 tcp 2122194687 203.0.113.10 9 typ host tcptype passive",
                 "candidate:4 1 udp 2122194687 224.0.0.251 5002 typ host",
                 "candidate:5 1 udp 2122194687 255.255.255.255 5003 typ host",
@@ -119,14 +120,12 @@ class NetherNetClientChannelTest {
 
             StringBuilder answer = new StringBuilder(ANSWER).append("a=mid:0\r\n");
             offered.forEach(candidate -> answer.append("a=").append(candidate).append("\r\n"));
-            h.signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, id, answer.toString());
-            offered.forEach(candidate -> h.signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, id, candidate));
+            h.signal(SignalType.CONNECT_RESPONSE, id, answer.toString());
+            offered.forEach(candidate -> h.signal(SignalType.CANDIDATE_ADD, id, candidate));
             h.pump();
 
-            assertEquals(List.of(ANSWER + "a=mid:0\r\na=" + offered.get(0) + "\r\na=" + offered.get(1) + "\r\n"),
-                    peer.remoteAnswers());
-            assertEquals(List.of(new FakePeer.RemoteCandidate(offered.get(0), "0"),
-                    new FakePeer.RemoteCandidate(offered.get(1), "0")), peer.remoteCandidates());
+            assertEquals(List.of(ANSWER + "a=mid:0\r\na=" + offered.getFirst() + "\r\n"), peer.remoteAnswers());
+            assertEquals(List.of(new FakePeer.RemoteCandidate(offered.getFirst(), "0")), peer.remoteCandidates());
 
             trickleMany(h, id, 40);
             assertEquals(RemoteCandidateIntake.MAX_CANDIDATES, peer.remoteCandidates().size());
@@ -141,9 +140,69 @@ class NetherNetClientChannelTest {
         }
     }
 
+    /**
+     * A server may name its host. The client looks each name up off the event loop and hands the
+     * engine the address, after the answer and only if the address rules take it; the engine never
+     * sees a name.
+     */
+    @Test
+    void namedServerCandidatesReachThePeerAsTheirAddressesOnceLookedUp() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            h.pump();
+            String id = h.connectionId();
+
+            h.signal(SignalType.CANDIDATE_ADD, id,
+                    "candidate:1 1 udp 2122194687 early.example 5000 typ host");
+            h.signal(SignalType.CONNECT_RESPONSE, id, ANSWER + "a=mid:0\r\n"
+                    + "a=candidate:2 1 udp 2122194687 node.cluster.local 5001 typ host\r\n"
+                    + "a=candidate:3 1 udp 2122194687 203.0.113.10 5002 typ host\r\n"
+                    + "a=candidate:4 1 udp 2122194687 0xe00000fb 5003 typ host\r\n");
+            h.pump();
+            assertEquals(List.of(ANSWER + "a=mid:0\r\na=candidate:3 1 udp 2122194687 203.0.113.10 5002 typ host\r\n"),
+                    peer.remoteAnswers());
+            assertEquals(List.of(), peer.remoteCandidates(), "nothing until the lookups are done");
+
+            h.resolver.answer("node.cluster.local", "10.0.0.7");
+            h.resolver.answer("0xe00000fb", "224.0.0.251");
+            h.resolver.fail("early.example");
+            assertEquals(List.of(), peer.remoteCandidates(), "the results come back through the event loop");
+            h.pump();
+
+            assertEquals(List.of(new FakePeer.RemoteCandidate("candidate:2 1 udp 2122194687 10.0.0.7 5001 typ host", "0")),
+                    peer.remoteCandidates());
+        }
+    }
+
+    @Test
+    void aLookupForARetiredAttemptAppliesNothing() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            FakePeer first = h.start();
+            first.completeOffer(OFFER);
+            h.pump();
+            h.signal(SignalType.CANDIDATE_ADD, h.connectionId(),
+                    "candidate:1 1 udp 2122194687 slow.example 5000 typ host");
+            h.pump();
+
+            h.advance(100);
+            FakePeer retry = h.start();
+            retry.completeOffer(OFFER);
+            h.pump();
+            h.resolver.answer("slow.example", "203.0.113.10");
+            h.pump();
+
+            assertNotSame(first, retry);
+            assertEquals(List.of(), first.remoteCandidates());
+            assertEquals(List.of(), retry.remoteCandidates());
+        }
+    }
+
     private static void trickleMany(Harness h, String id, int count) {
         for (int i = 0; i < count; i++) {
-            h.signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, id,
+            h.signal(SignalType.CANDIDATE_ADD, id,
                     "candidate:" + (100 + i) + " 1 udp 2122194687 198.51.100.7 " + (6000 + i) + " typ host");
         }
         h.pump();
@@ -184,7 +243,7 @@ class NetherNetClientChannelTest {
             assertEquals(1, h.signaling.connections.size(), "no retry while the answer can still arrive");
 
             h.signaling.signalHandlers.getLast().onSignal(
-                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), ANSWER));
+                    new Signal(SignalType.CONNECT_RESPONSE, h.connectionId(), ANSWER));
             h.pump();
             h.advance(99);
             assertFalse(connect.isDone());
@@ -296,7 +355,7 @@ class NetherNetClientChannelTest {
             h.pump();
 
             h.signaling.signalHandlers.getLast().onSignal(
-                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), ANSWER));
+                    new Signal(SignalType.CONNECT_RESPONSE, h.connectionId(), ANSWER));
             h.pump();
             ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
             assertEquals("The server's answer carries no identity", failure.getMessage());
@@ -323,7 +382,7 @@ class NetherNetClientChannelTest {
 
             String answer = server.augmentAnswer(OfferFixtures.offer(null, OfferFixtures.DIGEST));
             h.signaling.signalHandlers.getLast().onSignal(
-                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), answer));
+                    new Signal(SignalType.CONNECT_RESPONSE, h.connectionId(), answer));
             h.pump();
             assertEquals(List.of(answer), peer.remoteAnswers());
             assertFalse(connect.isDone());
@@ -620,7 +679,7 @@ class NetherNetClientChannelTest {
             h.advance(100);
             String sdp = "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n";
             h.signaling.signalHandlers.get(0).onSignal(
-                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, oldId, sdp));
+                    new Signal(SignalType.CONNECT_RESPONSE, oldId, sdp));
             h.pump();
             assertFalse(connect.isDone());
             h.start().completeOffer(OFFER);
@@ -628,7 +687,7 @@ class NetherNetClientChannelTest {
             String currentId = h.connectionId();
             assertNotEquals(oldId, currentId);
             h.signaling.signalHandlers.get(1).onSignal(
-                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, currentId, sdp));
+                    new Signal(SignalType.CONNECT_RESPONSE, currentId, sdp));
             h.pump();
             assertInstanceOf(ConnectException.class, connect.cause());
             assertInstanceOf(IllegalArgumentException.class, connect.cause().getCause());
@@ -745,7 +804,8 @@ class NetherNetClientChannelTest {
         private final EmbeddedChannel clock = new EmbeddedChannel();
         private final FakeSignaling signaling = new FakeSignaling();
         private final FakeEngine engine = new FakeEngine();
-        private final NetherNetClientChannel channel = new NetherNetClientChannel(engine, signaling);
+        private final ManualResolver resolver = new ManualResolver();
+        private final NetherNetClientChannel channel = new NetherNetClientChannel(engine, signaling, resolver);
         private final UnpooledByteBufAllocator allocator = new UnpooledByteBufAllocator(false);
         private final List<String> events = new ArrayList<>();
 
@@ -800,7 +860,7 @@ class NetherNetClientChannelTest {
         }
 
         /** A signal from the server, as the newest attempt's handler receives it. */
-        private void signal(String type, String id, String data) {
+        private void signal(SignalType type, String id, String data) {
             signaling.signalHandlers.getLast().onSignal(new Signal(type, id, data));
         }
 

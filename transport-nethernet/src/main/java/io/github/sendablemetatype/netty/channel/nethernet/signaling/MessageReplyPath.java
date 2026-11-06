@@ -1,6 +1,5 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -50,17 +49,17 @@ abstract class MessageReplyPath implements ReplyPath {
 
     @Override
     public CompletionStage<Void> answer(String sdp) {
-        return send(NetherNetConstants.buildSignalConnectResponse(connectionId, sdp));
+        return send(new Signal(SignalType.CONNECT_RESPONSE, connectionId, sdp).wire());
     }
 
     @Override
     public CompletionStage<Void> candidate(String candidate) {
-        return send(NetherNetConstants.buildSignalCandidateAdd(connectionId, candidate));
+        return send(new Signal(SignalType.CANDIDATE_ADD, connectionId, candidate).wire());
     }
 
     @Override
     public CompletionStage<Void> refuse(JoinRefusal refusal) {
-        return send(NetherNetConstants.buildSignalConnectError(connectionId, refusal.errorCode()));
+        return send(new Signal(SignalType.CONNECT_ERROR, connectionId, Integer.toString(refusal.errorCode())).wire());
     }
 
     @Override
@@ -89,13 +88,12 @@ abstract class MessageReplyPath implements ReplyPath {
     void received(Signal message) {
         String payload = message.payload();
         RemoteSignal signal = switch (message.type()) {
-            case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> payload.isEmpty() ? null
-                    : new RemoteSignal.Candidate(payload);
-            case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> new RemoteSignal.Error(errorCode(payload));
-            default -> null;
+            case CANDIDATE_ADD -> payload.isEmpty() ? null : new RemoteSignal.Candidate(payload);
+            case CONNECT_ERROR -> new RemoteSignal.Error(errorCode(payload));
+            case CONNECT_REQUEST, CONNECT_RESPONSE -> null;
         };
         if (signal == null) {
-            log.trace("Ignoring a {} signal for join {}", message.type(), connectionId);
+            log.trace("Ignoring a {} signal for join {}", message.type().wireName(), connectionId);
             return;
         }
         synchronized (this) {

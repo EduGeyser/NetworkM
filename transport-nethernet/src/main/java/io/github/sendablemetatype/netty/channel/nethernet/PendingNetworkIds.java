@@ -13,9 +13,10 @@ import java.util.function.Consumer;
 
 /**
  * The network IDs of one endpoint's pending joins from sources that take one join per network ID
- * ({@link JoinSource#oneJoinPerNetworkId()}), shared by all of them. A join holds its ID until it
- * ends, also after its source was removed: its child lives on, and a source added in its place
- * must not admit a second join for the same client meanwhile. Safe to use from any thread.
+ * ({@link JoinSource#oneJoinPerNetworkId()}), shared by all of them. A join holds its ID until its
+ * answer is handed to its source or it ends without one, also after its source was removed: a
+ * source added in its place must not admit a second join for the same client meanwhile. Safe to
+ * use from any thread.
  */
 final class PendingNetworkIds {
     private final ConcurrentMap<String, Hold> held = new ConcurrentHashMap<>();
@@ -51,8 +52,14 @@ final class PendingNetworkIds {
             return reply.trickles();
         }
 
+        /**
+         * Gives the ID back as the answer goes out, as upstream does: from here the client has what
+         * it asked for, and an offer it sends later for the same ID is a new connect, not a
+         * duplicate, even if this answer never arrives.
+         */
         @Override
         public CompletionStage<Void> answer(String sdp) {
+            release();
             return reply.answer(sdp);
         }
 
@@ -78,10 +85,10 @@ final class PendingNetworkIds {
 
         @Override
         public void connected() {
-            release();
             reply.connected();
         }
 
+        /** Every join ends here, with or without an answer: refused, withdrawn, abandoned or closed. */
         @Override
         public void finished() {
             release();
@@ -89,9 +96,10 @@ final class PendingNetworkIds {
         }
 
         /**
-         * Gives the ID back, once the join went active ({@link #connected}) or failed
-         * ({@link #finished}). This class is the one place that decides when that happens. Any
-         * number of times.
+         * Gives the ID back, on the answer ({@link #answer}) or at the end of a join that never got
+         * one ({@link #finished}). This class is the one place that decides when that happens. The
+         * first call frees the ID; later calls do nothing, also when another join holds the ID by
+         * then.
          */
         private void release() {
             held.remove(networkId, this);

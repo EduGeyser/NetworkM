@@ -31,7 +31,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.LongPredicate;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -52,8 +51,8 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private EventLoopGroup eventLoops;
     private volatile Channel channel;
     private final LanAdvertisements advertisements;
-    /** Runs the advertiser's calls when the creator gave no executor; closed with this instance. */
-    private final ExecutorService ownedAdvertiserExecutor;
+    /** Runs the advertiser's calls, a virtual thread each; closed with this instance. */
+    private final ExecutorService advertiserExecutor;
     private volatile OfferHandler offerHandler;
     private volatile boolean closed;
 
@@ -92,23 +91,12 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     }
 
     NetherNetDiscovery(long networkId, Supplier<? extends EventLoopGroup> eventLoopFactory, DiscoveryPeerRegistry peerAddresses) {
-        this(networkId, eventLoopFactory, peerAddresses, LanAdvertisements.ADVERTISER_TIMEOUT, null);
-    }
-
-    /**
-     * @param advertiserTimeout how long one {@link LanAdvertiser} call may take
-     * @param advertiserExecutor runs the advertiser's calls, or null for a virtual thread each
-     */
-    NetherNetDiscovery(long networkId, Supplier<? extends EventLoopGroup> eventLoopFactory,
-                       DiscoveryPeerRegistry peerAddresses, Duration advertiserTimeout, Executor advertiserExecutor) {
         this.networkId = networkId;
         this.eventLoopFactory = Objects.requireNonNull(eventLoopFactory, "eventLoopFactory");
         this.peerAddresses = Objects.requireNonNull(peerAddresses, "peerAddresses");
-        this.ownedAdvertiserExecutor = advertiserExecutor == null
-                ? Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("nethernet-lan-advertiser-", 0).factory())
-                : null;
-        this.advertisements = new LanAdvertisements(advertiserTimeout,
-                advertiserExecutor != null ? advertiserExecutor : ownedAdvertiserExecutor);
+        this.advertiserExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("nethernet-lan-advertiser-", 0).factory());
+        this.advertisements = new LanAdvertisements(advertiserExecutor);
     }
 
     public void bind() {
@@ -230,13 +218,28 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
 
     /**
      * Asks the advertiser what to answer each discovery request with, once the request passed
-     * decryption and validation. Replaces fixed {@linkplain #setServerData server data}. See
-     * {@link LanAdvertiser} for its deadline and what goes out when it does not deliver.
+     * decryption and validation, with the default deadline
+     * ({@link NetherNetDiscoverySignaling#DEFAULT_ADVERTISER_TIMEOUT}). Replaces fixed
+     * {@linkplain #setServerData server data}. See {@link LanAdvertiser} for what goes out when it
+     * does not deliver.
      *
      * @param advertiser the advertiser
      */
     public void setAdvertiser(LanAdvertiser advertiser) {
-        advertisements.ask(advertiser);
+        setAdvertiser(advertiser, NetherNetDiscoverySignaling.DEFAULT_ADVERTISER_TIMEOUT);
+    }
+
+    /**
+     * Asks the advertiser what to answer each discovery request with, as
+     * {@link #setAdvertiser(LanAdvertiser)} does, with this deadline per call: past it the request
+     * gets the last server data the advertiser produced in time instead.
+     *
+     * @param advertiser the advertiser
+     * @param timeout    the deadline of one call, positive
+     * @throws IllegalArgumentException if the timeout is not positive; what was advertised stays
+     */
+    public void setAdvertiser(LanAdvertiser advertiser, Duration timeout) {
+        advertisements.ask(advertiser, timeout);
     }
 
     /**
@@ -488,14 +491,8 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         if (signal == null) {
             return;
         }
-        String type = signal.type();
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD.equals(type)
-                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)) {
-            return;
-        }
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type) && signal.payload().isEmpty()) {
+        SignalType type = signal.type();
+        if (type != SignalType.CONNECT_ERROR && signal.payload().isEmpty()) {
             return;
         }
         String connectionId = signal.connectionId();
@@ -521,7 +518,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             return;
         }
 
-        if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
+        if (type == SignalType.CONNECT_REQUEST) {
             OfferHandler offers = offerHandler;
             if (offers == null) {
                 log.debug("Received a CONNECTREQUEST, but nothing takes offers");
@@ -530,7 +527,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 offers.onOffer(connectionId, senderId, signal.payload(), sender);
             }
         } else {
-            log.debug("Unhandled signal type: {}", type);
+            log.debug("Received a {} signal for no attempt or join", type.wireName());
         }
     }
 
@@ -589,9 +586,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 channel.close();
             }
         } finally {
-            if (ownedAdvertiserExecutor != null) {
-                ownedAdvertiserExecutor.shutdownNow();
-            }
+            advertiserExecutor.shutdownNow();
             if (group != null) {
                 group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
             }

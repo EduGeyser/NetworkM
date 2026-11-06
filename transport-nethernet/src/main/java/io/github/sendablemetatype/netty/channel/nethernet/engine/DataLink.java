@@ -8,6 +8,21 @@ import java.util.function.Consumer;
  */
 public interface DataLink {
 
+    /**
+     * How many bytes every engine takes queued on one link, as {@link #queuedBytes()} counts them,
+     * before it may refuse a send: 16 MiB. The transport keeps its pause level, plus the largest
+     * segment it sends, within this, so pacing never meets the engine's limit.
+     *
+     * <p>libwebrtc's limit is exactly this: {@code DataChannelInterface::MaxSendQueueSize()}
+     * ({@code api/data_channel_interface.cc:48}), which it hands dcSCTP as
+     * {@code per_stream_send_queue_limit} ({@code media/sctp/dcsctp_transport.cc:813}; WebRTC
+     * main {@code 885c77558b}, 2026-11-06). dcSCTP refuses a send while the stream already holds
+     * that much ({@code net/dcsctp/socket/dcsctp_socket.cc:612}), the send fails with
+     * {@code RESOURCE_EXHAUSTED}, and the data channel closes
+     * ({@code pc/sctp_data_channel.cc:990}).
+     */
+    int SEND_QUEUE_CAPACITY = 16 * 1024 * 1024;
+
     /** The link's label and delivery parameters, as negotiated. */
     ChannelParameters parameters();
 

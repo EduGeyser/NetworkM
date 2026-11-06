@@ -1018,11 +1018,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     private void dispatchSignal(String sender, String rawMsg) {
+        Signal signal = Signal.parse(rawMsg).orElse(null);
+        if (signal == null) {
+            return;
+        }
         try {
-            Signal signal = Signal.parse(rawMsg).orElse(null);
-            if (signal == null) {
-                return;
-            }
             String connectionId = signal.connectionId();
 
             // A signal with a client attempt's ID from another sender is not that attempt's; it may
@@ -1034,7 +1034,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             }
 
             JoinKey key = new JoinKey(sender, connectionId);
-            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type());
+            boolean request = signal.type() == SignalType.CONNECT_REQUEST;
             XboxJoin join = joins.get(key);
             if (join != null) {
                 if (request) {
@@ -1052,13 +1052,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                             SourcedAddress.unknown(), created));
                 }
             } else {
-                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, signal.type());
+                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, signal.type().wireName());
             }
         } catch (Exception e) {
             // The signal can be an offer with the client's identity token in it, so it is not logged.
-            int space = rawMsg.indexOf(' ');
-            log.error("Failed to dispatch a {} signal ({} chars)",
-                    space < 0 ? "malformed" : rawMsg.substring(0, Math.min(space, 16)), rawMsg.length(), e);
+            log.error("Failed to dispatch a {} signal ({} chars)", signal.type().wireName(), rawMsg.length(), e);
         }
     }
 

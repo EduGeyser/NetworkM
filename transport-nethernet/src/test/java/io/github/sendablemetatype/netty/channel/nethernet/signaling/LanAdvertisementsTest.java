@@ -28,7 +28,7 @@ class LanAdvertisementsTest {
 
     private final Queue<Runnable> calls = new ArrayDeque<>();
     private final EmbeddedChannel loop = new EmbeddedChannel();
-    private final LanAdvertisements advertisements = new LanAdvertisements(DEADLINE, calls::add);
+    private final LanAdvertisements advertisements = new LanAdvertisements(calls::add);
 
     LanAdvertisementsTest() {
         loop.freezeTime();
@@ -55,7 +55,7 @@ class LanAdvertisementsTest {
 
     /** What the advertiser's reply to {@code data} encodes to, through a fresh instance. */
     private static byte[] payload(LanServerData.V7 data) {
-        LanAdvertisements fixed = new LanAdvertisements(DEADLINE, Runnable::run);
+        LanAdvertisements fixed = new LanAdvertisements(Runnable::run);
         fixed.fix(data);
         return fixed.answer(REQUEST, null).join().orElseThrow();
     }
@@ -63,7 +63,7 @@ class LanAdvertisementsTest {
     @Test
     void aReplyPastItsDeadlineDoesNotBecomeTheFallback() {
         int[] players = {0};
-        advertisements.ask(request -> LanAdvertisement.advertise(data(++players[0])));
+        advertisements.ask(request -> LanAdvertisement.advertise(data(++players[0])), DEADLINE);
         CompletableFuture<Optional<byte[]>> first = ask();
         calls.remove().run();
         assertArrayEquals(payload(data(1)), first.join().orElseThrow());
@@ -80,9 +80,9 @@ class LanAdvertisementsTest {
 
     @Test
     void aCallToTheReplacedAdvertiserDoesNotBecomeTheNewOnesFallback() {
-        advertisements.ask(request -> LanAdvertisement.advertise(data(1)));
+        advertisements.ask(request -> LanAdvertisement.advertise(data(1)), DEADLINE);
         CompletableFuture<Optional<byte[]>> replaced = ask();
-        advertisements.ask(request -> LanAdvertisement.advertise(data(2)));
+        advertisements.ask(request -> LanAdvertisement.advertise(data(2)), DEADLINE);
         calls.remove().run();
         assertTrue(replaced.isDone());
 

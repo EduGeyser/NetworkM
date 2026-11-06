@@ -39,7 +39,7 @@ class NetherNetDiscoveryProtocolTest {
 
             discovery.client.send(new DatagramPacket(encrypted, encrypted.length, discovery.address()));
 
-            assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, "42", answer),
+            assertEquals(new Signal(SignalType.CONNECT_RESPONSE, "42", answer),
                     received.get(2, TimeUnit.SECONDS));
             assertEquals(discovery.sender(), discovery.peers.get(20));
         }
@@ -69,7 +69,7 @@ class NetherNetDiscoveryProtocolTest {
             discovery.receive(message(21, 1, 0, "CONNECTERROR 42 1"));
             assertEquals(List.of(), received, "a sender other than the server discovery found");
             discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));
-            assertEquals(List.of(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1")), received);
+            assertEquals(List.of(new Signal(SignalType.CONNECT_ERROR, "42", "1")), received);
         }
     }
 
@@ -84,7 +84,7 @@ class NetherNetDiscoveryProtocolTest {
             assertNull(discovery.peers.get(21));
 
             discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));
-            assertEquals(List.of(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1")), received);
+            assertEquals(List.of(new Signal(SignalType.CONNECT_ERROR, "42", "1")), received);
         }
     }
 

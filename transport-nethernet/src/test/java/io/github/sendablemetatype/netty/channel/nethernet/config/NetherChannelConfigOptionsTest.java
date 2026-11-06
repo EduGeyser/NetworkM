@@ -1,6 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.netty.channel.ChannelConfig;
@@ -74,7 +76,10 @@ class NetherChannelConfigOptionsTest {
                 arguments(CONNECTION, NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES, 0,
                         "NETHER_MAX_REASSEMBLED_BYTES must be at least 1, not 0"),
                 arguments(CONNECTION, NetherChannelOption.NETHER_SEND_PAUSE_BYTES, -1,
-                        "NETHER_SEND_PAUSE_BYTES must be at least 1, not -1"),
+                        "NETHER_SEND_PAUSE_BYTES must be from 1 to 16515072, not -1"),
+                arguments(CLIENT, NetherChannelOption.NETHER_SEND_PAUSE_BYTES,
+                        DefaultNetherChannelConfig.MAX_SEND_PAUSE_BYTES + 1,
+                        "NETHER_SEND_PAUSE_BYTES must be from 1 to 16515072, not 16515073"),
                 arguments(CLIENT, NetherChannelOption.NETHER_MAX_QUEUED_BYTES, 0,
                         "NETHER_MAX_QUEUED_BYTES must be at least 1, not 0"),
                 arguments(CLIENT, NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 0,
@@ -103,6 +108,16 @@ class NetherChannelConfigOptionsTest {
                 () -> target.setOption(option, value));
         assertEquals(message, refused.getMessage());
         assertEquals(before, target.getOption(option));
+    }
+
+    @Test
+    void thePauseLevelGoesUpToWhereOneMoreSegmentStillFitsTheEnginesQueue() {
+        DefaultNetherChannelConfig config = new DefaultNetherChannelConfig(channel);
+
+        assertTrue(config.setOption(NetherChannelOption.NETHER_SEND_PAUSE_BYTES,
+                DefaultNetherChannelConfig.MAX_SEND_PAUSE_BYTES));
+        assertEquals(DataLink.SEND_QUEUE_CAPACITY,
+                config.getSendPauseBytes() + NetherNetConstants.MAX_OUTBOUND_MESSAGE_SIZE);
     }
 
     @Test

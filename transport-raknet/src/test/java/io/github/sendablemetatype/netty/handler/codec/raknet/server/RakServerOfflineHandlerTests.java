@@ -18,6 +18,7 @@ import io.github.sendablemetatype.netty.channel.raknet.RakChannelFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakServerChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelOption;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakServerCookieMode;
+import io.github.sendablemetatype.netty.channel.raknet.config.RakServerMetrics;
 import io.github.sendablemetatype.netty.util.RakUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -28,6 +29,7 @@ import java.net.InetSocketAddress;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.github.sendablemetatype.netty.channel.raknet.RakConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -120,6 +122,47 @@ class RakServerOfflineHandlerTests {
             } finally {
                 request.release();
             }
+        }
+    }
+
+    @Test
+    void aThrowingMetricsHookDoesNotStopUnconnectedPacketHandling() {
+        try (Server server = new Server(RakServerCookieMode.ACTIVE)) {
+            AtomicInteger reports = new AtomicInteger();
+            server.channel.config().setMetrics(new RakServerMetrics() {
+                @Override
+                public void unconnectedPing(InetSocketAddress address) {
+                    reports.incrementAndGet();
+                    throw new IllegalStateException("Metrics unavailable");
+                }
+
+                @Override
+                public void connectionInitPacket(InetSocketAddress address, int packetId) {
+                    reports.incrementAndGet();
+                    throw new IllegalStateException("Metrics unavailable");
+                }
+
+                @Override
+                public void invalidCookie(InetSocketAddress address) {
+                    reports.incrementAndGet();
+                    throw new IllegalStateException("Metrics unavailable");
+                }
+            });
+
+            server.receive(Unpooled.buffer().writeByte(ID_UNCONNECTED_PING).writeLong(12345)
+                    .writeBytes(DEFAULT_UNCONNECTED_MAGIC));
+            server.assertResponse(ID_UNCONNECTED_PONG);
+            server.receive(requestOne(11));
+            server.assertResponse(ID_OPEN_CONNECTION_REPLY_1);
+            ByteBuf forged = requestTwo(server, false);
+            forged.setInt(1 + DEFAULT_UNCONNECTED_MAGIC.length, forged.getInt(1 + DEFAULT_UNCONNECTED_MAGIC.length) + 1);
+            server.receive(forged);
+            assertNull(server.responses.poll(), "a wrong cookie still gets no reply");
+            server.receive(requestTwo(server, false));
+            server.assertResponse(ID_OPEN_CONNECTION_REPLY_2);
+
+            assertNotNull(server.channel.getChildChannel(CLIENT));
+            assertEquals(5, reports.get(), "every hook was called, and threw");
         }
     }
 

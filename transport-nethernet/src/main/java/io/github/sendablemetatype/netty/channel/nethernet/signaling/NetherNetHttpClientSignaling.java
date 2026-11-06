@@ -249,8 +249,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         if (signal == null) {
             return;
         }
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type())) {
-            log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type());
+        if (signal.type() != SignalType.CONNECT_REQUEST) {
+            log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type().wireName());
             return;
         }
         String connectionId = signal.connectionId();
@@ -301,7 +301,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
-            handler.onSignal(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, connectionId,
+            handler.onSignal(new Signal(SignalType.CONNECT_RESPONSE, connectionId,
                     response.body()));
         }
     }

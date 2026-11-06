@@ -344,7 +344,7 @@ class NetherNetXboxRpcSignalingTest {
 
         receiveWebRtc(socket, "CANDIDATEADD 42 candidate", batched);
 
-        assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, "42", "candidate"), received.get());
+        assertEquals(new Signal(SignalType.CANDIDATE_ADD, "42", "candidate"), received.get());
         List<JsonObject> sent = drain(socket);
         assertEquals(2, sent.size());
         assertEquals("request-1", sent.getFirst().get("id").getAsString());
@@ -364,7 +364,7 @@ class NetherNetXboxRpcSignalingTest {
         assertNull(received.get(), "A third party that knows the connection ID must not fail the attempt");
 
         receiveWebRtc(socket, "CONNECTERROR 42 1", false);
-        assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1"), received.get());
+        assertEquals(new Signal(SignalType.CONNECT_ERROR, "42", "1"), received.get());
     }
 
     @Test

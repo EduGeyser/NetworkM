@@ -33,8 +33,8 @@ public enum JoinRefusal {
      */
     BAD_OFFER(400, JoinRefusal.FAILED_TO_SET_REMOTE_DESCRIPTION),
     /**
-     * Another offer with the same network ID is still pending (HTTP signaling): it has not gone
-     * active nor failed yet. The source refuses the second offer before the endpoint sees it and
+     * Another offer with the same network ID is still pending (HTTP signaling): it has neither
+     * been answered nor failed yet. The endpoint refuses the second offer before it gets a peer and
      * leaves the first alone. Its error code is IncomingConnectionIgnored, as for the admission
      * refusals, since the server ignores this offer and nothing failed.
      */
