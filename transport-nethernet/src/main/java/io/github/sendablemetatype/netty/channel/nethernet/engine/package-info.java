@@ -35,8 +35,8 @@
  * Native teardown never runs inside an engine callback. {@link Peer#close} is
  * idempotent, allowed from callbacks, and completes only after the peer's
  * termination: listeners removed, data links closed, the native peer closed,
- * pending sends settled and native handles released. Capacity that a peer
- * holds (admission slots, throttle entries) is released when that stage
- * completes, not when close is called.
+ * pending sends settled with their completions returned, and native handles
+ * released. Capacity that a peer holds (admission slots, throttle entries) is
+ * released when that stage completes, not when close is called.
  */
 package io.github.sendablemetatype.netty.channel.nethernet.engine;

@@ -34,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -152,6 +153,48 @@ public abstract class EngineConformanceTest {
         if (realNetwork()) {
             assertTrue(queuedAfterBurst > 0, "A 4 MiB burst was never queued");
         }
+    }
+
+    @Test
+    void aWatermarkSetWhileTheQueueIsAboveItFiresOnTheNextDrop() throws Exception {
+        Pair pair = connect(true, answererConfig());
+        DataLink link = pair.client.links.get(RELIABLE);
+        long level = 64 * 1024;
+        // No queue rises above this level, so the burst itself fires nothing.
+        link.lowWatermark(Long.MAX_VALUE);
+        for (int i = 0; i < 64; i++) {
+            link.send(ByteBuffer.wrap(new byte[64 * 1024]), ignored -> {
+            });
+        }
+
+        link.lowWatermark(level);
+        // Read after the level was set: a drop this reading has not seen yet is held to the new level.
+        assumeTrue(link.queuedBytes() > level, "The queue drained before the level was set");
+        assertTrue(pair.client.queueLow.tryAcquire(WAIT_SECONDS, TimeUnit.SECONDS), "No queue low event");
+    }
+
+    @Test
+    void theCloseStageWaitsForASendCompletionStillRunning() throws Exception {
+        Pair pair = connect(true, answererConfig());
+        DataLink link = pair.server.links.get(RELIABLE);
+        CompletableFuture<Void> running = new CompletableFuture<>();
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        CompletableFuture<Void> closing;
+        // A thread of its own: the completion may run inside send.
+        Thread sender = Thread.ofVirtual().start(() -> link.send(ByteBuffer.allocate(1), ignored -> {
+            running.complete(null);
+            release.join();
+        }));
+        try {
+            running.get(WAIT_SECONDS, TimeUnit.SECONDS);
+            closing = pair.server.peer.close().toCompletableFuture();
+            assertThrows(TimeoutException.class, () -> closing.get(200, TimeUnit.MILLISECONDS),
+                    "The close stage completed while a send completion ran");
+        } finally {
+            release.complete(null);
+            sender.join();
+        }
+        await(closing);
     }
 
     @Test
