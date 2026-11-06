@@ -77,6 +77,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -367,7 +368,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     /**
-     * Runs one request on a connection of its own.
+     * Runs one request on a connection of its own. The result always completes, also when the
+     * loop group is shutting down, and the request is released whether or not it was written.
      *
      * @param ssl the client context for HTTPS, or null for plain HTTP
      */
@@ -375,13 +377,25 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                                                         FullHttpRequest request, Duration timeout,
                                                         EventLoopGroup group, ChannelGroup exchanges) {
         CompletableFuture<Response> result = new CompletableFuture<>();
+        // Taken by the write once connected; whatever ends the exchange first releases it otherwise
+        AtomicReference<FullHttpRequest> unsent = new AtomicReference<>(request);
+        result.whenComplete((response, failure) -> {
+            FullHttpRequest left = unsent.getAndSet(null);
+            if (left != null) {
+                left.release();
+            }
+        });
         resolve(address).whenComplete((resolved, failure) -> {
             if (failure != null) {
-                request.release();
                 result.completeExceptionally(unwrap(failure));
                 return;
             }
-            connect(address, resolved, ssl, request, timeout, group, exchanges, result);
+            try {
+                connect(address, resolved, ssl, unsent, timeout, group, exchanges, result);
+            } catch (RuntimeException e) {
+                // Thrown into a stage nobody reads, it would leave the result pending forever
+                result.completeExceptionally(e);
+            }
         });
         return result;
     }
@@ -401,7 +415,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     private static void connect(InetSocketAddress address, InetSocketAddress resolved, SslContext ssl,
-                                FullHttpRequest request, Duration timeout, EventLoopGroup group,
+                                AtomicReference<FullHttpRequest> unsent, Duration timeout, EventLoopGroup group,
                                 ChannelGroup exchanges, CompletableFuture<Response> result) {
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
@@ -428,30 +442,36 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                     }
                 });
         ChannelFuture connected = bootstrap.connect(resolved);
+        if (connected.isDone() && !connected.isSuccess()) {
+            // A loop that no longer takes tasks refuses the registration at once, and would not run
+            // a listener either
+            result.completeExceptionally(connected.cause());
+            return;
+        }
         Channel channel = connected.channel();
         if (exchanges != null) {
             exchanges.add(channel);
         }
-        ScheduledFuture<?> deadline = channel.eventLoop().schedule(() -> {
-            result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
-            channel.close();
-        }, timeout.toNanos(), TimeUnit.NANOSECONDS);
-        result.whenComplete((response, failure) -> {
-            deadline.cancel(false);
-            channel.close();
-        });
+        result.whenComplete((response, failure) -> channel.close());
         connected.addListener(future -> {
             if (!future.isSuccess()) {
-                request.release();
                 result.completeExceptionally(future.cause());
                 return;
             }
-            channel.writeAndFlush(request).addListener(written -> {
-                if (!written.isSuccess()) {
-                    result.completeExceptionally(written.cause());
-                }
-            });
+            FullHttpRequest request = unsent.getAndSet(null);
+            if (request != null) {
+                channel.writeAndFlush(request).addListener(written -> {
+                    if (!written.isSuccess()) {
+                        result.completeExceptionally(written.cause());
+                    }
+                });
+            }
         });
+        // Throws once the loop is shutting down: the caller completes the result then
+        ScheduledFuture<?> deadline = channel.eventLoop().schedule(() -> {
+            result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
+        }, timeout.toNanos(), TimeUnit.NANOSECONDS);
+        result.whenComplete((response, failure) -> deadline.cancel(false));
     }
 
     /**

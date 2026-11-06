@@ -294,6 +294,25 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void aLoopGroupThatShutDownFailsRequestsInsteadOfLeavingThemPending() throws Exception {
+        EventLoopGroup stopped = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        stopped.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
+        InetSocketAddress nowhere = new InetSocketAddress("127.0.0.1", 9);
+        HttpClientSettings plain = HttpClientSettings.DEFAULT.withScheme(Scheme.HTTP);
+
+        ExecutionException probe = assertThrows(ExecutionException.class,
+                () -> NetherNetHttpClientSignaling.probe(nowhere, plain, stopped, null).get(5, TimeUnit.SECONDS));
+        assertInstanceOf(ConnectException.class, probe.getCause());
+
+        NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(plain, stopped, "client-1");
+        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.connect(nowhere).get(5, TimeUnit.SECONDS);
+        client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
+                + JoinRefusal.INTERNAL.errorCode(), nextSignal());
+    }
+
+    @Test
     void closedClientCannotConnect() {
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT, group);
         client.close();
