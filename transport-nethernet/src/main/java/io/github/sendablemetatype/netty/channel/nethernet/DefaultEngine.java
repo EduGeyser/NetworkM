@@ -1,6 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc.WebRtcEngine;
 
 /**
  * The engine a server or client channel creates for itself when the caller
@@ -12,13 +13,12 @@ final class DefaultEngine {
     }
 
     /**
-     * Creates the default engine.
-     *
-     * @throws UnsupportedOperationException until an engine implementation is wired in
+     * Creates the default engine: webrtc-java with its default settings, which
+     * keep the port allocator flags NetworkM's channels always used (no TCP,
+     * IPv6 also on Wi-Fi, shared socket, costly and link-local networks
+     * skipped).
      */
     static NetherNetEngine create() {
-        // MERGE: return the webrtc-java engine here (engine.webrtc.WebRtcEngine with its default settings:
-        // no TCP candidates, IPv6 on Wi-Fi, shared socket, costly and link-local networks skipped).
-        throw new UnsupportedOperationException("No default NetherNet engine is wired into this build");
+        return WebRtcEngine.builder().build();
     }
 }
