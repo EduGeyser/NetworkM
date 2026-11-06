@@ -166,6 +166,27 @@ class HttpSignalingStatusTest {
     }
 
     @Test
+    void aDocumentForItsRequesterAloneIsNeverRepeated() {
+        AtomicInteger calls = new AtomicInteger();
+        start(request -> switch (calls.getAndIncrement()) {
+            case 0 -> StatusAnswer.serveToRequester(FIRST);
+            case 2 -> StatusAnswer.serve(SECOND);
+            case 3 -> StatusAnswer.serveToRequester(FIRST);
+            default -> throw new IllegalStateException("status source down");
+        }, Runnable::run);
+
+        assertEquals(FIRST.toJson(), status("/v1/join", "Host: a.example\r\n").body());
+        Response other = status("/v1/join", "Host: a.example\r\n");
+        assertEquals(200, other.status());
+        assertTrue(other.body().isEmpty(), "the first document was chosen for its requester, never for this one");
+
+        assertEquals(SECOND.toJson(), status("/v1/join", "Host: a.example\r\n").body());
+        assertEquals(FIRST.toJson(), status("/v1/join", "Host: a.example\r\n").body());
+        assertEquals(SECOND.toJson(), status("/v1/join", "Host: a.example\r\n").body(),
+                "the fallback skips the newer document for one requester and repeats the last shared one");
+    }
+
+    @Test
     void slowProviderGetsTheLastDocumentServedAtTheDeadline() {
         List<Runnable> calls = new ArrayList<>();
         AtomicInteger answers = new AtomicInteger();

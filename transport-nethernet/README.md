@@ -385,11 +385,13 @@ attempt failed into no NetherNet join at all.
 that still has RakNet reads as "join over RakNet"). It runs off the I/O threads,
 at most 64 calls at once. A call that throws, misses the status deadline or finds
 no free slot gets the last document served for the same `Host`, or an empty
-`200`, never an error. The endpoint is open to anyone, so keep each call cheap,
-for example by serving a cached `NetherNetServerStatus`. The `StatusRequest`
-carries the `Host` header, the source address, the client's self-reported
-`ClientInfo` and the `id` query parameter; all but the source come from the
-client unchecked. `GET` is also answered `404` whenever an offer would certainly
+`200`, never an error. That fallback reaches whoever names the `Host`, so answer
+a document chosen for one requester, such as a MOTD picked by address, with
+`StatusAnswer.serveToRequester(status)`, which it never repeats. The endpoint
+is open to anyone, so keep each call cheap, for example by serving a cached
+`NetherNetServerStatus`. The `StatusRequest` carries the `Host` header, the
+source address, the client's self-reported `ClientInfo` and the `id` query
+parameter; all but the source come from the client unchecked. `GET` is also answered `404` whenever an offer would certainly
 be refused: before `start`, after `close`, or when the endpoint is at capacity or
 throttles the address.
 
