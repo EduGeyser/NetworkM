@@ -58,8 +58,11 @@ import java.util.function.Function;
  * <p>Every bound applies to UTF-8 bytes: one message, the fragments it arrives in, the sends waiting including the
  * one being written, and their total. Connecting, receiving a message until the application accepted it, writing
  * one send and closing each have a deadline. One complete message is delivered at a time; the socket reads on only
- * after the receiver's stage completes. Binary messages, oversized messages and an unnegotiated subprotocol end the
- * connection with a close frame instead of an abort.
+ * after the receiver's stage completes. Binary messages, invalid UTF-8, a message over the size limit in several
+ * fragments and an unnegotiated subprotocol end the connection with a close frame. A single frame over the size limit
+ * ends it at once: Netty's frame decoder rejects it before the payload is read, and in a client pipeline the decoder
+ * sits ahead of the frame encoder, so the close frame it tries to send cannot be encoded. Failures, timeouts and
+ * aborts close the connection without a close frame.
  *
  * <p>All state belongs to the owner executor, which also runs the timers and the receiver. Netty events are passed
  * to it in order. The event loop group and the owner are borrowed and never shut down here.
@@ -86,7 +89,8 @@ public final class ControlSocket {
     }
 
     /** RFC 6455 close codes this carrier sends. */
-    public static final int NORMAL = 1000, UNSUPPORTED_DATA = 1003, POLICY_VIOLATION = 1008, TOO_BIG = 1009;
+    public static final int NORMAL = 1000, UNSUPPORTED_DATA = 1003, INVALID_PAYLOAD = 1007, POLICY_VIOLATION = 1008,
+            TOO_BIG = 1009;
 
     private final Limits limits;
     private final String subprotocol;
@@ -150,6 +154,10 @@ public final class ControlSocket {
                 .customHeaders(upgrade)
                 .maxFramePayloadLength(limits.maxMessageBytes())
                 .handleCloseFrames(false)
+                // Every close frame comes from this class; Netty would otherwise call an abort a normal closure
+                .sendCloseFrame(null)
+                // Complete messages are decoded strictly here, which can still answer with a close frame
+                .withUTF8Validator(false)
                 .dropPongFrames(true)
                 .generateOriginHeader(false)
                 .handshakeTimeoutMillis(limits.connectTimeout().toMillis())
@@ -402,19 +410,21 @@ public final class ControlSocket {
             if (!frame.isFinalFragment()) {
                 return;
             }
+            // Taken out first: a violation terminates the connection, which releases whatever is still incoming
+            CompositeByteBuf complete = incoming;
+            incoming = null;
             String message;
             try {
                 message = StandardCharsets.UTF_8.newDecoder()
                         .onMalformedInput(CodingErrorAction.REPORT)
                         .onUnmappableCharacter(CodingErrorAction.REPORT)
-                        .decode(incoming.nioBuffer())
+                        .decode(complete.nioBuffer())
                         .toString();
             } catch (CharacterCodingException malformed) {
-                violate(UNSUPPORTED_DATA, "invalid UTF-8");
+                violate(INVALID_PAYLOAD, "invalid UTF-8");
                 return;
             } finally {
-                incoming.release();
-                incoming = null;
+                complete.release();
             }
             deliver(context, message);
         } finally {
