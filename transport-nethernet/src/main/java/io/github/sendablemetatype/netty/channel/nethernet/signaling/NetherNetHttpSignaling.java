@@ -1,11 +1,9 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
-import io.github.sendablemetatype.netty.util.nethernet.IdentityRefusal;
-import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
-import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
-import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -55,14 +53,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -80,12 +76,18 @@ import java.util.function.Supplier;
  *   unconnected pong; older clients ignore the body.
  * - POST /v1/join/{networkId}: the request body is the client's SDP offer;
  *   the response body is the full ICE SDP answer (application/sdp). The
- *   whole exchange fits one round trip, so {@link #fullIceAnswers()} is true
- *   and no candidate signals flow in either direction.
+ *   whole exchange fits one round trip, so the join's reply path does not
+ *   trickle and no candidate signals flow in either direction.
+ *
+ * As a {@link JoinSource}, each offer becomes a {@link Join} whose reply path
+ * is the pending HTTP exchange; the endpoint admits it (identity, throttle,
+ * capacity) and answers or refuses it. A refusal answers with the refusal's
+ * HTTP status. Bind the listener with {@link #bind}; offers are answered once
+ * an endpoint started the source.
  *
  * Connections are one shot (Connection: close), offers are capped at 1 MiB,
- * and a negotiation that produces no answer within the timeout responds 502
- * and tears the half negotiated connection down.
+ * and a negotiation that produces no answer within the timeout responds 504
+ * and abandons the join, which tears the half negotiated connection down.
  *
  * TLS: pre 26.40 clients require HTTPS with a certificate that validates
  * against the server's IP address; pass an SslContext for that. 26.40 and
@@ -96,7 +98,7 @@ import java.util.function.Supplier;
  * reverse proxy) plaintext alone is served and TLS speakers are closed
  * immediately.
  */
-public class NetherNetHttpSignaling implements NetherNetServerSignaling {
+public class NetherNetHttpSignaling implements JoinSource {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpSignaling.class);
 
     private static final String JOIN_PATH = "/v1/join";
@@ -109,21 +111,16 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     private final Supplier<SslContext> sslContextSupplier;
     private final EventLoopGroup workerGroup;
     private final Supplier<? extends EventLoopGroup> acceptGroupFactory;
-    private final Supplier<? extends ExecutorService> validationExecutorFactory;
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
-    private final String localNetworkId = Long.toUnsignedString(ThreadLocalRandom.current().nextLong());
+    private final SourceHealth health = new SourceHealth();
 
-    private final Map<Long, SignalHandler> signalHandlers = new ConcurrentHashMap<>();
-    private final Map<Long, PendingExchange> pendingExchanges = new ConcurrentHashMap<>();
+    private final Map<Long, HttpReply> pendingExchanges = new ConcurrentHashMap<>();
 
     private volatile Supplier<NetherNetServerStatus> statusSupplier;
     // Racing a duplicate first warn is harmless; this only bounds the spam.
     private volatile boolean statusSupplierWarned;
-    private volatile NewConnectionHandler newConnectionHandler;
-    private volatile OfferCheck offerCheck = OfferCheck.minecraft();
-    private volatile OfferPolicy offerPolicy = OfferPolicy.REQUIRE_KEY_PROVEN;
-    private ExecutorService validationExecutor;
+    private volatile JoinSink sink;
     private volatile Channel serverChannel;
     // The TCP accept loop. Owned: bind() is called from the NetherNet server
     // channel's event loop, so registering the listener on a caller supplied
@@ -156,45 +153,9 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
 
     NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
                           Supplier<? extends EventLoopGroup> acceptGroupFactory) {
-        this(sslContextSupplier, workerGroup, acceptGroupFactory, OfferCheck::newExecutor);
-    }
-
-    NetherNetHttpSignaling(Supplier<SslContext> sslContextSupplier, EventLoopGroup workerGroup,
-                          Supplier<? extends EventLoopGroup> acceptGroupFactory,
-                          Supplier<? extends ExecutorService> validationExecutorFactory) {
         this.sslContextSupplier = Objects.requireNonNull(sslContextSupplier, "sslContextSupplier");
         this.workerGroup = Objects.requireNonNull(workerGroup, "workerGroup");
         this.acceptGroupFactory = Objects.requireNonNull(acceptGroupFactory, "acceptGroupFactory");
-        this.validationExecutorFactory = Objects.requireNonNull(validationExecutorFactory, "validationExecutorFactory");
-    }
-
-    /**
-     * Sets the offer identity check, which runs outside I/O loops before any peer is created. The
-     * default attests retail tokens against Minecraft's authorization service. Changes apply to
-     * subsequent offers.
-     */
-    public void setOfferCheck(OfferCheck check) {
-        this.offerCheck = Objects.requireNonNull(check, "check");
-    }
-
-    /** Sets which check results are admitted; the default is {@link OfferPolicy#REQUIRE_KEY_PROVEN}. */
-    public void setOfferPolicy(OfferPolicy policy) {
-        this.offerPolicy = Objects.requireNonNull(policy, "policy");
-    }
-
-    /** Admits offers unchecked, for test fixtures that carry unsigned SDP. */
-    void disableOfferCheck() {
-        this.offerCheck = null;
-    }
-
-    private ExecutorService validationExecutor() {
-        synchronized (lifecycleLock) {
-            if (closed) throw new RejectedExecutionException("HTTP signaling is closed");
-            if (validationExecutor == null) {
-                validationExecutor = Objects.requireNonNull(validationExecutorFactory.get(), "validation executor");
-            }
-            return validationExecutor;
-        }
     }
 
     /**
@@ -212,7 +173,12 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
         this.statusSupplier = statusSupplier;
     }
 
-    @Override
+    /**
+     * Binds the TCP listener. Call it once, before or after an endpoint starts this source.
+     *
+     * @param localAddress where to listen
+     * @throws ConnectException if the listener cannot bind; the source is closed then
+     */
     public void bind(SocketAddress localAddress) throws ConnectException {
         Objects.requireNonNull(localAddress, "localAddress");
         EventLoopGroup accept;
@@ -255,6 +221,9 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
                 bound = true;
             }
             log.info("HTTP signaling listening on {}", bind.channel().localAddress());
+            if (sink != null) {
+                health.set(SignalingState.CONNECTED, null);
+            }
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -327,92 +296,37 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
         return channel != null ? (InetSocketAddress) channel.localAddress() : null;
     }
 
+
     @Override
-    public void setNewConnectionHandler(NewConnectionHandler handler) {
-        this.newConnectionHandler = handler;
+    public void start(JoinSink sink) {
+        this.sink = Objects.requireNonNull(sink, "sink");
+        health.set(serverChannel != null && serverChannel.isActive() ? SignalingState.CONNECTED
+                : SignalingState.STARTING, null);
     }
 
     @Override
-    public void setAdvertisementData(PongData pongData) {
-        // No MOTD endpoint exists on the HTTP path yet; server list ping
-        // stays with RakNet. Kept as a hook for a future /v1/motd.
+    public SignalingHealth health() {
+        return health.get();
     }
 
     @Override
-    public void sendSignal(String targetNetworkId, String data) {
-        String[] parts = data.split(" ", 3);
-        if (parts.length < 2) {
-            return;
-        }
-        long connectionId;
-        try {
-            connectionId = Long.parseUnsignedLong(parts[1]);
-        } catch (NumberFormatException e) {
-            return;
-        }
-
-        switch (parts[0]) {
-            case NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE -> {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange == null) {
-                    log.debug("Answer for {} arrived after its exchange completed or timed out",
-                            Long.toUnsignedString(connectionId));
-                    return;
-                }
-                exchange.cancelTimeout();
-                respond(exchange.ctx, HttpResponseStatus.OK, "application/sdp", parts.length > 2 ? parts[2] : "");
-            }
-            case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange != null) {
-                    exchange.cancelTimeout();
-                    respond(exchange.ctx, HttpResponseStatus.BAD_REQUEST, "text/plain",
-                            "Negotiation failed" + (parts.length > 2 ? ": " + parts[2] : ""));
-                }
-            }
-            case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> {
-                // Full ICE: candidates ride inside the answer; nothing to
-                // trickle on a request/response medium.
-            }
-            default -> log.debug("Dropping unsupported outbound signal type {} for {}",
-                    parts[0], Long.toUnsignedString(connectionId));
-        }
+    public void addHealthListener(Consumer<SignalingHealth> listener) {
+        health.addListener(listener);
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
-        signalHandlers.put(connectionId, handler);
+    public void removeHealthListener(Consumer<SignalingHealth> listener) {
+        health.removeListener(listener);
     }
 
+    /** Retail HTTP clients run no STUN or TURN of their own, and this source hands out none. */
     @Override
-    public void removeSignalHandler(long connectionId) {
-        signalHandlers.remove(connectionId);
+    public List<IceServer> iceServers() {
+        return List.of();
     }
 
-    @Override
-    public String getLocalNetworkId() {
-        return localNetworkId;
-    }
-
-    @Override
-    public boolean fullIceAnswers() {
-        return true;
-    }
-
-    @Override
-    public InetSocketAddress remoteAddressOf(long connectionId) {
-        PendingExchange exchange = pendingExchanges.get(connectionId);
-        return exchange != null ? exchange.remoteAddress : null;
-    }
-
-    @Override
-    public OfferCheckResult offerCheckOf(long connectionId) {
-        PendingExchange exchange = pendingExchanges.get(connectionId);
-        return exchange != null ? exchange.offerCheck : null;
-    }
-
-    @Override
-    public boolean isConnectionPending(long connectionId) {
+    /** Whether the offer with this connection ID still waits for its answer. */
+    boolean isPending(long connectionId) {
         return pendingExchanges.containsKey(connectionId);
     }
 
@@ -421,7 +335,6 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     public void close() {
         Channel channel;
         EventLoopGroup accept;
-        ExecutorService validation;
         synchronized (lifecycleLock) {
             if (closed) {
                 return;
@@ -429,28 +342,21 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             closed = true;
             channel = serverChannel;
             accept = acceptGroup;
-            validation = validationExecutor;
             this.serverChannel = null;
             this.acceptGroup = null;
-            this.validationExecutor = null;
         }
         try {
             if (channel != null) {
                 channel.close();
             }
-            for (Long connectionId : pendingExchanges.keySet()) {
-                PendingExchange exchange = pendingExchanges.remove(connectionId);
-                if (exchange != null) {
-                    exchange.cancelTimeout();
-                    respond(exchange.ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Server shutting down");
-                }
+            for (HttpReply exchange : List.copyOf(pendingExchanges.values())) {
+                exchange.complete(HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Server shutting down");
             }
-            signalHandlers.clear();
         } finally {
             try {
-                if (validation != null) validation.shutdownNow();
                 connections.close();
             } finally {
+                health.set(SignalingState.CLOSED, null);
                 if (accept != null) {
                     accept.shutdownGracefully(0, 3, TimeUnit.SECONDS);
                 }
@@ -459,20 +365,20 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
     }
 
     /**
-     * One in flight offer/answer exchange: the HTTP context awaiting the
-     * answer, the peer's address, and the negotiation timeout reaping it.
+     * One in flight offer/answer exchange, and the join's way back: the HTTP
+     * context awaiting the answer and the negotiation timeout reaping it. The
+     * first response ends it.
      */
-    static final class PendingExchange {
-        final ChannelHandlerContext ctx;
-        final InetSocketAddress remoteAddress;
+    final class HttpReply implements ReplyPath {
+        private final ChannelHandlerContext ctx;
+        private final long connectionId;
+        private final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         private ScheduledFuture<?> timeout;
-        private Future<?> validationTask;
-        private volatile OfferCheckResult offerCheck;
         private boolean completed;
 
-        PendingExchange(ChannelHandlerContext ctx, InetSocketAddress remoteAddress) {
+        HttpReply(ChannelHandlerContext ctx, long connectionId) {
             this.ctx = ctx;
-            this.remoteAddress = remoteAddress;
+            this.connectionId = connectionId;
         }
 
         synchronized void setTimeout(ScheduledFuture<?> timeout) {
@@ -484,21 +390,77 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             }
         }
 
-        synchronized void cancelTimeout() {
-            completed = true;
-            if (validationTask != null) {
-                validationTask.cancel(true);
-                validationTask = null;
+        /** Ends the exchange; false when it already ended. */
+        private boolean end() {
+            synchronized (this) {
+                if (completed) {
+                    return false;
+                }
+                completed = true;
+                if (timeout != null) {
+                    timeout.cancel(false);
+                    timeout = null;
+                }
             }
-            if (timeout != null) {
-                timeout.cancel(false);
-                timeout = null;
-            }
+            pendingExchanges.remove(connectionId, this);
+            return true;
         }
 
-        synchronized void setValidationTask(Future<?> task) {
-            if (completed) task.cancel(true);
-            else validationTask = task;
+        /** Answers the exchange if it is still open. */
+        CompletionStage<Void> complete(HttpResponseStatus status, String contentType, String body) {
+            if (!end()) {
+                return CompletableFuture.failedFuture(new IllegalStateException("The exchange already ended"));
+            }
+            CompletableFuture<Void> written = new CompletableFuture<>();
+            respond(ctx, status, contentType, body).addListener(done -> {
+                if (done.isSuccess()) {
+                    written.complete(null);
+                } else {
+                    written.completeExceptionally(done.cause());
+                }
+            });
+            return written;
+        }
+
+        /** The client can no longer get an answer: the deadline passed or it disconnected. */
+        void abandon(HttpResponseStatus status) {
+            if (!end()) {
+                return;
+            }
+            if (status != null) {
+                respond(ctx, status, "text/plain", "");
+            }
+            abandoned.complete(null);
+        }
+
+        @Override
+        public boolean trickles() {
+            return false;
+        }
+
+        @Override
+        public CompletionStage<Void> answer(String sdp) {
+            return complete(HttpResponseStatus.OK, "application/sdp", sdp);
+        }
+
+        @Override
+        public CompletionStage<Void> candidate(String candidate) {
+            throw new UnsupportedOperationException("HTTP answers carry every candidate");
+        }
+
+        @Override
+        public CompletionStage<Void> refuse(JoinRefusal refusal) {
+            return complete(HttpResponseStatus.valueOf(refusal.httpStatus()), "text/plain", "");
+        }
+
+        @Override
+        public void onRemoteSignal(Consumer<RemoteSignal> handler) {
+            // The offer is all a client sends over HTTP.
+        }
+
+        @Override
+        public CompletionStage<Void> abandoned() {
+            return abandoned.minimalCompletionStage();
         }
     }
 
@@ -517,7 +479,7 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
 
             if (HttpMethod.GET.equals(request.method()) && JOIN_PATH.equals(path)) {
                 // Any 2xx tells the client NetherNet is supported here.
-                if (newConnectionHandler == null || closed) {
+                if (sink == null || closed) {
                     respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Service unavailable");
                 } else {
                     respondStatus(ctx);
@@ -548,8 +510,8 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
                 respond(ctx, HttpResponseStatus.BAD_REQUEST, "text/plain", "Invalid Network ID path segment");
                 return;
             }
-            NewConnectionHandler handler = newConnectionHandler;
-            if (handler == null || closed) {
+            JoinSink current = sink;
+            if (current == null || closed) {
                 respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Service unavailable");
                 return;
             }
@@ -560,104 +522,34 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
             }
 
             long connectionId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-            PendingExchange exchange = new PendingExchange(ctx, (InetSocketAddress) ctx.channel().remoteAddress());
+            HttpReply exchange = new HttpReply(ctx, connectionId);
             pendingExchanges.put(connectionId, exchange);
 
-            // Reap a negotiation that produces no answer in time: 502 to the
-            // client, CONNECTERROR inward so the server channel closes the
-            // half negotiated child.
+            // Reap a negotiation that produces no answer in time: 504 to the
+            // client, and the join abandoned so the endpoint closes the half
+            // negotiated child.
             exchange.setTimeout(ctx.channel().eventLoop().schedule(() -> {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    log.debug("Negotiation for {} timed out waiting for the answer", Long.toUnsignedString(connectionId));
-                    respond(ctx, HttpResponseStatus.BAD_GATEWAY, "text/plain", "Timed out waiting for answer");
-                    SignalHandler signalHandler = signalHandlers.get(connectionId);
-                    if (signalHandler != null) {
-                        signalHandler.onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " "
-                                + Long.toUnsignedString(connectionId) + " negotiation timeout");
-                    }
-                }
+                log.debug("Negotiation for {} timed out waiting for the answer", Long.toUnsignedString(connectionId));
+                exchange.abandon(HttpResponseStatus.valueOf(JoinRefusal.NO_ANSWER_IN_TIME.httpStatus()));
             }, NEGOTIATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
 
             // A client that disconnects mid negotiation leaves the answer with
-            // nowhere to go; drop the exchange so the timeout does not fire a
-            // response into a dead channel. Completed exchanges were already
-            // removed by then and this is a no-op.
-            ctx.channel().closeFuture().addListener(future -> {
-                PendingExchange orphan = pendingExchanges.remove(connectionId);
-                if (orphan != null) {
-                    orphan.cancelTimeout();
-                }
-            });
+            // nowhere to go. Completed exchanges already ended and this is a
+            // no-op.
+            ctx.channel().closeFuture().addListener(future -> exchange.abandon(null));
 
-            OfferCheck check = offerCheck;
-            OfferPolicy policy = offerPolicy;
-            if (check == null) {
-                dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, null);
-                return;
-            }
-            ExecutorService executor;
-            try {
-                executor = validationExecutor();
-            } catch (RejectedExecutionException e) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain", "Identity validation unavailable");
-                }
-                return;
-            }
-            CompletableFuture<OfferCheckResult> stage = check.checkAsync(offerSdp, executor);
-            exchange.setValidationTask(stage);
-            stage.whenComplete((result, failure) -> {
-                try {
-                    ctx.executor().execute(() -> checkCompleted(connectionId, exchange, networkId, offerSdp,
-                            handler, policy, result, failure));
-                } catch (RejectedExecutionException e) {
-                    // The existing negotiation deadline still reaps the exchange if the loop recovers.
-                    log.debug("Identity completion could not reach the HTTP event loop for {}",
-                            Long.toUnsignedString(connectionId));
-                }
-            });
-        }
-
-        private void checkCompleted(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
-                                    NewConnectionHandler handler, OfferPolicy policy, OfferCheckResult result,
-                                    Throwable failure) {
-            if (closed || !exchange.ctx.channel().isActive() || pendingExchanges.get(connectionId) != exchange) return;
-            Optional<IdentityRefusal> refusal = failure == null ? policy.refusal(result) : Optional.empty();
-            if (failure != null || refusal.isPresent()) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    if (failure != null) {
-                        // A full check queue, not a judgment on the offer.
-                        respond(exchange.ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, "text/plain",
-                                "Identity validation unavailable");
-                    } else {
-                        // Diagnostics hold no token, and their text is sanitized for logs.
-                        log.info("Refused offer {} from {}: {} ({}, {})", Long.toUnsignedString(connectionId),
-                                exchange.remoteAddress, refusal.get(), result.reason(), result.diagnostics());
-                        // Statuses from the initial table of ruling E-7.
-                        respond(exchange.ctx, refusal.get() == IdentityRefusal.TRUST_SOURCE_UNREACHABLE
-                                        ? HttpResponseStatus.INTERNAL_SERVER_ERROR : HttpResponseStatus.UNAUTHORIZED,
-                                "text/plain", "Client assertion rejected");
-                    }
-                }
-                return;
-            }
-            dispatchOffer(connectionId, exchange, networkId, offerSdp, handler, result);
-        }
-
-        private void dispatchOffer(long connectionId, PendingExchange exchange, String networkId, String offerSdp,
-                                   NewConnectionHandler handler, OfferCheckResult result) {
-            exchange.offerCheck = result;
+            String host = request.headers().get(HttpHeaderNames.HOST);
+            Join.Reached reached = host != null && ctx.channel().localAddress() instanceof InetSocketAddress local
+                    ? new Join.Reached(host, local.getPort()) : null;
+            SourcedAddress source = ctx.channel().remoteAddress() instanceof InetSocketAddress remote
+                    && !remote.isUnresolved() ? new SourcedAddress(remote, AddressSource.SIGNALING, null)
+                    : SourcedAddress.unknown();
             log.debug("Offer for {} from network {} via HTTP", Long.toUnsignedString(connectionId), networkId);
             try {
-                handler.onConnect(connectionId, networkId, offerSdp);
-            } catch (Exception e) {
-                if (pendingExchanges.remove(connectionId, exchange)) {
-                    exchange.cancelTimeout();
-                    signalHandlers.remove(connectionId);
-                    exchange.ctx.close();
+                current.join(new Join(connectionId, networkId, offerSdp, source, exchange, reached));
+            } catch (RuntimeException e) {
+                if (exchange.end()) {
+                    ctx.close();
                 }
             }
         }
@@ -759,13 +651,14 @@ public class NetherNetHttpSignaling implements NetherNetServerSignaling {
      * after the write, matching the one request per connection model. Safe
      * from any thread.
      */
-    private static void respond(ChannelHandlerContext ctx, HttpResponseStatus status, String contentType, String body) {
+    private static ChannelFuture respond(ChannelHandlerContext ctx, HttpResponseStatus status, String contentType,
+                                         String body) {
         FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status,
                 Unpooled.copiedBuffer(body, StandardCharsets.UTF_8));
         response.headers()
                 .set(HttpHeaderNames.CONTENT_TYPE, contentType)
                 .setInt(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
                 .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        return ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 }
