@@ -30,7 +30,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.function.Supplier;
 
 /**
  * Sends one provider request over the WebSocket when it carries the operation, else over HTTPS, with a bounded
@@ -65,8 +64,7 @@ final class Exchanger {
     private final ClientRuntime runtime;
     private final RequestSigner signer;
     private final ProviderHttp http;
-    private final Supplier<ProviderWebSocket> websocket;
-    private final Supplier<Map<String, String>> upgradeHeaders;
+    private final ControlChannel control;
     private final Relinquish relinquish;
 
     /** Stops a client whose registration another process took over or the provider no longer has. */
@@ -76,13 +74,12 @@ final class Exchanger {
         void gone(ProviderException refusal);
     }
 
-    Exchanger(ClientRuntime runtime, RequestSigner signer, ProviderHttp http, Supplier<ProviderWebSocket> websocket,
-              Supplier<Map<String, String>> upgradeHeaders, Relinquish relinquish) {
+    Exchanger(ClientRuntime runtime, RequestSigner signer, ProviderHttp http, ControlChannel control,
+              Relinquish relinquish) {
         this.runtime = runtime;
         this.signer = signer;
         this.http = http;
-        this.websocket = websocket;
-        this.upgradeHeaders = upgradeHeaders;
+        this.control = control;
         this.relinquish = relinquish;
     }
 
@@ -161,11 +158,11 @@ final class Exchanger {
         } catch (Exception failure) {
             return CompletableFuture.failedFuture(failure);
         }
-        ProviderWebSocket socket = request.webSocketOperation() == null ? null : websocket.get();
+        ProviderWebSocket socket = request.webSocketOperation() == null ? null : control.socket();
         CompletableFuture<Optional<ProviderReply>> viaSocket = socket == null
                 ? CompletableFuture.completedFuture(Optional.empty())
                 : socket.exchange(request.webSocketOperation(), headers, request.body() == null ? "" : request.body(),
-                        upgradeHeaders, request.timeout(), () -> beforeSend(request), request.guard())
+                        control::upgradeHeaders, request.timeout(), () -> beforeSend(request), request.guard())
                 .exceptionallyAsync(failure -> {
                     // Retried over HTTPS with the same signed inputs; neither intent nor body is replaced
                     attempts.ambiguous |= runtime.keeper.state().pendingOperation() != null;
@@ -271,6 +268,8 @@ final class Exchanger {
         ProviderState state = runtime.keeper.state();
         if (state.pendingOperation() != null) {
             runtime.keeper.save(state.withPendingOperation(null));
+            // A socket lost while the operation was unsettled did not reconnect then
+            control.reconnect();
         }
     }
 

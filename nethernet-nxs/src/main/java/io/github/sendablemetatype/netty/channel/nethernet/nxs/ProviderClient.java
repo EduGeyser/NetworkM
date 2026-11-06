@@ -546,8 +546,8 @@ public final class ProviderClient implements AutoCloseable {
         queue = new OperationQueue(environment.executor());
         RequestSigner signer = new RequestSigner(runtime);
         control = new ControlChannel(runtime, signer, environment);
-        Exchanger exchanger = new Exchanger(runtime, signer, new ProviderHttp(environment.http()), control::socket,
-                control::upgradeHeaders, new Exchanger.Relinquish() {
+        Exchanger exchanger = new Exchanger(runtime, signer, new ProviderHttp(environment.http()), control,
+                new Exchanger.Relinquish() {
             @Override
             public void fenced() {
                 relinquish(log::replaced);

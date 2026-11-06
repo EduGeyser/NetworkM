@@ -575,6 +575,25 @@ class ProviderWebSocketTest {
     }
 
     @Test
+    void aSocketLostDuringAnOperationReconnectsOnceTheFallbackSettledIt(@TempDir Path directory) throws Exception {
+        try (var h = harness()) {
+            var transport = new FakeTransport();
+            transport.joins = (join, guard) -> CompletableFuture.completedFuture(ANSWER);
+            var client = assisted(h, directory, transport);
+            h.await(client.start());
+            int upgrades = h.stub.upgrades.get();
+            h.stub.dropAfterCommit = "rotate";
+            h.await(client.rotateMachineKey());
+            assertEquals(1, h.stub.fallbacks.get());
+            assertFalse(state(directory).contains("pendingWebSocketOperation"));
+            // The socket died while the rotation was unsettled; no operation is due, yet joins can arrive again
+            reconnected(h, upgrades);
+            push(h, join(h, "ab".repeat(16), 14000).toString());
+            assertTrue(result(h).get("accepted").getAsBoolean());
+        }
+    }
+
+    @Test
     void anUnansweredPingDropsTheSocketAndAssistanceReconnects(@TempDir Path directory) throws Exception {
         try (var h = harness()) {
             var client = assisted(h, directory, new FakeTransport());
