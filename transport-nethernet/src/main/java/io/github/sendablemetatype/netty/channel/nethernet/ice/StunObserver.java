@@ -37,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
@@ -150,17 +151,25 @@ public final class StunObserver implements AutoCloseable {
      * takes numeric servers only. A name is looked up on {@code resolver} each time a monitor opens,
      * so a reopened monitor follows a DNS change, and at most one address per family is asked: the
      * observer pins one of them once the other proves unreachable. The engine answers reads on its
-     * own thread, so a read returns what the previous one found; the observer polls every second,
-     * which makes a reading at most that much older.
+     * own thread, so a read returns what the previous ones found, each aged by the time since it
+     * was asked for, so a reading the engine stops renewing ages out.
      *
      * @param monitorStun Opens one engine monitor, such as {@code endpoint::monitorStun}
      * @param resolver    Looks names up, off the event loop
      */
     public static MonitorFactory sharedPort(
             Function<InetSocketAddress, CompletionStage<IceEndpoint.StunMonitor>> monitorStun, Executor resolver) {
+        return sharedPort(monitorStun, resolver, System::nanoTime);
+    }
+
+    /** As {@link #sharedPort(Function, Executor)}, with the clock that ages the readings. */
+    static MonitorFactory sharedPort(
+            Function<InetSocketAddress, CompletionStage<IceEndpoint.StunMonitor>> monitorStun, Executor resolver,
+            LongSupplier nanoTime) {
         Objects.requireNonNull(monitorStun, "monitorStun");
         Objects.requireNonNull(resolver, "resolver");
-        return server -> new PortMonitor(server, monitorStun, resolver);
+        Objects.requireNonNull(nanoTime, "nanoTime");
+        return server -> new PortMonitor(server, monitorStun, resolver, nanoTime);
     }
 
     /**
@@ -551,14 +560,21 @@ public final class StunObserver implements AutoCloseable {
     /**
      * One server's engine monitors on the shared port: one per address it asks. Opens them in the
      * background, a name only after the resolver looked it up. Reads go to the engine's thread, and
-     * {@link #read()} returns what the previous reads found.
+     * {@link #read()} returns what the previous reads found, aged by the time since each was asked
+     * for: a reading the engine stopped renewing, as when its reads stall, then ages out like a
+     * mapping the server stopped answering.
      */
     private static final class PortMonitor implements Monitor {
+        /** A reading and when it was asked for, which is no later than when the engine took it. */
+        private record Sample(StunReading reading, long askedAt) {
+        }
+
         private final Function<InetSocketAddress, CompletionStage<IceEndpoint.StunMonitor>> monitorStun;
         private final InetSocketAddress server;
+        private final LongSupplier nanoTime;
         // Guarded by this.
         private final List<IceEndpoint.StunMonitor> monitors = new ArrayList<>();
-        private final Map<InetSocketAddress, StunReading> readings = new LinkedHashMap<>();
+        private final Map<InetSocketAddress, Sample> readings = new LinkedHashMap<>();
         private int opening;
         private boolean openedAny;
         private RuntimeException failure;
@@ -566,9 +582,10 @@ public final class StunObserver implements AutoCloseable {
 
         PortMonitor(InetSocketAddress server,
                     Function<InetSocketAddress, CompletionStage<IceEndpoint.StunMonitor>> monitorStun,
-                    Executor resolver) {
+                    Executor resolver, LongSupplier nanoTime) {
             this.server = server;
             this.monitorStun = monitorStun;
+            this.nanoTime = nanoTime;
             InetSocketAddress literal = numeric(server);
             if (literal != null) {
                 openAll(List.of(literal));
@@ -661,14 +678,17 @@ public final class StunObserver implements AutoCloseable {
 
         @Override
         public List<StunReading> read() {
+            long now = nanoTime.getAsLong();
             List<IceEndpoint.StunMonitor> current;
-            List<StunReading> found;
+            List<StunReading> found = new ArrayList<>();
             synchronized (this) {
                 if (failure != null) {
                     throw failure;
                 }
                 current = List.copyOf(monitors);
-                found = List.copyOf(readings.values());
+                for (Sample sample : readings.values()) {
+                    found.add(aged(sample, now));
+                }
             }
             for (IceEndpoint.StunMonitor monitor : current) {
                 monitor.read().whenComplete((reading, failed) -> {
@@ -678,13 +698,29 @@ public final class StunObserver implements AutoCloseable {
                         }
                         if (failed != null) {
                             fail(new IllegalStateException("STUN monitor ended: " + failed, failed));
-                        } else {
-                            readings.put(reading.server(), reading);
+                            return;
+                        }
+                        // A read that completes after a later one must not bring back an older sample
+                        Sample previous = readings.get(reading.server());
+                        if (previous == null || now - previous.askedAt() >= 0) {
+                            readings.put(reading.server(), new Sample(reading, now));
                         }
                     }
                 });
             }
-            return found;
+            return List.copyOf(found);
+        }
+
+        /** The reading as it stands now: its last success that much further back. */
+        private static StunReading aged(Sample sample, long now) {
+            StunReading reading = sample.reading();
+            if (reading.lastSuccessAge().isEmpty()) {
+                return reading;
+            }
+            Duration since = Duration.ofNanos(Math.max(0, now - sample.askedAt()));
+            return new StunReading(reading.server(), reading.local(), reading.mapped(), reading.state(),
+                    reading.successfulResponses(), reading.failedTransactions(), reading.mappingRevision(),
+                    Optional.of(reading.lastSuccessAge().orElseThrow().plus(since)));
         }
 
         @Override

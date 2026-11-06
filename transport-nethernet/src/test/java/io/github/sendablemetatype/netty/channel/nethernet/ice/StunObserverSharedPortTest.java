@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.Inet4Address;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -81,6 +83,30 @@ class StunObserverSharedPortTest {
         assertEquals(1, readings.size());
         assertEquals(MAPPED, readings.getFirst().mapped());
         assertEquals(2, engine.reads.size(), "every read asks again");
+    }
+
+    @Test
+    void aMappingTheEngineStopsReportingAgesOutAtTheMaxAge() {
+        AtomicLong clock = new AtomicLong();
+        StunObserver observer = new StunObserver(SERVER, Duration.ofSeconds(10), 40404,
+                StunObserver.sharedPort(server -> {
+                    CompletableFuture<IceEndpoint.StunMonitor> stage = new CompletableFuture<>();
+                    opening.put(server, stage);
+                    return stage;
+                }, lookups::add, clock::get), clock::get);
+        InetSocketAddress mapped = new InetSocketAddress("93.184.216.40", 40404);
+        observer.poll();
+        EngineMonitor engine = open(SERVER);
+        observer.poll();
+        engine.answer(mapped);
+        observer.poll();
+        assertEquals(List.of(mapped), observer.mappings());
+
+        // Every read from now on stalls in the engine, so each poll only sees the reading taken at the start
+        clock.addAndGet(Duration.ofSeconds(11).toNanos());
+        observer.poll();
+        assertEquals(List.of(), observer.mappings(), "a mapping is as old as its sample, however often it is read");
+        assertTrue(engine.reads.stream().skip(1).noneMatch(CompletableFuture::isDone));
     }
 
     @Test
