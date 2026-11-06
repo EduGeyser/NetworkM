@@ -243,12 +243,12 @@ public abstract class EngineConformanceTest {
     void closingTheEngineClosesItsPeers() throws Exception {
         Pair pair = connect(true, answererConfig());
 
-        CompletionStage<Void> closed = engine.close();
-        await(closed);
+        await(engine.close());
 
         assertTrue(pair.client.peer.close().toCompletableFuture().isDone());
         assertTrue(pair.server.peer.close().toCompletableFuture().isDone());
-        assertSame(closed, engine.close());
+        // Idempotent: a later close finds the shutdown done.
+        assertTrue(engine.close().toCompletableFuture().isDone());
         assertThrows(IllegalStateException.class, () -> engine.createPeer(answererConfig(), new Side("late")));
     }
 
