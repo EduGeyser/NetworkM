@@ -479,8 +479,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         if (join != null) {
             if (!join.sender().equals(sender)) {
                 log.debug("Ignoring a signal for join {} of {} from {}: its offer came from {}",
-                        connectionId, Long.toUnsignedString(senderId), sender,
-                        join.sender());
+                        connectionId, Long.toUnsignedString(senderId), sender, join.sender());
             } else if (rememberPeer(senderId, sender, null)) {
                 // A repeated offer reaches the join too, which ignores it.
                 join.handler().onSignal(signal);
