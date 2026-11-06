@@ -39,16 +39,19 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.UncheckedIOException;
 import java.net.BindException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -172,6 +175,60 @@ class NetherNetServerChannelTest {
     }
 
     @Test
+    void readyCompletesOnceTheIcePortOpenedAndTheSourcesStarted() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        try {
+            FakeJoinSource source = new FakeJoinSource(true);
+            server.addSource(source, EndpointHarness.ADMIT_ALL);
+            CompletableFuture<Integer> startsWhenReady = server.ready().toCompletableFuture()
+                    .thenApply(ignored -> source.starts.get());
+            harness.sync();
+            assertFalse(startsWhenReady.isDone(), "the bound endpoint waits for its ICE port");
+
+            engine.open.complete(null);
+            assertEquals(1, startsWhenReady.get(2, TimeUnit.SECONDS));
+        } finally {
+            server.close().sync();
+        }
+    }
+
+    @Test
+    void readyFailsWithTheReasonTheIcePortDidNotOpen() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        BindException taken = new BindException("taken after the probe");
+
+        // As the WebRTC engine reports it from its endpoint thread
+        engine.open.completeExceptionally(new UncheckedIOException(taken));
+
+        ExecutionException failed = assertThrows(ExecutionException.class,
+                () -> server.ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+        assertSame(taken, failed.getCause());
+        assertTrue(server.closeFuture().await(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void readyFailsWithTheBindsFailureOrWhenTheEndpointClosesFirst() throws Exception {
+        try (DatagramSocket taken = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
+                    .awaitUninterruptibly();
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> ((NetherNetServerChannel) bind.channel()).ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+            assertSame(bind.cause(), failed.getCause());
+        }
+
+        NetherNetServerChannel closed = (NetherNetServerChannel) bootstrap(EngineRef.shared(new HeldEndpointEngine()))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        closed.close().sync();
+        ExecutionException failed = assertThrows(ExecutionException.class,
+                () -> closed.ready().toCompletableFuture().get(2, TimeUnit.SECONDS));
+        assertInstanceOf(ClosedChannelException.class, failed.getCause());
+    }
+
+    @Test
     void anIcePortThatOpensAfterTheEndpointClosedIsClosed() throws Exception {
         HeldEndpointEngine engine = new HeldEndpointEngine();
         ChannelFuture bind = bootstrap(EngineRef.shared(engine)).bind(new InetSocketAddress("127.0.0.1", 0))
@@ -210,6 +267,7 @@ class NetherNetServerChannelTest {
     void portsPerSessionAreAnOption() throws Exception {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         harness.bind();
+        assertTrue(harness.server.ready().toCompletableFuture().isDone(), "no port to wait for");
         harness.source(true).offer("1", OFFER);
         assertNull(harness.negotiating().config().endpoint());
     }

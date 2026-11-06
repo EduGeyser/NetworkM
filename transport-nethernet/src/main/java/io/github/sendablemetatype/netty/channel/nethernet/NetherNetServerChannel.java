@@ -48,11 +48,13 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
+import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -112,8 +114,9 @@ import java.util.function.Supplier;
  *
  * <p><b>ICE.</b> By default every peer gathers its host candidates on one UDP port at the address
  * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
- * opens the port after bind returned, and the sources start once it is open; a port that fails
- * to open then closes the endpoint, with the error logged. With
+ * opens the port after bind returned, and the sources start once it is open, which
+ * {@link #ready()} reports; a port that fails to open then closes the endpoint, with the error
+ * logged. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
  * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead. On the shared
  * port, {@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS} keeps STUN bindings alive from it and
@@ -158,6 +161,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /** What answers announce: the literal advertised entries, then every entry once names resolved. */
     private volatile List<InetSocketAddress> advertised = List.of();
     private volatile Bound bound;
+    /** Completes once the endpoint takes joins; see {@link #ready()}. */
+    private final CompletableFuture<Void> ready = new CompletableFuture<>();
     /** Polls STUN discovery on the event loop; null without discovery. Event loop only. */
     private ScheduledFuture<?> discoveryRefresh;
     private volatile boolean open = true;
@@ -604,8 +609,35 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     // ---- Bind and close ----
 
+    /**
+     * Completes once the endpoint takes joins: it is bound, its shared ICE port is open, and its
+     * sources have started. The bind future completes before that, as soon as the port was found
+     * free: the engine opens the port afterwards, on its own threads. With ports per session there
+     * is no port to open, and this completes with the bind.
+     *
+     * <p>Fails with the reason the endpoint did not get there: the bind's failure, the reason the
+     * ICE port did not open (such as a {@link java.net.BindException} when another process took
+     * the port after the bind found it free), or a {@link ClosedChannelException} when the endpoint
+     * was closed first. After a failure that follows the bind, the endpoint closes itself.
+     * Actions that depend on this stage run on the endpoint's event loop and must not block.
+     *
+     * @return the stage
+     */
+    public CompletionStage<Void> ready() {
+        return ready.minimalCompletionStage();
+    }
+
     @Override
     protected void doBind(SocketAddress requested) throws Exception {
+        try {
+            bindEndpoint(requested);
+        } catch (Throwable failure) {
+            ready.completeExceptionally(failure);
+            throw failure;
+        }
+    }
+
+    private void bindEndpoint(SocketAddress requested) throws Exception {
         if (!(requested instanceof InetSocketAddress address)) {
             throw new IllegalArgumentException("Unsupported address type");
         }
@@ -679,9 +711,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             try {
                 endpoint = opened.join();
             } catch (CompletionException e) {
-                throw e.getCause() instanceof Exception cause ? cause : e;
+                switch (reasonOf(e)) {
+                    case Exception reason -> throw reason;
+                    case Error reason -> throw reason;
+                    default -> throw e;
+                }
             }
-            ready(plan, endpoint);
+            takeJoins(plan, endpoint);
             return;
         }
         // The engine opens the port on its own thread; this loop does not wait for it (ruling A-4).
@@ -778,24 +814,38 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             return;
         }
         if (failure != null) {
-            Throwable cause = failure instanceof CompletionException && failure.getCause() != null
-                    ? failure.getCause() : failure;
+            Throwable reason = reasonOf(failure);
             log.error("The NetherNet endpoint at {} could not open its ICE port, closing it: {}", localAddress,
-                    cause.toString());
+                    reason.toString());
+            ready.completeExceptionally(reason);
             close();
             return;
         }
         try {
-            ready(plan, endpoint);
+            takeJoins(plan, endpoint);
         } catch (RuntimeException e) {
             log.error("The NetherNet endpoint at {} could not set up its ICE port, closing it: {}", localAddress,
                     e.toString());
+            ready.completeExceptionally(e);
             close();
         }
     }
 
+    /**
+     * Why opening the ICE port failed, without the wrappers of the stage and of the engine's
+     * thread, which cannot throw a checked exception.
+     */
+    private static Throwable reasonOf(Throwable failure) {
+        Throwable reason = failure;
+        while ((reason instanceof CompletionException || reason instanceof UncheckedIOException)
+                && reason.getCause() != null) {
+            reason = reason.getCause();
+        }
+        return reason;
+    }
+
     /** The ICE port is open, if it is shared: the endpoint takes joins from now on. Event loop. */
-    private void ready(BindPlan plan, IceEndpoint endpoint) {
+    private void takeJoins(BindPlan plan, IceEndpoint endpoint) {
         if (endpoint != null && !plan.relays().isEmpty()) {
             endpoint.proxyRelays(plan.relays());
         }
@@ -822,10 +872,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             toStart = List.copyOf(sources.values());
         }
         toStart.forEach(Registration::start);
+        ready.complete(null);
     }
 
     @Override
     protected void doClose() throws Exception {
+        ready.completeExceptionally(new ClosedChannelException());
         List<Registration> closing;
         synchronized (sourcesLock) {
             open = false;
