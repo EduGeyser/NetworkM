@@ -98,7 +98,7 @@ class RemoteCandidateIntakeTest {
     @Test
     void aClientAlsoTakesNames() {
         // A server may name a host inside its own network for the engine to resolve
-        String filtered = RemoteCandidateIntake.client().remoteDescription(
+        String filtered = RemoteCandidateIntake.client(OFFER).remoteDescription(
                 "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
                         + "a=candidate:1 1 udp 2130706431 node.cluster.local 5000 typ host\r\n");
         assertTrue(filtered.contains("node.cluster.local"));
@@ -114,6 +114,16 @@ class RemoteCandidateIntakeTest {
         assertEquals(Optional.of(new RemoteCandidate("candidate:7 1 udp 2122194687 203.0.113.7 54321 typ host",
                         "data", 0)),
                 intake.trickled("a=candidate:7 1 udp 2122194687 203.0.113.7 54321 typ host\r\n"));
+    }
+
+    @Test
+    void aClientTagsCandidatesTrickledAheadOfTheAnswerWithItsOffersMid() {
+        RemoteCandidateIntake intake = RemoteCandidateIntake.client(OFFER.replace("a=mid:0", "a=mid:data"));
+
+        assertEquals("data", intake.trickled("candidate:1 1 udp 1 203.0.113.7 1 typ host").orElseThrow().sdpMid());
+        intake.remoteDescription("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n");
+        assertEquals("data", intake.trickled("candidate:2 1 udp 1 203.0.113.7 2 typ host").orElseThrow().sdpMid(),
+                "an answer without a mid keeps the offer's");
     }
 
     @Test
@@ -184,7 +194,7 @@ class RemoteCandidateIntakeTest {
         for (String address : UNUSABLE) {
             offer.append("a=candidate:1 1 udp 2122194687 ").append(address).append(" 5000 typ host\r\n");
         }
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client())) {
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client(OFFER))) {
             assertEquals(0, candidates(intake.remoteDescription(offer.toString())));
             for (String address : UNUSABLE) {
                 assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isEmpty(),
@@ -196,7 +206,7 @@ class RemoteCandidateIntakeTest {
     @Test
     void loopbackAndLinkLocalCandidatesStay() {
         List<String> kept = List.of("127.0.0.1", "::1", "169.254.10.20", "fe80::1", "::ffff:169.254.10.20");
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client())) {
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client(OFFER))) {
             intake.remoteDescription(OFFER);
             for (String address : kept) {
                 assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isPresent(),
@@ -329,7 +339,7 @@ class RemoteCandidateIntakeTest {
 
     @Test
     void infersNothingAsAClientOrBehindRelays() {
-        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.client(), RemoteCandidateIntake.relayed())) {
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.client(OFFER), RemoteCandidateIntake.relayed())) {
             intake.remoteDescription(HOST_ONLY_OFFER);
             assertTrue(intake.inferredCandidates("v=0\r\n", PUBLIC_PEER).isEmpty());
         }

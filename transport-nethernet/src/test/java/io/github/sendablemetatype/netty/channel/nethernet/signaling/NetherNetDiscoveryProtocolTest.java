@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,6 +42,34 @@ class NetherNetDiscoveryProtocolTest {
             assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, "42", answer),
                     received.get(2, TimeUnit.SECONDS));
             assertEquals(discovery.sender(), discovery.peers.get(20));
+        }
+    }
+
+    /**
+     * A client that dials an address registers its attempt for target "0", the server discovery
+     * finds, before discovery runs: no sender is that server until discovery found it, and then
+     * only the server it found is.
+     */
+    @Test
+    void aClientDialingAnAddressTakesSignalsOnlyFromTheServerDiscoveryFound() throws Exception {
+        try (Discovery discovery = new Discovery();
+             NetherNetDiscoverySignaling signaling = new NetherNetDiscoverySignaling(1, new InetSocketAddress(0),
+                     discovery.value, 10_000)) {
+            List<Signal> received = new CopyOnWriteArrayList<>();
+            signaling.setSignalHandler("42", "0", received::add);
+
+            discovery.receive(message(21, 1, 0, "CONNECTERROR 42 1"));
+            discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));
+            assertEquals(List.of(), received, "before discovery, no sender is the server");
+
+            CompletableFuture<?> connected = signaling.connect(discovery.sender());
+            discovery.receive(response(20).writeIntLE(0));
+            connected.get(2, TimeUnit.SECONDS);
+
+            discovery.receive(message(21, 1, 0, "CONNECTERROR 42 1"));
+            assertEquals(List.of(), received, "a sender other than the server discovery found");
+            discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));
+            assertEquals(List.of(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1")), received);
         }
     }
 

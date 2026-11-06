@@ -38,6 +38,7 @@ final class HttpRequestBudget extends ChannelDuplexHandler {
     static final int GAP_SECONDS = 5;
     private static final String JOIN_PATH = "/v1/join";
 
+    private final NetherNetHttpSignaling signaling;
     private final HttpConnection connection;
     private final HttpServerCodec codec;
     private int started;
@@ -49,7 +50,8 @@ final class HttpRequestBudget extends ChannelDuplexHandler {
     private ScheduledFuture<?> requestDeadline;
     private ScheduledFuture<?> gap;
 
-    HttpRequestBudget(HttpConnection connection, HttpServerCodec codec) {
+    HttpRequestBudget(NetherNetHttpSignaling signaling, HttpConnection connection, HttpServerCodec codec) {
+        this.signaling = signaling;
         this.connection = connection;
         this.codec = codec;
     }
@@ -119,7 +121,7 @@ final class HttpRequestBudget extends ChannelDuplexHandler {
                     return;
                 }
                 if (started < 2) {
-                    gap = ctx.executor().schedule(() -> expire(ctx), GAP_SECONDS, TimeUnit.SECONDS);
+                    gap = ctx.executor().schedule(() -> gapPassed(ctx), GAP_SECONDS, TimeUnit.SECONDS);
                 }
                 if (completed < 2 && requestDeadline == null) {
                     requestDeadline = ctx.executor().schedule(() -> expire(ctx), REQUEST_SECONDS, TimeUnit.SECONDS);
@@ -135,9 +137,18 @@ final class HttpRequestBudget extends ChannelDuplexHandler {
         written.addListener(ChannelFutureListener.CLOSE);
     }
 
+    /** A request did not arrive whole within its deadline. */
     private void expire(ChannelHandlerContext ctx) {
         // Routine on an open port, so no exception and no log above debug
         NetherNetHttpSignaling.log.debug("Closing the signaling connection from {}: no complete request in time",
+                ctx.channel().remoteAddress());
+        signaling.requestTimedOut(connection);
+        ctx.close();
+    }
+
+    /** No second request followed the status response: a client that needed only the status. */
+    private void gapPassed(ChannelHandlerContext ctx) {
+        NetherNetHttpSignaling.log.debug("Closing the signaling connection from {}: no second request",
                 ctx.channel().remoteAddress());
         ctx.close();
     }

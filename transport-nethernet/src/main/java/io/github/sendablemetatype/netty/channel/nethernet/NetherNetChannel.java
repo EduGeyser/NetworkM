@@ -140,7 +140,6 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     private boolean closingForEnding;
     private final AtomicBoolean wakeUpScheduled = new AtomicBoolean();
     private final Runnable wakeUpTask = this::onWakeUp;
-    private final Runnable applyPathTask = this::applyPath;
     private final Runnable shutdownHook = () -> {
         if (isOpen() && eventLoop().inEventLoop()) {
             Ending end = ending.get();
@@ -165,8 +164,6 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     private volatile long resumeMark;
 
     private volatile boolean transportOpen;
-    // The newest pair the engine reported, handed to the event loop.
-    private volatile TransportPath latestPath;
     // The newest pair the event loop took in, in step with the remote address.
     private volatile TransportPath selectedPath;
 
@@ -226,7 +223,6 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      */
     final void retirePeer() {
         unbindLinks();
-        latestPath = null;
         selectedPath = null;
         synchronized (peerLock) {
             if (peer != null) {
@@ -291,6 +287,9 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      * close requested here runs on the event loop.
      */
     abstract class PeerEvents implements PeerListener {
+        /** The newest pair this peer's engine reported, for the event loop to take in. */
+        private volatile TransportPath latestPath;
+        private final Runnable applyPath = () -> applyPath(this);
 
         /** Whether this peer's events no longer concern the channel. */
         boolean stale() {
@@ -328,7 +327,8 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         @Override
         public void onPathSelected(TransportPath path) {
             if (!stale()) {
-                pathSelected(path);
+                latestPath = path;
+                schedule(applyPath);
             }
         }
 
@@ -453,23 +453,27 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     // ---- Remote address ----
 
     /** Engine thread: ICE selected a pair. Applied on the event loop, in step with the pipeline. */
-    final void pathSelected(TransportPath path) {
-        latestPath = path;
+    private void schedule(Runnable applyPath) {
         try {
-            eventLoop().execute(applyPathTask);
+            eventLoop().execute(applyPath);
         } catch (RejectedExecutionException | IllegalStateException closing) {
             // The loop is gone or the channel never registered; nobody reads the address anymore.
         }
     }
 
-    private void applyPath() {
-        EventLoop loop = eventLoop();
-        if (!loop.inEventLoop()) {
-            pathSelected(latestPath);
+    /**
+     * Takes in the newest pair a peer reported, unless its events went stale meanwhile. The engine
+     * thread checked already, but a client can retire the peer between that check and the engine
+     * thread's next step; only here, on the loop that retires peers, is the check ordered with the
+     * retirement.
+     */
+    private void applyPath(PeerEvents from) {
+        if (!eventLoop().inEventLoop()) {
+            schedule(from.applyPath);
             return;
         }
-        TransportPath path = latestPath;
-        if (!isOpen() || path == null) {
+        TransportPath path = from.latestPath;
+        if (!isOpen() || from.stale() || path == null) {
             return;
         }
         selectedPath = path;

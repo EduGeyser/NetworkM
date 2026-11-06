@@ -46,13 +46,37 @@ public interface NetherServerMetrics {
      * A join was refused, by the endpoint or by HTTP signaling itself. The
      * status names the reason ({@code JoinRefusal#httpStatus()}), and is what
      * the peer was refused with over HTTP; joins over other sources report the
-     * status of the same refusal.
+     * status of the same refusal. HTTP signaling also reports an offer it
+     * turned away before reading it whole: {@code 413} for a body over its cap,
+     * {@code 417} for an expectation it does not meet. A join counts once, for the refusal that
+     * settled it: one that comes after the join was settled is not counted.
      */
     default void joinRefused(int httpStatus) {
     }
 
     /** The address already holds as many signaling connections as it may. */
     default void addressRefused(InetSocketAddress address) {
+    }
+
+    /**
+     * HTTP signaling holds as many connections as it may in all, so it
+     * refused one from this address, unread.
+     *
+     * @param address the connection's peer, which is the proxy for a proxied
+     *        client
+     */
+    default void connectionCapRefused(InetSocketAddress address) {
+    }
+
+    /**
+     * An HTTP signaling request did not arrive whole within its deadline
+     * (10 s), so its connection closed unanswered. A connection that just
+     * sends no second request after its status request is not reported.
+     *
+     * @param address the client a PROXY protocol header declared, else the
+     *        connection's peer
+     */
+    default void requestTimedOut(InetSocketAddress address) {
     }
 
     /** A request arrived without TLS where it is required. */

@@ -1,9 +1,13 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetHttpSignaling;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -13,6 +17,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -32,10 +40,21 @@ class NetherNetHttpJoinTest {
     private final ManualCheckExecutor checks = new ManualCheckExecutor();
     private EndpointHarness harness;
     private NetherNetHttpSignaling http;
+    private MultiThreadIoEventLoopGroup httpLoop;
+    private final List<Integer> refused = new CopyOnWriteArrayList<>();
+    private final NetherServerMetrics metrics = new NetherServerMetrics() {
+        @Override
+        public void joinRefused(int httpStatus) {
+            refused.add(httpStatus);
+        }
+    };
 
     @AfterEach
     void tearDown() {
         harness.close();
+        if (httpLoop != null) {
+            httpLoop.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
     }
 
     /** Binds an endpoint and an HTTP source on it, checking identities on the given executor. */
@@ -161,15 +180,134 @@ class NetherNetHttpJoinTest {
         assertTrue(harness.engine.peers().isEmpty());
     }
 
+    @Test
+    void everyHttpSourceOfAnEndpointHoldsANetworkIdUntilItsJoinGoesActive() throws Exception {
+        start(false);
+        bind();
+        NetherNetHttpSignaling other = httpSource();
+
+        assertStatus(200, response(post(http, "42", retailOffer())));
+        NetherNetChildChannel pending = harness.child();
+        assertStatus(409, response(post(other, "42", retailOffer())));
+        assertEquals(1, harness.engine.peers().size(), "the duplicate gets no peer");
+        assertTrue(pending.isOpen(), "and the first join is untouched");
+
+        harness.activate(harness.engine.peers().getFirst());
+        assertTrue(pending.isActive());
+        assertStatus(200, response(post(other, "42", retailOffer())));
+    }
+
+    @Test
+    void aNetworkIdStaysHeldAfterItsHttpSourceIsReplacedUntilItsJoinFails() throws Exception {
+        start(false);
+        bind();
+        assertStatus(200, response(post(http, "42", retailOffer())));
+        NetherNetChildChannel pending = harness.child();
+
+        assertTrue(harness.server.removeSource(http));
+        NetherNetHttpSignaling replacement = httpSource();
+        assertStatus(409, response(post(replacement, "42", retailOffer())));
+
+        pending.close().sync();
+        harness.sync();
+        assertStatus(200, response(post(replacement, "42", retailOffer())));
+    }
+
+    // One count per refusal: whichever settles the HTTP request first reports it.
+
+    @Test
+    void anAdmissionRefusalAfterTheHttpDeadlineIsNotCountedAgain() throws Exception {
+        harness = new EndpointHarness(() -> checks);
+        bindWithOwnLoop(Duration.ofMillis(300));
+        Socket client = post(EndpointHarness.OFFER);
+        checks.awaitQueued();
+
+        CountDownLatch release = blockEndpointLoop();
+        try {
+            // The check's result waits behind the blocked loop, and the deadline passes meanwhile
+            checks.runNext();
+            assertStatus(504, response(client));
+        } finally {
+            release.countDown();
+        }
+        syncBothLoops();
+
+        assertEquals(List.of(504), refused);
+    }
+
+    @Test
+    void aNegotiationRefusalAfterTheHttpDeadlineIsNotCountedAgain() throws Exception {
+        harness = new EndpointHarness();
+        bindWithOwnLoop(Duration.ofSeconds(1));
+        Socket client = post(retailOffer());
+        FakePeer peer = harness.negotiating();
+
+        CountDownLatch release = blockEndpointLoop();
+        try {
+            peer.failAnswer(new IllegalStateException("the engine could not answer"));
+            assertStatus(504, response(client));
+        } finally {
+            release.countDown();
+        }
+        syncBothLoops();
+
+        assertEquals(List.of(504), refused);
+    }
+
+    /** Binds the endpoint and an HTTP source on an I/O loop of its own, both reporting to {@link #metrics}. */
+    private void bindWithOwnLoop(Duration negotiationTimeout) throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_METRICS, metrics);
+        harness.bind();
+        httpLoop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        http = NetherNetHttpSignaling.builder(httpLoop).metrics(metrics).negotiationTimeout(negotiationTimeout).build();
+        http.bind(new InetSocketAddress("127.0.0.1", 0));
+        harness.server.addSource(http);
+    }
+
+    /** Holds the endpoint's event loop, which its children share, until the latch is released. */
+    private CountDownLatch blockEndpointLoop() throws InterruptedException {
+        CountDownLatch blocked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        harness.server.eventLoop().execute(() -> {
+            blocked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        blocked.await();
+        return release;
+    }
+
+    private void syncBothLoops() throws InterruptedException {
+        for (int i = 0; i < 3; i++) {
+            harness.sync();
+            httpLoop.next().submit(() -> { }).sync();
+        }
+    }
+
+    /** Another HTTP source on the bound endpoint. */
+    private NetherNetHttpSignaling httpSource() throws Exception {
+        NetherNetHttpSignaling source = NetherNetHttpSignaling.builder(harness.group).build();
+        source.bind(new InetSocketAddress("127.0.0.1", 0));
+        harness.server.addSource(source);
+        return source;
+    }
+
     /** Sends an offer on a connection of its own and returns the connection, unread. */
     private Socket post(String offer) throws IOException {
         return post("client", offer);
     }
 
     private Socket post(String networkId, String offer) throws IOException {
+        return post(http, networkId, offer);
+    }
+
+    private static Socket post(NetherNetHttpSignaling source, String networkId, String offer) throws IOException {
         Socket socket = new Socket();
         socket.setSoTimeout(10_000);
-        socket.connect(http.boundAddress());
+        socket.connect(source.boundAddress());
         byte[] body = offer.getBytes(StandardCharsets.UTF_8);
         String head = "POST /v1/join/" + networkId + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/sdp\r\n"
                 + "Content-Length: " + body.length + "\r\n\r\n";

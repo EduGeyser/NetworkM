@@ -35,7 +35,6 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.logging.InternalLogger;
@@ -47,8 +46,6 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -71,9 +68,10 @@ import java.util.function.Supplier;
  *   (not started, closed, or the endpoint's {@link JoinSink#admits} says no).</li>
  *   <li>{@code POST /v1/join/{networkId}}: the body is the client's SDP offer; the response is
  *   the full answer ({@code application/sdp}) or a {@link JoinRefusal}'s status with an empty
- *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle. A
- *   second offer for a network ID whose join has neither failed nor gone active yet is refused
- *   with {@link JoinRefusal#DUPLICATE} before it reaches the endpoint.</li>
+ *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle. The
+ *   endpoint refuses a second offer for a network ID whose join has neither failed nor gone active
+ *   yet with {@link JoinRefusal#DUPLICATE}, whichever of its HTTP sources the offers came on
+ *   ({@link #oneJoinPerNetworkId()}).</li>
  * </ul>
  * Everything else is a {@code 404}, as on vanilla.
  *
@@ -138,8 +136,6 @@ public final class NetherNetHttpSignaling implements JoinSource {
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
     private final List<Consumer<SignalingHealth>> healthListeners = new CopyOnWriteArrayList<>();
-    /** The pending offer of each network ID, see {@link #claimPending}. */
-    private final ConcurrentMap<String, ReplyPath> pendingOffers = new ConcurrentHashMap<>();
     private final AtomicLong nextPlaintextWarning = new AtomicLong(System.nanoTime());
     private final AtomicLong nextTlsWarning = new AtomicLong(System.nanoTime());
     private volatile JoinSink sink;
@@ -302,6 +298,12 @@ public final class NetherNetHttpSignaling implements JoinSource {
         return List.of();
     }
 
+    /** Yes: a client sends one offer per connect, so a second one for a pending join is a duplicate. */
+    @Override
+    public boolean oneJoinPerNetworkId() {
+        return true;
+    }
+
     /**
      * Closes the listener and every connection. An offer waiting for its answer has its
      * {@link ReplyPath#abandoned()} completed. This instance cannot be bound again.
@@ -329,7 +331,6 @@ public final class NetherNetHttpSignaling implements JoinSource {
                 channel.close();
             }
             connections.close();
-            pendingOffers.clear();
         } finally {
             try {
                 if (ownedStatusExecutor != null) {
@@ -352,8 +353,9 @@ public final class NetherNetHttpSignaling implements JoinSource {
             return;
         }
         if (!limits.open()) {
-            log.debug("Refused a signaling connection from {}: the connection cap is reached",
-                    channel.remoteAddress());
+            InetSocketAddress refused = (InetSocketAddress) channel.remoteAddress();
+            log.debug("Refused a signaling connection from {}: the connection cap is reached", refused);
+            metrics(metrics -> metrics.connectionCapRefused(refused));
             channel.close();
             return;
         }
@@ -375,28 +377,13 @@ public final class NetherNetHttpSignaling implements JoinSource {
         pipeline.addLast(new HttpTlsSelector(connection, this));
         HttpServerCodec codec = new HttpServerCodec();
         pipeline.addLast(codec);
-        pipeline.addLast(new HttpRequestBudget(connection, codec));
+        pipeline.addLast(new HttpRequestBudget(this, connection, codec));
         pipeline.addLast(new HttpAccessLog(this, connection));
         if (trustedProxies.isProxy(peer)) {
             pipeline.addLast(new HttpSourceCounter(this, connection));
         }
-        pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
+        pipeline.addLast(new HttpOfferAggregator(this, maxRequestBodyBytes));
         pipeline.addLast(new HttpRequestHandler(this, connection));
-    }
-
-    /**
-     * Holds a network ID for an offer until the offer's join fails or goes active.
-     *
-     * @return false when another offer holds it; a second offer for a pending join is a
-     *         {@link JoinRefusal#DUPLICATE}
-     */
-    boolean claimPending(String networkId, ReplyPath offer) {
-        return pendingOffers.putIfAbsent(networkId, offer) == null;
-    }
-
-    /** Lets go of a network ID this offer held, if it still holds it. Any thread, any number of times. */
-    void releasePending(String networkId, ReplyPath offer) {
-        pendingOffers.remove(networkId, offer);
     }
 
     /** Where a request came from. */
@@ -419,6 +406,13 @@ public final class NetherNetHttpSignaling implements JoinSource {
         metrics(metrics -> metrics.addressRefused(client));
     }
 
+    /** A request on this connection did not arrive whole within its deadline. */
+    void requestTimedOut(HttpConnection connection) {
+        InetSocketAddress client = connection.proxyDeclared != null ? connection.proxyDeclared
+                : (InetSocketAddress) connection.channel.remoteAddress();
+        metrics(metrics -> metrics.requestTimedOut(client));
+    }
+
     void plaintextRefused(InetSocketAddress client) {
         warnSparingly(nextPlaintextWarning, "Refused plain HTTP signaling from {}: requiresTls is set, so only "
                 + "TLS is served", client);
@@ -430,7 +424,12 @@ public final class NetherNetHttpSignaling implements JoinSource {
      * reports the refusals it decides.
      */
     void joinRefused(JoinRefusal refusal) {
-        metrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+        joinRefused(refusal.httpStatus());
+    }
+
+    /** An offer refused with this status, also one the aggregator turned away before it was read whole. */
+    void joinRefused(int httpStatus) {
+        metrics(metrics -> metrics.joinRefused(httpStatus));
     }
 
     /** Reports to the metrics, which must never break signaling. */
@@ -657,10 +656,13 @@ public final class NetherNetHttpSignaling implements JoinSource {
 
         /**
          * Reports what this source refuses on its own: connections whose address holds its share
-         * ({@link NetherServerMetrics#addressRefused}), plain HTTP under {@link #requiresTls}
+         * ({@link NetherServerMetrics#addressRefused}) or that find every connection taken
+         * ({@link NetherServerMetrics#connectionCapRefused}), requests that miss their deadline
+         * ({@link NetherServerMetrics#requestTimedOut}), plain HTTP under {@link #requiresTls}
          * ({@link NetherServerMetrics#plaintextRefused}), and offers it answers with a
          * {@link JoinRefusal} before or instead of the endpoint, such as a {@code 504} past the
-         * negotiation deadline or a {@code 409} duplicate ({@link NetherServerMetrics#joinRefused}).
+         * negotiation deadline, or with a {@code 413} or {@code 417} before reading it whole
+         * ({@link NetherServerMetrics#joinRefused}).
          * Give it the metrics the endpoint has as
          * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_SERVER_METRICS}:
          * the endpoint reports the refusals it decides, so nothing is counted twice. A hook that

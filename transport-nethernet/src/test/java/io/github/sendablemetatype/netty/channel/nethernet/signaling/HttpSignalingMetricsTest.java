@@ -46,6 +46,16 @@ class HttpSignalingMetricsTest {
         public void plaintextRefused(InetSocketAddress address) {
             events.add("plaintext " + address);
         }
+
+        @Override
+        public void connectionCapRefused(InetSocketAddress address) {
+            events.add("cap " + address);
+        }
+
+        @Override
+        public void requestTimedOut(InetSocketAddress address) {
+            events.add("timeout " + address);
+        }
     };
     private NetherNetHttpSignaling signaling;
 
@@ -75,16 +85,42 @@ class HttpSignalingMetricsTest {
         EmbeddedHttp pending = connect(builder);
         pending.send(post("43", OFFER));
         Join join = sink.next();
-        connect(builder).send(post("43", OFFER));
         pending.advance(NetherNetHttpSignaling.DEFAULT_NEGOTIATION_TIMEOUT.toMillis());
         EmbeddedHttp refused = connect(builder);
         refused.send(post("44", OFFER));
         sink.next().reply().refuse(JoinRefusal.HOST_REFUSED).toCompletableFuture().get(1, TimeUnit.SECONDS);
 
-        assertEquals(List.of("refused 400", "refused 409", "refused 504"), events,
+        assertEquals(List.of("refused 400", "refused 504"), events,
                 "the endpoint reports the refusals it decides itself");
         assertTrue(join.reply().abandoned().toCompletableFuture().isDone());
         assertEquals(JoinRefusal.HOST_REFUSED.httpStatus(), refused.response().status());
+    }
+
+    /** The aggregator answers these itself, before the offer is read whole. */
+    @Test
+    void offersTheAggregatorTurnsAwayAreReportedAndStatusRequestsAreNot() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).metrics(metrics)
+                .maxRequestBodyBytes(64);
+        EmbeddedHttp declared = connect(builder);
+        declared.send("POST /v1/join/42 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65\r\n\r\n");
+        EmbeddedHttp streamed = connect(builder);
+        streamed.send("POST /v1/join/43 HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "41\r\n" + "x".repeat(65) + "\r\n0\r\n\r\n");
+        EmbeddedHttp continued = connect(builder);
+        continued.send("POST /v1/join/44 HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\n"
+                + "Content-Length: 65\r\n\r\n");
+        EmbeddedHttp expectation = connect(builder);
+        expectation.send(post("45", OFFER, "Expect: x\r\n"));
+        EmbeddedHttp status = connect(builder);
+        status.send(get("/v1/join", "Expect: x\r\n"));
+
+        for (EmbeddedHttp connection : List.of(declared, streamed, continued)) {
+            assertEquals(413, connection.response().status());
+        }
+        assertEquals(417, expectation.response().status());
+        assertEquals(417, status.response().status());
+        assertEquals(List.of("refused 413", "refused 413", "refused 413", "refused 417"), events);
+        assertTrue(sink.joins.isEmpty());
     }
 
     @Test
@@ -105,6 +141,36 @@ class HttpSignalingMetricsTest {
 
         assertFalse(second.isOpen());
         assertEquals(List.of("address " + EmbeddedHttp.CLIENT), events);
+    }
+
+    @Test
+    void aConnectionOverTheGlobalCapIsReportedWithItsPeer() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).maxConnections(1)
+                .metrics(metrics);
+        assertTrue(connect(builder).isOpen());
+        InetSocketAddress other = new InetSocketAddress("192.0.2.77", 40000);
+        EmbeddedHttp refused = new EmbeddedHttp(signaling, other);
+        connections.add(refused);
+
+        assertFalse(refused.isOpen());
+        assertEquals(List.of("cap " + other), events);
+    }
+
+    @Test
+    void aRequestPastItsDeadlineIsReportedAndAnUnusedSecondRequestIsNot() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).metrics(metrics);
+        EmbeddedHttp slow = connect(builder);
+        slow.send("POST /v1/join/42 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nv=0");
+        EmbeddedHttp done = connect(builder);
+        done.send(get("/v1/join"));
+        assertEquals(200, done.response().status());
+
+        slow.advance(TimeUnit.SECONDS.toMillis(HttpRequestBudget.REQUEST_SECONDS));
+        done.advance(TimeUnit.SECONDS.toMillis(HttpRequestBudget.REQUEST_SECONDS));
+
+        assertFalse(slow.isOpen());
+        assertFalse(done.isOpen(), "the gap for a second request passed");
+        assertEquals(List.of("timeout " + EmbeddedHttp.CLIENT), events);
     }
 
     @Test

@@ -46,6 +46,22 @@ public interface JoinSource extends AutoCloseable {
     List<IceServer> iceServers();
 
     /**
+     * Whether the endpoint lets only one join per network ID be pending, across this source and
+     * every other source of the endpoint that says so. A join holds its network ID until it goes
+     * active or fails, also after its source was removed; another join for a held ID is refused
+     * with {@link JoinRefusal#DUPLICATE} before it gets a peer, and the first is left alone.
+     * <p>
+     * HTTP signaling says so: its client sends one offer per connect. Sources that trickle do not,
+     * since a client retries over them with a new connection ID for the same network ID while its
+     * earlier attempt may still be pending.
+     *
+     * @return false by default
+     */
+    default boolean oneJoinPerNetworkId() {
+        return false;
+    }
+
+    /**
      * Stops delivering joins and releases the source's resources. Joins already admitted keep
      * their peers; replies to them may fail from now on. Idempotent.
      */

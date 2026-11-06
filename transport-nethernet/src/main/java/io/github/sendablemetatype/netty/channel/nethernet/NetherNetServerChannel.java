@@ -27,6 +27,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateInt
 import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinAlreadySettledException;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSource;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
@@ -87,7 +88,9 @@ import java.util.function.Supplier;
  * endpoint closes its sources.
  *
  * <p><b>Admission.</b> Every join passes the same stage, whatever its source, on this channel's
- * event loop: the per-address throttle ({@link NetherChannelOption#NETHER_SERVER_THROTTLE}), one
+ * event loop: one pending join per network ID across the sources that ask for it
+ * ({@link JoinSource#oneJoinPerNetworkId()}, HTTP signaling), the per-address throttle
+ * ({@link NetherChannelOption#NETHER_SERVER_THROTTLE}), one
  * budget for sessions and pending handshakes shared by all sources
  * ({@link NetherChannelOption#NETHER_SERVER_MAX_SESSIONS},
  * {@link NetherChannelOption#NETHER_SERVER_MAX_PENDING_JOINS}), and the offer's identity check
@@ -129,6 +132,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final Supplier<? extends ExecutorService> checkExecutors;
     private final AdvertisedLookup names;
     private final AdmissionGate gate = new AdmissionGate();
+    private final PendingNetworkIds pendingNetworkIds = new PendingNetworkIds();
     /** Children whose termination has not completed yet. */
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
     /** Peers without a child that sources opened on the shared port, until their termination completed. */
@@ -863,11 +867,21 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /** The first step of the admission stage, on this channel's event loop. */
-    private void admit(Registration from, Join join) {
+    private void admit(Registration from, Join offered) {
         Bound settings = bound;
         if (!open || settings == null || from.removed) {
-            refuse(join, JoinRefusal.CAPACITY);
+            refuse(offered, JoinRefusal.CAPACITY);
             return;
+        }
+        Join join = offered;
+        if (from.source.oneJoinPerNetworkId()) {
+            join = pendingNetworkIds.hold(offered);
+            if (join == null) {
+                log.debug("Refused join {}: another join for network {} is pending", offered.connectionId(),
+                        offered.remoteNetworkId());
+                refuse(offered, JoinRefusal.DUPLICATE);
+                return;
+            }
         }
         NetherServerThrottle throttle = config.getThrottle();
         InetSocketAddress throttled = throttleKey(join.source());
@@ -891,18 +905,34 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /** Refuses a join that never became a child. */
     private void refuse(Join join, JoinRefusal refusal) {
-        serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+        sendRefusal(join, refusal);
+        join.reply().finished();
+    }
+
+    /**
+     * Sends a join its refusal and reports it once the source took it, unless the join was
+     * settled before: whoever settled it reported that, so one join counts once.
+     */
+    private void sendRefusal(Join join, JoinRefusal refusal) {
+        CompletionStage<Void> sent;
         try {
-            join.reply().refuse(refusal).whenComplete((ignored, failure) -> {
-                if (failure != null) {
-                    log.debug("Could not refuse join {}: {}", join.connectionId(),
-                            failure.toString());
-                }
-            });
+            sent = join.reply().refuse(refusal);
         } catch (RuntimeException e) {
             log.debug("Could not refuse join {}: {}", join.connectionId(), e.toString());
+            serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+            return;
         }
-        join.reply().finished();
+        sent.whenComplete((ignored, failure) -> {
+            if (JoinAlreadySettledException.settledBefore(failure)) {
+                log.debug("Did not refuse join {}: it was settled before ({})", join.connectionId(),
+                        failure.toString());
+                return;
+            }
+            serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+            if (failure != null) {
+                log.debug("Could not refuse join {}: {}", join.connectionId(), failure.toString());
+            }
+        });
     }
 
     /**
@@ -1227,7 +1257,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         AdmissionGate.Reservation reservation = admission.reservation;
         ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake,
                 announcement(join, settings, advertised), reservation::handshakeDone,
-                refusal -> serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus())));
+                refusal -> sendRefusal(join, refusal));
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, localAddress, negotiation, tracker, intake,

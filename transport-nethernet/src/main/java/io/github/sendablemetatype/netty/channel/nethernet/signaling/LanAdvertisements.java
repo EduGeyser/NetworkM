@@ -18,12 +18,15 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * What LAN discovery answers requests with: a fixed record, encoded once, or a {@link LanAdvertiser}
  * asked per request through {@link ProviderCalls}, with the same deadline and bound as HTTP's status
- * provider. When the advertiser does not deliver, the last server data it produced goes out
- * instead, or no response while there is none. Only v7 server data is advertised (ruling F-3).
+ * provider. When the advertiser does not deliver, the last server data it delivered in time goes
+ * out instead, or no response while there is none. Each advertiser has a fallback of its own, so
+ * a call to one that was replaced never reaches its successor's. Only v7 server data is advertised
+ * (ruling F-3).
  */
 final class LanAdvertisements {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(LanAdvertisements.class);
@@ -39,19 +42,59 @@ final class LanAdvertisements {
     private record Fixed(byte[] payload) implements Mode {
     }
 
-    private record Asked(LanAdvertiser advertiser, ProviderCalls calls) implements Mode {
+    /**
+     * @param last the last server data this advertiser delivered in time: the fallback, and an
+     *             encoding cache
+     */
+    private record Asked(LanAdvertiser advertiser, ProviderCalls calls, AtomicReference<Encoded> last)
+            implements Mode {
+
+        /** Asks the advertiser; may block. */
+        Reply reply(LanDiscoveryRequest request) {
+            return switch (advertiser.advertise(request)) {
+                case LanAdvertisement.Advertise(var data) -> new Produced(encoded(data));
+                case LanAdvertisement.Decline _ -> new Sent(Optional.empty());
+                case null -> throw new NullPointerException("The LAN advertiser answered null");
+            };
+        }
+
+        /** Encodes what the advertiser produced, unless it equals the last record. */
+        private Encoded encoded(LanServerData.V7 data) {
+            Encoded previous = last.get();
+            return previous != null && previous.data().equals(data) ? previous : new Encoded(data, encode(data));
+        }
+
+        Reply fallback() {
+            Encoded previous = last.get();
+            return new Sent(previous == null ? Optional.empty() : Optional.of(previous.payload()));
+        }
     }
 
     /** Server data the advertiser produced, with its encoded payload. */
     private record Encoded(LanServerData.V7 data, byte[] payload) {
     }
 
+    /** What one request gets. */
+    private sealed interface Reply {
+        Optional<byte[]> payload();
+    }
+
+    /** Server data the advertiser delivered within the deadline. */
+    private record Produced(Encoded encoded) implements Reply {
+        @Override
+        public Optional<byte[]> payload() {
+            return Optional.of(encoded.payload());
+        }
+    }
+
+    /** A decline, or the fallback. */
+    private record Sent(Optional<byte[]> payload) implements Reply {
+    }
+
     private final Duration timeout;
     private final Executor executor;
     /** Null while nothing is advertised: requests get no response. */
     private volatile Mode mode;
-    /** The last server data the current advertiser produced: the fallback, and an encoding cache. */
-    private volatile Encoded last;
 
     /**
      * @param timeout  how long one advertiser call may take
@@ -74,8 +117,8 @@ final class LanAdvertisements {
     /** Asks this advertiser per request from now on. */
     void ask(LanAdvertiser advertiser) {
         Objects.requireNonNull(advertiser, "advertiser");
-        last = null;
-        mode = new Asked(advertiser, new ProviderCalls("LAN advertiser", log, timeout, executor));
+        mode = new Asked(advertiser, new ProviderCalls("LAN advertiser", log, timeout, executor),
+                new AtomicReference<>());
     }
 
     /**
@@ -90,28 +133,15 @@ final class LanAdvertisements {
         return switch (mode) {
             case null -> CompletableFuture.completedFuture(Optional.empty());
             case Fixed fixed -> CompletableFuture.completedFuture(Optional.of(fixed.payload()));
-            case Asked asked -> asked.calls().call(() -> switch (asked.advertiser().advertise(request)) {
-                case LanAdvertisement.Advertise(var data) -> Optional.of(produced(data));
-                case LanAdvertisement.Decline _ -> Optional.<byte[]>empty();
-                case null -> throw new NullPointerException("The LAN advertiser answered null");
-            }, this::fallback, loop);
+            case Asked asked -> asked.calls().call(() -> asked.reply(request), asked::fallback, loop)
+                    .thenApply(reply -> {
+                        // A call that missed its deadline lost to the fallback, so it never gets here
+                        if (reply instanceof Produced produced) {
+                            asked.last().set(produced.encoded());
+                        }
+                        return reply.payload();
+                    });
         };
-    }
-
-    /** Encodes what the advertiser produced, unless it equals the last record, and keeps it. */
-    private byte[] produced(LanServerData.V7 data) {
-        Encoded previous = last;
-        if (previous != null && previous.data().equals(data)) {
-            return previous.payload();
-        }
-        byte[] payload = encode(data);
-        last = new Encoded(data, payload);
-        return payload;
-    }
-
-    private Optional<byte[]> fallback() {
-        Encoded previous = last;
-        return previous == null ? Optional.empty() : Optional.of(previous.payload());
     }
 
     /** The response payload: the server data's length as hex text, then the hex text. */

@@ -304,30 +304,6 @@ public class NetherNetConstants {
         return segments;
     }
 
-    /**
-     * The media ID of a description's data channel section, which trickled
-     * candidates for it carry. Falls back to {@code "0"}, the ID every current
-     * client uses, when the description names none.
-     *
-     * @param sdp the description
-     * @return the media ID
-     */
-    public static String applicationMid(String sdp) {
-        boolean application = false;
-        for (String line : sdp.split("\\r?\\n")) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("m=")) {
-                application = trimmed.startsWith("m=application");
-            } else if (application && trimmed.startsWith("a=mid:")) {
-                String mid = trimmed.substring("a=mid:".length()).trim();
-                if (!mid.isEmpty()) {
-                    return mid;
-                }
-            }
-        }
-        return "0";
-    }
-
     static int outboundMessageSize(int size) {
         if (size < 0 || size == 1) {
             throw new IllegalArgumentException("Message size must be zero (unlimited) or at least two bytes");

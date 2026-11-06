@@ -14,6 +14,7 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
@@ -118,12 +119,10 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             write(response, false);
             return;
         }
-        String uri = request.uri();
-        int query = uri.indexOf('?');
-        String path = query < 0 ? uri : uri.substring(0, query);
+        String path = path(request);
         if (HttpMethod.GET.equals(request.method()) && JOIN_PATH.equals(path)) {
             status(request, first && HttpUtil.isKeepAlive(request));
-        } else if (HttpMethod.POST.equals(request.method()) && path.startsWith(OFFER_PATH_PREFIX)) {
+        } else if (isOffer(request)) {
             offer(request, path.substring(OFFER_PATH_PREFIX.length()), receivedNanos);
         } else {
             respond(HttpResponseStatus.NOT_FOUND, false);
@@ -205,13 +204,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             refuseOffer(JoinRefusal.NO_ANSWER_IN_TIME);
             return;
         }
-        Exchange exchange = new Exchange(networkId);
-        if (!signaling.claimPending(networkId, exchange)) {
-            NetherNetHttpSignaling.log.debug("Refused an offer from network {} at {}: another offer for it is pending",
-                    networkId, source);
-            refuseOffer(JoinRefusal.DUPLICATE);
-            return;
-        }
+        Exchange exchange = new Exchange();
         exchange.start(remainingNanos);
         Join join = new Join(exchange.connectionId, networkId, offer, source, exchange, addressed);
         NetherNetHttpSignaling.log.debug("Offer {} from network {} at {} via HTTP",
@@ -220,9 +213,24 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             sink.join(join);
         } catch (RuntimeException e) {
             NetherNetHttpSignaling.log.warn("The endpoint failed to take a join", e);
-            signaling.joinRefused(JoinRefusal.INTERNAL);
-            exchange.refuse(JoinRefusal.INTERNAL);
+            exchange.refuse(JoinRefusal.INTERNAL).whenComplete((ignored, failure) -> {
+                if (!JoinAlreadySettledException.settledBefore(failure)) {
+                    signaling.joinRefused(JoinRefusal.INTERNAL);
+                }
+            });
         }
+    }
+
+    /** Whether a request carries an offer: {@code POST /v1/join/{networkId}}. */
+    static boolean isOffer(HttpRequest request) {
+        return HttpMethod.POST.equals(request.method()) && path(request).startsWith(OFFER_PATH_PREFIX);
+    }
+
+    /** The request target without its query. */
+    private static String path(HttpRequest request) {
+        String uri = request.uri();
+        int query = uri.indexOf('?');
+        return query < 0 ? uri : uri.substring(0, query);
     }
 
     private static boolean admits(JoinSink sink, SourcedAddress source) {
@@ -356,23 +364,13 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
      * The reply path of one offer: the HTTP response it waits for. The answer or a refusal is the
      * last response on the connection. A negotiation deadline runs from the end of the request; a
      * client that leaves, or a deadline that passes, completes {@link #abandoned()}.
-     * <p>
-     * The offer holds its network ID as pending, so a second offer with it is a
-     * {@link JoinRefusal#DUPLICATE}, until the join fails (refused, past its deadline, its client
-     * gone before the answer, or its connection closed before going active) or goes active. A
-     * player whose join failed can retry at once.
      */
     private final class Exchange implements ReplyPath {
         private final String connectionId = Signal.newConnectionId();
-        private final String networkId;
         private final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         private final CompletionStage<Void> abandonedView = abandoned.minimalCompletionStage();
         private State state = State.PENDING;
         private ScheduledFuture<?> deadline;
-
-        Exchange(String networkId) {
-            this.networkId = networkId;
-        }
 
         /** @param remainingNanos how long the negotiation deadline is still ahead, more than zero */
         void start(long remainingNanos) {
@@ -413,29 +411,16 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             return abandonedView;
         }
 
-        @Override
-        public void connected() {
-            signaling.releasePending(networkId, this);
-        }
-
-        @Override
-        public void finished() {
-            signaling.releasePending(networkId, this);
-        }
-
         private CompletableFuture<Void> settle(State outcome, Supplier<FullHttpResponse> response) {
             CompletableFuture<Void> result = new CompletableFuture<>();
             Runnable task = () -> {
                 if (state != State.PENDING) {
-                    result.completeExceptionally(new IllegalStateException(
+                    result.completeExceptionally(new JoinAlreadySettledException(
                             "The HTTP request is no longer waiting for a reply: " + state));
                     return;
                 }
                 state = outcome;
                 deadline.cancel(false);
-                if (outcome == State.REFUSED) {
-                    signaling.releasePending(networkId, this);
-                }
                 write(response.get(), false).addListener(future -> {
                     if (future.isSuccess()) {
                         result.complete(null);
@@ -443,7 +428,6 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                         result.completeExceptionally(future.cause());
                         if (outcome == State.ANSWERED) {
                             // The client never got the answer
-                            signaling.releasePending(networkId, this);
                             abandoned.complete(null);
                         }
                     }
@@ -467,7 +451,6 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             }
             state = State.TIMED_OUT;
             NetherNetHttpSignaling.log.debug("Offer {} got no answer in time", connectionId);
-            signaling.releasePending(networkId, this);
             refuseOffer(JoinRefusal.NO_ANSWER_IN_TIME);
             abandoned.complete(null);
         }
@@ -478,7 +461,6 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             }
             state = State.ABANDONED;
             deadline.cancel(false);
-            signaling.releasePending(networkId, this);
             abandoned.complete(null);
         }
     }
