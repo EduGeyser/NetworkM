@@ -13,6 +13,7 @@ final class OperationQueue {
     private final Executor executor;
     /** Touched only on the executor. */
     private CompletableFuture<Void> tail = CompletableFuture.completedFuture(null);
+    private int active;
 
     OperationQueue(Executor executor) {
         this.executor = executor;
@@ -27,8 +28,10 @@ final class OperationQueue {
         executor.execute(() -> {
             CompletableFuture<Void> previous = tail, done = new CompletableFuture<>();
             tail = done;
+            active++;
             previous.whenCompleteAsync((ignored, alsoIgnored) -> {
                 Async.attempt(work).whenCompleteAsync((value, failure) -> {
+                    active--;
                     done.complete(null);
                     if (failure == null) {
                         result.complete(value);
@@ -39,5 +42,10 @@ final class OperationQueue {
             }, executor);
         });
         return result;
+    }
+
+    /** Whether no operation runs or waits; read on the executor. */
+    boolean idle() {
+        return active == 0;
     }
 }

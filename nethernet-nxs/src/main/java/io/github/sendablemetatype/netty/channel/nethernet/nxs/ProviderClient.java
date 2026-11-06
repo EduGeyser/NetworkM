@@ -872,6 +872,11 @@ public final class ProviderClient implements AutoCloseable {
         stop();
     }
 
+    /** Whether no operation runs or waits, for tests that run the client's schedule on a manual executor. */
+    boolean idle() {
+        return queue.idle() && !tickQueued;
+    }
+
     private <T> CompletableFuture<T> submit(Async.Step<T> work) {
         return queue.submit(() -> runtime.closed
                 ? CompletableFuture.failedFuture(new IOException("Provider is closed"))
