@@ -359,6 +359,25 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void requestStillLookingUpItsServerEndsAtItsDeadlineAfterTheGroupShutDown() throws Exception {
+        EventLoopGroup stopping = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        try (StallingResolver.Stall lookup = StallingResolver.stall()) {
+            NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT
+                    .withScheme(Scheme.HTTP).withAnswerTimeout(Duration.ofSeconds(1)), stopping, "client-1");
+            client.setSignalHandler(CONNECTION_ID, signals::add);
+            client.connect(InetSocketAddress.createUnresolved(StallingResolver.NAME, 80)).get(5, TimeUnit.SECONDS);
+            client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+            lookup.awaitLookup();
+
+            // Cancels the tasks the group had scheduled, and no channel exists yet to end the request
+            stopping.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
+
+            assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
+                    + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+        }
+    }
+
+    @Test
     void closedClientCannotConnect() {
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT, group);
         client.close();

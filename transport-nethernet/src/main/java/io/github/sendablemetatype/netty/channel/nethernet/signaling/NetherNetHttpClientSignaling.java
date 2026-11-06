@@ -55,7 +55,6 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -77,7 +76,6 @@ import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -101,7 +99,8 @@ import java.util.function.Function;
  * <p>
  * Requests are HTTP/1.1 with {@code Connection: close}, follow no redirects, and quote at most
  * {@value #REASON_LIMIT} printable ASCII characters of a server's error body in messages.
- * Everything runs on the given event loop group.
+ * Connections run on the given event loop group. Deadlines do not, so a request ends in time also
+ * when the group shuts down; results and failures may then complete on another thread.
  */
 public final class NetherNetHttpClientSignaling implements NetherNetClientSignaling {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpClientSignaling.class);
@@ -388,7 +387,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     /**
      * Runs one request on a connection of its own. The timeout covers all of it: the name lookup,
      * the connection, the TLS handshake and the response. The result always completes, also when
-     * the loop group is shutting down, and the request is released whether or not it was written.
+     * the loop group shuts down, and the request is released whether or not it was written.
      *
      * @param ssl the client context for HTTPS, or null for plain HTTP
      */
@@ -396,6 +395,9 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                                                         FullHttpRequest request, Duration timeout,
                                                         EventLoopGroup group, ChannelGroup exchanges) {
         CompletableFuture<Response> result = new CompletableFuture<>();
+        // Not on the loop group: a group that shuts down cancels the tasks it scheduled, and during
+        // the name lookup there is no channel whose closing would end the exchange either
+        result.orTimeout(timeout.toNanos(), TimeUnit.NANOSECONDS);
         // Taken by the write once connected; whatever ends the exchange first releases it otherwise
         AtomicReference<FullHttpRequest> unsent = new AtomicReference<>(request);
         result.whenComplete((response, failure) -> {
@@ -404,16 +406,6 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                 left.release();
             }
         });
-        try {
-            ScheduledFuture<?> deadline = group.next().schedule(() -> {
-                result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
-            }, timeout.toNanos(), TimeUnit.NANOSECONDS);
-            result.whenComplete((response, failure) -> deadline.cancel(false));
-        } catch (RejectedExecutionException e) {
-            // The loop group is shutting down
-            result.completeExceptionally(e);
-            return result;
-        }
         resolve(address).whenComplete((resolved, failure) -> {
             if (failure != null) {
                 result.completeExceptionally(unwrap(failure));
