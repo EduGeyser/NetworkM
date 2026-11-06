@@ -36,6 +36,11 @@ public interface DataLink {
      * with the cause when it refused it. It may run before this method
      * returns, and on any engine thread. It must not block.
      *
+     * <p>A message refused because the remote peer closed or was closing the
+     * link fails with a {@link DataLinkClosedException} that names the cause
+     * {@link PeerListener#onChannelClosed} reports for the link. That
+     * completion may run before or after the close event.
+     *
      * @param message the message
      * @param completion receives the result
      */

@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLinkClosedException;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig.Role;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
@@ -50,6 +51,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class WebRtcPeerTest {
     private static final String OFFER = "v=0\r\na=identity:eyJhbGciOiJFUzM4NCJ9\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
     private static final String ANSWER = "v=0\r\na=ice-ufrag:libw\r\na=ice-pwd:libwebrtcpassword000000\r\n";
+    /** The error libwebrtc gives a data channel when a client's quit aborts the association. */
+    private static final NativeLink.LinkError USER_INITIATED_ABORT = new NativeLink.LinkError(
+            RTCErrorType.OPERATION_ERROR_WITH_DATA, RTCErrorDetailType.SCTP_FAILURE, 12,
+            "User-Initiated Abort, reason=Close called");
 
     private final List<String> nativeLog = new ArrayList<>();
     private final ManualExecutor control = new ManualExecutor();
@@ -347,16 +352,113 @@ class WebRtcPeerTest {
         reliable.observer.onBufferedAmountChange(200);
         assertEquals(0, link.queuedBytes());
 
+        reliable.error = USER_INITIATED_ABORT;
+        reliable.changeState(RTCDataChannelState.CLOSED);
         link.send(ByteBuffer.allocate(50), results::add);
-        reliable.send(1).onFailure("[INVALID_STATE] Send operation was discarded before completion");
+        reliable.send(1).onFailure(WebRtcLink.DISCARDED);
         reliable.sendFailure = new IllegalStateException("RTCDataChannel is closed");
         link.send(ByteBuffer.allocate(70), results::add);
         reliable.sendFailure = new Error("std::bad_alloc");
         link.send(ByteBuffer.allocate(30), results::add);
 
         assertEquals(0, link.queuedBytes());
-        assertEquals(List.of(IOException.class, IOException.class, IllegalStateException.class, Error.class),
-                results.stream().map(Object::getClass).toList());
+        assertEquals(List.of(IOException.class, DataLinkClosedException.class, IllegalStateException.class,
+                Error.class), results.stream().map(Object::getClass).toList());
+    }
+
+    /**
+     * A client quits with a send in flight, and webrtc-java reports the dropped send before the
+     * close: the natives that make libwebrtc post data channel events to the signaling thread do
+     * that. The send waits, so the listener hears of the close first and both carry one cause.
+     */
+    @Test
+    void aSendRefusedBeforeTheCloseFailsAfterItWithTheClosesCause() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
+
+        reliable.send(0).onFailure(WebRtcLink.DISCARDED);
+        assertEquals(List.of(), listener.snapshot());
+        assertEquals(40, link.queuedBytes(), "counted until it fails");
+        reliable.error = USER_INITIATED_ABORT;
+        reliable.changeState(RTCDataChannelState.CLOSING);
+        reliable.changeState(RTCDataChannelState.CLOSED);
+
+        assertEquals(List.of("channel closed ReliableDataChannel REMOTE_ABORTED", "send failed REMOTE_ABORTED"),
+                listener.snapshot());
+        assertEquals(0, link.queuedBytes());
+    }
+
+    /** The order libwebrtc keeps when it calls the observer on its network thread: the close comes first. */
+    @Test
+    void aSendRefusedAfterTheCloseFailsAtOnceWithTheClosesCause() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
+
+        reliable.error = USER_INITIATED_ABORT;
+        reliable.changeState(RTCDataChannelState.CLOSED);
+        reliable.send(0).onFailure(WebRtcLink.DISCARDED);
+
+        assertEquals(List.of("channel closed ReliableDataChannel REMOTE_ABORTED", "send failed REMOTE_ABORTED"),
+                listener.snapshot());
+    }
+
+    /**
+     * While the remote peer closes a channel in an orderly way, libwebrtc refuses sends with a bare
+     * INVALID_STATE and keeps that as the channel's error when the close completes.
+     */
+    @Test
+    void aSendRefusedWhileTheRemoteClosesTheChannelFailsAsClosedByTheRemote() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
+
+        reliable.changeState(RTCDataChannelState.CLOSING);
+        reliable.error = new NativeLink.LinkError(RTCErrorType.INVALID_STATE, RTCErrorDetailType.NONE, null, "");
+        reliable.send(0).onFailure("[INVALID_STATE] ");
+        assertEquals(List.of(), listener.snapshot());
+        reliable.changeState(RTCDataChannelState.CLOSED);
+
+        assertEquals(List.of("channel closed ReliableDataChannel REMOTE_CLOSED", "send failed REMOTE_CLOSED"),
+                listener.snapshot());
+        assertEquals(40, link.queuedBytes(), "libwebrtc tried it, so its next decrease reports it");
+    }
+
+    @Test
+    void otherRefusalsFailAtOnceAsTheyAre() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        List<Throwable> results = new ArrayList<>();
+        link.send(ByteBuffer.allocate(4), results::add);
+
+        reliable.send(0).onFailure("[NETWORK_ERROR] Failure to send data");
+
+        assertEquals(1, results.size());
+        assertEquals(IOException.class, results.getFirst().getClass());
+    }
+
+    /** A refusal waiting for a close that teardown silences fails then, and teardown does not wait for it. */
+    @Test
+    void aRefusalWaitingForTheCloseFailsAtTeardown() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        List<Throwable> results = new ArrayList<>();
+        link.send(ByteBuffer.allocate(4), results::add);
+        reliable.send(0).onFailure(WebRtcLink.DISCARDED);
+
+        CompletableFuture<Void> closed = peer.close().toCompletableFuture();
+        control.runAll();
+
+        assertEquals(1, results.size());
+        assertEquals(IOException.class, results.getFirst().getClass());
+        assertEquals(0, link.queuedBytes());
+        assertTrue(closed.isDone(), "teardown waited for the refusal");
     }
 
     @Test
@@ -488,22 +590,27 @@ class WebRtcPeerTest {
                 "message ReliableDataChannel 7"), listener.snapshot());
     }
 
+    /** A row's message of {@code ''} is an empty one, as libwebrtc gives a bare error. */
     @ParameterizedTest
     @CsvSource({
-            ",,,false,REMOTE_CLOSED",
-            "OPERATION_ERROR_WITH_DATA,SCTP_FAILURE,12,false,REMOTE_ABORTED",
-            "OPERATION_ERROR_WITH_DATA,SCTP_FAILURE,13,false,TRANSPORT_FAILED",
-            "OPERATION_ERROR_WITH_DATA,DTLS_FAILURE,,false,TRANSPORT_FAILED",
-            "NETWORK_ERROR,NONE,,true,ICE_FAILED",
+            ",,,,false,REMOTE_CLOSED",
+            "OPERATION_ERROR_WITH_DATA,SCTP_FAILURE,12,User-Initiated Abort,false,REMOTE_ABORTED",
+            "OPERATION_ERROR_WITH_DATA,SCTP_FAILURE,13,Protocol Violation,false,TRANSPORT_FAILED",
+            "OPERATION_ERROR_WITH_DATA,DTLS_FAILURE,,closed,false,TRANSPORT_FAILED",
+            "NETWORK_ERROR,NONE,,Failure to send data,true,ICE_FAILED",
+            // A send refused while the remote peer closed it in an orderly way.
+            "INVALID_STATE,NONE,,'',false,REMOTE_CLOSED",
+            // The open handshake message could not be sent.
+            "INVALID_STATE,NONE,,Failed to send a CONTROL message,false,TRANSPORT_FAILED",
     })
     void aClosedChannelGetsItsCauseFromTheChannelError(RTCErrorType type, RTCErrorDetailType detail, Integer code,
-                                                        boolean iceFailed, CloseCause expected) {
+                                                        String message, boolean iceFailed, CloseCause expected) {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         FakeNative.Link channel = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         if (iceFailed) {
             peer.onIceConnectionState(RTCIceConnectionState.FAILED);
         }
-        channel.error = type == null ? null : new NativeLink.LinkError(type, detail, code, "closed");
+        channel.error = type == null ? null : new NativeLink.LinkError(type, detail, code, message);
 
         channel.changeState(RTCDataChannelState.CLOSING);
         channel.changeState(RTCDataChannelState.CLOSED);
@@ -643,6 +750,10 @@ class WebRtcPeerTest {
         peer.onRemoteChannel(channel);
         listener.events.clear();
         return channel;
+    }
+
+    private static CloseCause closeCauseOf(Throwable result) {
+        return assertInstanceOf(DataLinkClosedException.class, result).closeCause();
     }
 
     private static void assertFailedWith(CompletableFuture<?> stage, String messageStart) {

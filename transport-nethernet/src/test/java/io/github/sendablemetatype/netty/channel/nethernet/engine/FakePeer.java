@@ -359,10 +359,35 @@ public final class FakePeer implements Peer {
         fire(() -> listener.onIceStateChange(state));
     }
 
-    /** A link closed for a reason other than the local close. */
+    /**
+     * When a link the remote peer closed fails the sends still in flight, relative to the close
+     * event. libwebrtc reports either first: it fails them on another thread than the one that
+     * reports the close.
+     */
+    public enum InFlightSends {
+        FAIL_BEFORE_THE_EVENT, FAIL_AFTER_THE_EVENT
+    }
+
+    /**
+     * A link closed for a reason other than the local close. Sends still in flight fail with a
+     * {@link DataLinkClosedException} first, then the close event fires.
+     */
     public void linkClosed(FakeDataLink link, CloseCause cause) {
-        if (link.closeByEngine()) {
-            fire(() -> listener.onChannelClosed(link, cause));
+        linkClosed(link, cause, InFlightSends.FAIL_BEFORE_THE_EVENT);
+    }
+
+    /** A link closed for a reason other than the local close, with its sends in flight failing in this order. */
+    public void linkClosed(FakeDataLink link, CloseCause cause, InFlightSends order) {
+        List<FakeDataLink.Send> inFlight = link.closeByRemote(cause);
+        if (inFlight == null) {
+            return;
+        }
+        if (order == InFlightSends.FAIL_BEFORE_THE_EVENT) {
+            link.failSends(inFlight);
+        }
+        fire(() -> listener.onChannelClosed(link, cause));
+        if (order == InFlightSends.FAIL_AFTER_THE_EVENT) {
+            link.failSends(inFlight);
         }
     }
 

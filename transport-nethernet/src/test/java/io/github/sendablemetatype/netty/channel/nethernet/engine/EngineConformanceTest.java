@@ -233,6 +233,29 @@ public abstract class EngineConformanceTest {
         assertTrue(EnumSet.of(CloseCause.REMOTE_CLOSED, CloseCause.REMOTE_ABORTED).contains(closed.cause()), closed.toString());
     }
 
+    /**
+     * A client quits while the server sends: the sends its close refuses fail with the cause the
+     * close reports, however the refusals and the close race on the engine's threads.
+     */
+    @Test
+    void sendsTheRemoteCloseRefusedNameItsCause() throws Exception {
+        Pair pair = connect(true, answererConfig());
+        DataLink link = pair.server.links.get(RELIABLE);
+
+        await(pair.client.peer.close());
+        Throwable refused = null;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (refused == null) {
+            assertTrue(System.nanoTime() < deadline, "No send was refused after the remote closed");
+            CompletableFuture<Throwable> result = new CompletableFuture<>();
+            link.send(ByteBuffer.allocate(8), result::complete);
+            refused = result.get(WAIT_SECONDS, TimeUnit.SECONDS);
+        }
+
+        CloseCause reported = pair.server.channelClosed(RELIABLE).cause();
+        assertEquals(reported, assertInstanceOf(DataLinkClosedException.class, refused).closeCause());
+    }
+
     @Test
     void aRefusedRemoteLinkIsClosed() throws Exception {
         Side client = new Side("client");
