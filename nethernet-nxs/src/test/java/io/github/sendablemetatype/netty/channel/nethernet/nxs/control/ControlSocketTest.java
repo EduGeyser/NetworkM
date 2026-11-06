@@ -156,6 +156,49 @@ class ControlSocketTest {
     }
 
     @Test
+    void framesWaitingForABusyOwnerStopTheReading() throws Exception {
+        List<String> received = new CopyOnWriteArrayList<>();
+        try (var server = new Loopback(false)) {
+            var limits = new ControlSocket.Limits(65536, 64, 64, 131072, DEADLINE, DEADLINE, DEADLINE, DEADLINE);
+            open(server, limits, text -> {
+                received.add(text);
+                return CompletableFuture.completedFuture(null);
+            });
+            owner.runReady();
+            Channel peer = server.socket.get(5, TimeUnit.SECONDS);
+            // The owner runs nothing meanwhile; each ping makes Netty ask for another read
+            int messages = 64;
+            String filler = "x".repeat(60000);
+            for (int i = 0; i < messages; i++) {
+                peer.write(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1})));
+                peer.write(new TextWebSocketFrame(i + ":" + filler));
+            }
+            peer.flush();
+            // One message's worth, and what the read that passed it had already decoded
+            int handedOver = settledQueue();
+            assertTrue(handedOver <= 4, handedOver + " messages waited for the owner");
+            owner.until(() -> received.size() == messages);
+            for (int i = 0; i < messages; i++) {
+                assertTrue(received.get(i).startsWith(i + ":"), "Message " + i + " in order");
+            }
+        }
+    }
+
+    /** How many tasks wait for the owner once the event loop stopped handing over more for a while. */
+    private int settledQueue() throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (owner.queued() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        int queued;
+        do {
+            queued = owner.queued();
+            Thread.sleep(200);
+        } while (owner.queued() != queued && System.currentTimeMillis() < deadline);
+        return queued;
+    }
+
+    @Test
     void serializesConcurrentProducersWithoutLosingMessages() throws Exception {
         ExecutorService producers = Executors.newFixedThreadPool(8);
         try (var server = new Loopback(false)) {

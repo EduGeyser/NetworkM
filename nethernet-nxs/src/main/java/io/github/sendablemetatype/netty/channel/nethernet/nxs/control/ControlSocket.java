@@ -48,6 +48,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -58,14 +59,16 @@ import java.util.function.Function;
  * <p>Every bound applies to UTF-8 bytes: one message, the fragments it arrives in, the sends waiting including the
  * one being written, and their total. Connecting, receiving a message until the application accepted it, writing
  * one send and closing each have a deadline. One complete message is delivered at a time; the socket reads on only
- * after the receiver's stage completes. Binary messages, invalid UTF-8, a message over the size limit in several
- * fragments and an unnegotiated subprotocol end the connection with a close frame. A single frame over the size limit
- * ends it at once: Netty's frame decoder rejects it before the payload is read, and in a client pipeline the decoder
- * sits ahead of the frame encoder, so the close frame it tries to send cannot be encoded. Failures, timeouts and
- * aborts close the connection without a close frame.
+ * after the receiver's stage completes. Frames on their way to the owner count too: past one message's worth, the
+ * event loop stops reading until the owner has taken them. Binary messages, invalid UTF-8, a message over the size
+ * limit in several fragments and an unnegotiated subprotocol end the connection with a close frame. A single frame
+ * over the size limit ends it at once: Netty's frame decoder rejects it before the payload is read, and in a client
+ * pipeline the decoder sits ahead of the frame encoder, so the close frame it tries to send cannot be encoded.
+ * Failures, timeouts and aborts close the connection without a close frame.
  *
- * <p>All state belongs to the owner executor, which also runs the timers and the receiver. Netty events are passed
- * to it in order. The event loop group and the owner are borrowed and never shut down here.
+ * <p>All state belongs to the owner executor, which also runs the timers and the receiver, except the count of
+ * frames on their way to it, which the event loop shares. Netty events are passed to it in order. The event loop
+ * group and the owner are borrowed and never shut down here.
  */
 public final class ControlSocket {
     /** The bounds of one connection, in UTF-8 bytes, counts and deadlines, as the class description explains. */
@@ -101,6 +104,8 @@ public final class ControlSocket {
     private final CompletableFuture<Close> closed = new CompletableFuture<>();
     private final ArrayDeque<Send> sends = new ArrayDeque<>();
     private final ArrayDeque<Received> ready = new ArrayDeque<>();
+    /** Bytes of frames the event loop passed to the owner that the owner has not taken yet. */
+    private final AtomicLong handedOver = new AtomicLong();
     private Channel channel;
     private Send activeSend;
     private long pendingBytes;
@@ -174,6 +179,7 @@ public final class ControlSocket {
                     @Override
                     protected void initChannel(SocketChannel channel) {
                         ChannelPipeline pipeline = channel.pipeline();
+                        pipeline.addLast(new ReadGate());
                         if (secure) {
                             pipeline.addLast(tls.newHandler(channel.alloc(), host, port));
                         }
@@ -386,7 +392,8 @@ public final class ControlSocket {
         pump(); // A close may have been requested during the upgrade
     }
 
-    private void fragment(ChannelHandlerContext context, WebSocketFrame frame) {
+    private void fragment(ChannelHandlerContext context, WebSocketFrame frame, int bytes) {
+        handedOver.addAndGet(-bytes);
         try {
             if (terminal) {
                 return;
@@ -432,6 +439,9 @@ public final class ControlSocket {
             deliver(context, message);
         } finally {
             ReferenceCountUtil.release(frame);
+            if (!terminal) {
+                readOn(context);
+            }
         }
     }
 
@@ -451,7 +461,7 @@ public final class ControlSocket {
         Received received = ready.poll();
         if (received == null) {
             receiving = false;
-            context.channel().config().setAutoRead(true);
+            readOn(context);
             return;
         }
         receiving = true;
@@ -473,6 +483,13 @@ public final class ControlSocket {
             cancel(received.timer());
             next(context);
         }));
+    }
+
+    /** Reads on once the receiver took every message and the frames on their way to the owner fit one message. */
+    private void readOn(ChannelHandlerContext context) {
+        if (!receiving && handedOver.get() <= limits.maxMessageBytes()) {
+            context.channel().config().setAutoRead(true);
+        }
     }
 
     private ScheduledFuture<?> schedule(Runnable task, Duration delay) {
@@ -516,6 +533,21 @@ public final class ControlSocket {
     private record Received(String message, ScheduledFuture<?> timer) {
     }
 
+    /**
+     * Holds back read requests while reading is suspended; the next resumption reads again. Netty's WebSocket handler
+     * asks for a read after each ping it answers and each pong it drops, so without this a peer that interleaves
+     * pings would read on past every suspension. First in the pipeline, it also holds the reads that TLS and the
+     * frame decoder ask for while they wait for the rest of a record or frame.
+     */
+    private static final class ReadGate extends ChannelOutboundHandlerAdapter {
+        @Override
+        public void read(ChannelHandlerContext context) {
+            if (context.channel().config().isAutoRead()) {
+                context.read();
+            }
+        }
+    }
+
     /** Hands every event to the owner, in order. */
     private final class Handler extends ChannelInboundHandlerAdapter {
         @Override
@@ -533,8 +565,8 @@ public final class ControlSocket {
         @Override
         public void channelRead(ChannelHandlerContext context, Object message) {
             switch (message) {
-                case TextWebSocketFrame text -> owner.execute(() -> fragment(context, text));
-                case ContinuationWebSocketFrame continuation -> owner.execute(() -> fragment(context, continuation));
+                case TextWebSocketFrame text -> handOver(context, text);
+                case ContinuationWebSocketFrame continuation -> handOver(context, continuation);
                 case CloseWebSocketFrame close -> {
                     int code = close.statusCode();
                     String reason = close.reasonText();
@@ -556,6 +588,18 @@ public final class ControlSocket {
                 }
                 default -> ReferenceCountUtil.release(message);
             }
+        }
+
+        /**
+         * Passes a frame to the owner. Past one message's worth of frames the owner has not taken, reading stops here
+         * on the event loop, so a busy owner never lets them pile up.
+         */
+        private void handOver(ChannelHandlerContext context, WebSocketFrame frame) {
+            int bytes = frame.content().readableBytes();
+            if (handedOver.addAndGet(bytes) > limits.maxMessageBytes()) {
+                context.channel().config().setAutoRead(false);
+            }
+            owner.execute(() -> fragment(context, frame, bytes));
         }
 
         @Override

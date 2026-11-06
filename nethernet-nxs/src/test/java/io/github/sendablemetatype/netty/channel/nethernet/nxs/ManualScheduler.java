@@ -196,6 +196,11 @@ public final class ManualScheduler extends AbstractExecutorService implements Sc
         return (ScheduledFuture<V>) timer;
     }
 
+    /** The tasks ready to run, such as events another thread handed over, for checks on how many pile up. */
+    public int queued() {
+        return ready.size();
+    }
+
     /** The timers still waiting, for checks that nothing was left behind. */
     public int pendingTimers() {
         synchronized (timers) {
