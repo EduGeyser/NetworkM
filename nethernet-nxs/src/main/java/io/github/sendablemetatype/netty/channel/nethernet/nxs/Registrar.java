@@ -381,6 +381,13 @@ final class Registrar {
     }
 
     /** Proves and installs a replacement machine key, then retires the old one. */
+    /** The canonical array the replacement machine key signs to prove it may take over the registration. */
+    static String rotationPayload(String audience, String instanceId, String oldKeyId, JsonObject replacementJwk,
+                                  long generation, String intent) {
+        return ProviderCrypto.array(ProviderCrypto.PROTOCOL, "rotate", audience, instanceId, oldKeyId,
+                ProviderCrypto.thumbprint(replacementJwk), generation, intent);
+    }
+
     CompletableFuture<Registration> rotateMachineKey() {
         return Async.attempt(() -> {
             runtime.requireResolved();
@@ -390,9 +397,8 @@ final class Registrar {
                     ProviderCrypto.base64(replacement.getPrivate().getEncoded()), jwk)));
             String intent = UUID.randomUUID().toString();
             Wire.SavedRegistration registration = runtime.registration();
-            String proof = ProviderCrypto.sign(replacement.getPrivate(), ProviderCrypto.array(ProviderCrypto.PROTOCOL,
-                    "rotate", runtime.origin, registration.instanceId(), registration.keyId(),
-                    ProviderCrypto.thumbprint(jwk), runtime.keeper.state().generation(), intent));
+            String proof = ProviderCrypto.sign(replacement.getPrivate(), rotationPayload(runtime.origin,
+                    registration.instanceId(), registration.keyId(), jwk, runtime.keeper.state().generation(), intent));
             String oldKey = registration.keyId();
             return exchanger.signed("rotate", WireCodec.rotation(jwk, proof), intent,
                             io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.OwnershipGuard.ALWAYS)

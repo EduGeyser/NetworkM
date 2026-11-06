@@ -149,8 +149,8 @@ public final class DiagnosticAdmissionCodec {
                 context, key, claims, remoteUfrag, offer, parentExpiresAt, clock, nonce);
     }
 
-    /** Deterministic fixtures only. Production callers use issue(). */
-    public static Credentials issueWithNonce(
+    /** {@link #issue} with a chosen nonce, for the deterministic fixtures. */
+    static Credentials issueWithNonce(
             Context context,
             Key key,
             Claims claims,
