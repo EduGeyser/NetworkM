@@ -16,6 +16,8 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.admission;
 
+import io.github.sendablemetatype.netty.util.nethernet.IdentityKeyVerifier;
+
 import java.net.InetSocketAddress;
 import java.util.*;
 
@@ -30,9 +32,10 @@ import java.util.*;
  * for every join source (ruling A-2), which each admitted ticket passes after the ledger. The used-ticket records
  * are bounded here, since only NXS has them.
  *
- * <p>The host reports each login decision through {@link #loginDecided}; a session whose login is refused, revoked,
- * or still undecided at the ticket's deadline is handed back by {@link #sweep} for closing, even when its data
- * channels are open.
+ * <p>Each reservation's login is decided through its {@linkplain #verifier verifier}, which the host installs as the
+ * child's login binding (ruling C-4); a session whose login is refused, revoked, or still undecided at the ticket's
+ * deadline is handed back by {@link #sweep} for closing, even when its data channels are open. The sweep reads the
+ * verifier's own phase, so a login accepted at any moment is never taken for a lapsed one.
  */
 public final class TicketLedger {
     /**
@@ -54,17 +57,13 @@ public final class TicketLedger {
         }
     }
 
-    private enum Login {
-        PENDING, ACCEPTED, REJECTED
-    }
-
     /** One reserved ticket and tuple. Its fields belong to the ledger. */
     public static final class Reservation {
         private AdmissionContext admission;
         private final TicketId ticketId;
         private final InetSocketAddress tuple;
         private final long expiresAt, acceptedNanos, loginDeadlineNanos;
-        private Login login = Login.PENDING;
+        private final IdentityKeyVerifier verifier;
         private boolean ready, connected, closing, closed;
 
         private Reservation(AdmissionContext admission, InetSocketAddress tuple, long millis, long nanos) {
@@ -74,6 +73,7 @@ public final class TicketLedger {
             this.expiresAt = admission.expiresAt();
             this.acceptedNanos = nanos;
             this.loginDeadlineNanos = nanos + (admission.expiresAt() - millis) * 1_000_000L;
+            this.verifier = new LoginVerifier(admission.loginBinding());
         }
 
         /** The admitted ticket. */
@@ -191,14 +191,11 @@ public final class TicketLedger {
     }
 
     /**
-     * The transport's identity verifier decided the login, or a trusted forwarding listener accepted it.
-     *
-     * @param accepted Whether the login may proceed; a refused one is closed at the next sweep
+     * The one-shot verifier that decides the reservation's login, to install as the child's login binding with
+     * {@code TransportIdentityBinding.of}. It consults the admission's {@link LoginKeyBinding}.
      */
-    public synchronized void loginDecided(Reservation reservation, boolean accepted) {
-        if (current(reservation) && reservation.login == Login.PENDING) {
-            reservation.login = accepted ? Login.ACCEPTED : Login.REJECTED;
-        }
+    public IdentityKeyVerifier verifier(Reservation reservation) {
+        return reservation.verifier;
     }
 
     /** Counts a request the endpoint rejected before it reached the ledger, so {@link #stats} include it. */
@@ -218,6 +215,7 @@ public final class TicketLedger {
             tuples.remove(reservation.tuple);
         }
         reservation.closed = true;
+        reservation.verifier.close();
         reservation.admission.loginBinding().release();
         reservation.admission = null;
         // A copied ticket with forged STUN integrity must not consume the real client's ticket
@@ -241,10 +239,9 @@ public final class TicketLedger {
             if (reservation.closed || reservation.closing) {
                 continue;
             }
-            boolean undecided = reservation.login == Login.PENDING;
-            boolean refused = reservation.login == Login.REJECTED
-                    || undecided && (!reservation.admission.loginBinding().usable()
-                    || nowNanos - reservation.loginDeadlineNanos >= 0);
+            // rejected() also covers a pending login whose binding lapsed or was revoked
+            boolean refused = reservation.verifier.rejected()
+                    || reservation.verifier.pending() && nowNanos - reservation.loginDeadlineNanos >= 0;
             boolean stalled = !reservation.connected
                     && nowNanos - reservation.acceptedNanos >= limits.handshakeMillis() * 1_000_000L;
             if (refused || stalled) {
@@ -276,10 +273,35 @@ public final class TicketLedger {
         List<Reservation> active = claims.values().stream().filter(reservation -> !reservation.closed).toList();
         for (Reservation reservation : active) {
             reservation.closing = true;
+            reservation.verifier.close();
             reservation.admission.loginBinding().release();
         }
         claims.values().removeIf(reservation -> reservation.closed);
         return active;
+    }
+
+    /** Asks the admission's binding; erases it once the login is decided or the session ends. */
+    private static final class LoginVerifier extends IdentityKeyVerifier {
+        private final LoginKeyBinding binding;
+
+        private LoginVerifier(LoginKeyBinding binding) {
+            this.binding = binding;
+        }
+
+        @Override
+        protected boolean usable() {
+            return binding.usable();
+        }
+
+        @Override
+        protected boolean matches(byte[] canonicalKey) {
+            return binding.matches(canonicalKey);
+        }
+
+        @Override
+        protected void release() {
+            binding.release();
+        }
     }
 
     /** The current counts. */

@@ -16,7 +16,12 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.admission;
 
+import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import org.junit.jupiter.api.Test;
+
+import java.security.KeyPairGenerator;
+import java.security.PublicKey;
+import java.security.spec.ECGenParameterSpec;
 
 import java.util.ArrayList;
 import java.util.Base64;
@@ -34,6 +39,24 @@ class LoginBindingTest extends AdmissionFixture {
 
     AdmissionKey epoch() {
         return new AdmissionKey("K001", f.getAsJsonObject("context").get("secret").getAsString());
+    }
+
+    /** A P-384 key the ticket was not admitted for. */
+    static PublicKey otherKey() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp384r1"));
+        return generator.generateKeyPair().getPublic();
+    }
+
+    @Test
+    void anAcceptedLoginIsNeverTakenForALapsedOne() {
+        // Accepting the login erases the binding, which the sweep must not read as revoked
+        var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
+        var r = gate.reserve(request(), now, 0);
+        assertTrue(gate.ready(r));
+        gate.connected(r);
+        assertEquals(TransportIdentityBinding.Result.ACCEPTED, gate.verifier(r).acceptForwardedIdentity());
+        assertEquals(List.of(), gate.sweep(now, 0));
     }
 
     @Test
@@ -90,17 +113,17 @@ class LoginBindingTest extends AdmissionFixture {
     }
 
     @Test
-    void connectedWithoutLoginTimesOutButDecidedSessionsContinue() {
+    void connectedWithoutLoginTimesOutButDecidedSessionsContinue() throws Exception {
         for (int mode = 0; mode < 3; mode++) {
             var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
             var r = gate.reserve(request(), now, 0);
             assertTrue(gate.ready(r));
             gate.connected(r);
             if (mode == 1) {
-                gate.loginDecided(r, true);
+                assertEquals(TransportIdentityBinding.Result.ACCEPTED, gate.verifier(r).acceptForwardedIdentity());
             }
             if (mode == 2) {
-                gate.loginDecided(r, false);
+                assertEquals(TransportIdentityBinding.Result.MISMATCH, gate.verifier(r).verify(otherKey()));
             }
             List<TicketLedger.Reservation> expected = mode == 1 ? List.of() : List.of(r);
             assertEquals(expected, gate.sweep(now + 30_000, 30_000_000_000L));
@@ -109,12 +132,12 @@ class LoginBindingTest extends AdmissionFixture {
     }
 
     @Test
-    void aRefusedLoginClosesAtOnce() {
+    void aRefusedLoginClosesAtOnce() throws Exception {
         var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
         var r = gate.reserve(request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
-        gate.loginDecided(r, false);
+        gate.verifier(r).verify(otherKey());
         assertEquals(List.of(r), gate.sweep(now, 0));
     }
 
