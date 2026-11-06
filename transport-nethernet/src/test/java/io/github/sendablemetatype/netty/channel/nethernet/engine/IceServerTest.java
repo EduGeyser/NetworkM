@@ -14,7 +14,7 @@
  * under the License.
  */
 
-package io.github.sendablemetatype.netty.channel.nethernet.ice;
+package io.github.sendablemetatype.netty.channel.nethernet.engine;
 
 import org.junit.jupiter.api.Test;
 
@@ -24,13 +24,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class IceServerInfoTest {
+class IceServerTest {
 
     @Test
     void keepsTheSecretOutOfItsOwnForm() {
-        String printed = new IceServerInfo("relayuser", "s3cret",
-                List.of("turn:turn.example:3478", "turn:someone:hunter2@relay.example:3478",
-                        "turns://other:pw@tls.example:5349")).toString();
+        String printed = new IceServer(List.of("turn:turn.example:3478", "turn:someone:hunter2@relay.example:3478",
+                "turns://other:pw@tls.example:5349"), "relayuser", "s3cret").toString();
 
         assertFalse(printed.contains("s3cret"));
         assertFalse(printed.contains("hunter2"));
@@ -39,14 +38,14 @@ class IceServerInfoTest {
         assertFalse(printed.contains("other:pw"));
         // Still worth reading
         assertTrue(printed.contains("turn.example:3478"));
-        assertTrue(printed.contains("turn:***@relay.example:3478"));
-        assertTrue(printed.contains("turns://***@tls.example:5349"));
+        assertTrue(printed.contains("turn:<redacted>@relay.example:3478"));
+        assertTrue(printed.contains("turns://<redacted>@tls.example:5349"));
     }
 
     @Test
     void leavesAStunServerAlone() {
         // No credentials to lose, and the host is the whole point of the line
-        assertEquals("IceServerInfo[urls=[stun:stun.example:3478], username=]",
-                new IceServerInfo("", "", List.of("stun:stun.example:3478")).toString());
+        assertEquals("IceServer[urls=[stun:stun.example:3478], username=null, credential=null]",
+                new IceServer(List.of("stun:stun.example:3478"), null, null).toString());
     }
 }

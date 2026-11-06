@@ -1,5 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -28,7 +31,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Field;
-import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -52,6 +54,7 @@ class NetherNetXboxRpcSignalingTest {
     private CompletableFuture<String> pendingToken;
     private boolean tokenCarriesPlayerId = true;
     private final Signaling signaling = new Signaling();
+    private final RecordingSink sink = new RecordingSink();
 
     {
         loop.freezeTime();
@@ -68,15 +71,15 @@ class NetherNetXboxRpcSignalingTest {
     // Starting, reconnecting and tokens.
 
     @Test
-    void bindReturnsAtOnceWhileXboxIsUnreachable() {
+    void startReturnsAtOnceWhileXboxIsUnreachable() {
         pendingToken = new CompletableFuture<>();
 
-        signaling.bind(new InetSocketAddress(0));
+        signaling.start(sink);
         run();
 
         assertEquals(SignalingState.STARTING, signaling.health().state());
         assertTrue(signaling.sockets.isEmpty());
-        CompletableFuture<List<NetherNetSignaling.IceServerInfo>> client = signaling.connect(null);
+        CompletableFuture<List<IceServer>> client = signaling.connect(null);
         run();
         assertFalse(client.isDone());
 
@@ -230,14 +233,14 @@ class NetherNetXboxRpcSignalingTest {
     void theStatedLifetimeSchedulesTheRefresh() {
         tokenCarriesPlayerId = false;
         EmbeddedChannel socket = connect(turnResult(600, "turn:a.invalid"));
-        assertEquals(List.of("turn:a.invalid"), signaling.getIceServers().getFirst().urls());
+        assertEquals(List.of("turn:a.invalid"), signaling.iceServers().getFirst().urls());
 
         assertTrue(turnRequests(keepAlive(socket, 295)).isEmpty());
         JsonObject refresh = turnRequests(keepAlive(socket, 5)).getFirst();
         respond(socket, refresh.get("id").getAsString(), "result", turnResult(0, "turn:b.invalid"));
         run();
 
-        assertEquals(List.of("turn:b.invalid"), signaling.getIceServers().getFirst().urls());
+        assertEquals(List.of("turn:b.invalid"), signaling.iceServers().getFirst().urls());
         assertTrue(turnRequests(keepAlive(socket, 1795)).isEmpty());
         assertEquals(1, turnRequests(keepAlive(socket, 5)).size());
     }
@@ -251,7 +254,7 @@ class NetherNetXboxRpcSignalingTest {
         respond(socket, refresh.get("id").getAsString(), "result", turnResult(0));
         run();
 
-        assertEquals(List.of("turn:a.invalid"), signaling.getIceServers().getFirst().urls());
+        assertEquals(List.of("turn:a.invalid"), signaling.iceServers().getFirst().urls());
         assertTrue(turnRequests(keepAlive(socket, 55)).isEmpty());
         assertEquals(1, turnRequests(keepAlive(socket, 5)).size());
     }
@@ -259,11 +262,18 @@ class NetherNetXboxRpcSignalingTest {
     @Test
     void joinsWaitForTheFirstTurnCredentialsAndKeepTheirSignalOrder() {
         List<String> events = new ArrayList<>();
-        signaling.setNewConnectionHandler((connectionId, remoteNetworkId, payload) -> {
-            events.add("join " + payload + " with " + signaling.getIceServers().size() + " TURN servers");
-            signaling.setSignalHandler(connectionId, events::add);
+        signaling.start(new JoinSink() {
+            @Override
+            public void join(Join join) {
+                events.add("join " + join.offer() + " with " + signaling.iceServers().size() + " TURN servers");
+                join.reply().onRemoteSignal(signal -> events.add(signal.toString()));
+            }
+
+            @Override
+            public boolean admits(SourcedAddress source) {
+                return true;
+            }
         });
-        signaling.start();
         run();
         EmbeddedChannel socket = signaling.sockets.getLast();
         socket.pipeline().fireUserEventTriggered(WebSocketClientProtocolHandler.ClientHandshakeStateEvent.HANDSHAKE_COMPLETE);
@@ -276,7 +286,7 @@ class NetherNetXboxRpcSignalingTest {
         respond(socket, turn.get("id").getAsString(), "result", turnResult(0, "turn:a.invalid"));
         run();
 
-        assertEquals(List.of("join offer with 1 TURN servers", "CANDIDATEADD 9 candidate"), events);
+        assertEquals(List.of("join offer with 1 TURN servers", "Candidate[candidate=candidate]"), events);
     }
 
     @Test
@@ -293,7 +303,7 @@ class NetherNetXboxRpcSignalingTest {
         respond(socket, retry.get("id").getAsString(), "result", turnResult(120));
         run();
 
-        assertEquals(List.of("turn:a.invalid"), signaling.getIceServers().getFirst().urls());
+        assertEquals(List.of("turn:a.invalid"), signaling.iceServers().getFirst().urls());
         assertEquals(SignalingState.CONNECTED, signaling.health().state());
     }
 
@@ -303,7 +313,7 @@ class NetherNetXboxRpcSignalingTest {
         result.getAsJsonArray("TurnAuthServers").add("not an object");
         connect(result);
 
-        assertEquals(1, signaling.getIceServers().size());
+        assertEquals(1, signaling.iceServers().size());
     }
 
     // Messages.
@@ -341,6 +351,59 @@ class NetherNetXboxRpcSignalingTest {
         JsonObject receipt = sent.get(1);
         assertEquals(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE, receipt.get("method").getAsString());
         assertEquals(NetherNetConstants.XBOX_RPC_INNER_METHOD_DELIVERY, innerMethod(receipt));
+    }
+
+    @Test
+    void aJoinRepliesToItsSenderAndRefusesWithTheErrorCode() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        drain(socket);
+
+        Join join = sink.joins.getFirst();
+        assertEquals(9, join.connectionId());
+        assertEquals("peer", join.remoteNetworkId());
+        assertEquals("offer", join.offer());
+        assertEquals(AddressSource.UNKNOWN, join.source().source());
+        assertTrue(join.reply().trickles());
+
+        CompletableFuture<Void> answered = join.reply().answer("v=0").toCompletableFuture();
+        join.reply().candidate("candidate:1");
+        join.reply().refuse(JoinRefusal.CAPACITY);
+        List<JsonObject> sent = drain(socket);
+        assertEquals(List.of("CONNECTRESPONSE 9 v=0", "CANDIDATEADD 9 candidate:1", "CONNECTERROR 9 16"),
+                sent.stream().map(NetherNetXboxRpcSignalingTest::webRtcMessage).toList());
+        sent.forEach(request -> assertEquals("peer",
+                request.getAsJsonObject("params").get("toPlayerId").getAsString()));
+
+        assertFalse(answered.isDone(), "Handed on once the service accepted it");
+        respond(socket, sent.getFirst().get("id").getAsString(), "result", new JsonObject());
+        run();
+        assertTrue(answered.isDone() && !answered.isCompletedExceptionally());
+    }
+
+    @Test
+    void signalsReachOnlyTheJoinOfTheirSenderUntilItFinishes() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CANDIDATEADD 9 early", false);
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        receiveWebRtc(socket, "CANDIDATEADD 9 before-the-endpoint-listens", false);
+        Join join = sink.joins.getFirst();
+        List<String> signals = RecordingSink.signalsOf(join);
+
+        receive(socket, "intruder", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC,
+                webRtcParams("CANDIDATEADD 9 forged"), true, false);
+        receiveWebRtc(socket, "CONNECTREQUEST 9 again", false);
+        receiveWebRtc(socket, "CONNECTERROR 9 2", false);
+        assertEquals(List.of("candidate before-the-endpoint-listens", "error 2"), signals);
+        assertEquals(1, sink.joins.size(), "A repeated offer is no new join");
+
+        join.reply().finished();
+        receiveWebRtc(socket, "CANDIDATEADD 9 late", false);
+        assertEquals(2, signals.size());
+        receiveWebRtc(socket, "CONNECTREQUEST 9 retry", false);
+        assertEquals("retry", sink.joins.getLast().offer());
     }
 
     // Requests.
@@ -669,10 +732,24 @@ class NetherNetXboxRpcSignalingTest {
     }
 
     private void receiveWebRtc(EmbeddedChannel socket, String signal, boolean batched) {
+        receive(socket, "peer", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC, webRtcParams(signal), true, batched);
+    }
+
+    private static JsonObject webRtcParams(String signal) {
         JsonObject params = new JsonObject();
         params.addProperty("netherNetId", "123");
         params.addProperty("message", signal);
-        receive(socket, "peer", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC, params, true, batched);
+        return params;
+    }
+
+    /** The signal a sent client message carries, null for anything else. */
+    private static String webRtcMessage(JsonObject request) {
+        if (!NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE.equals(method(request))) {
+            return null;
+        }
+        JsonObject inner = JsonParser.parseString(request.getAsJsonObject("params").get("message").getAsString())
+                .getAsJsonObject();
+        return inner.getAsJsonObject("params").get("message").getAsString();
     }
 
     private void receiveFromSelf(EmbeddedChannel socket, String innerMethod) {

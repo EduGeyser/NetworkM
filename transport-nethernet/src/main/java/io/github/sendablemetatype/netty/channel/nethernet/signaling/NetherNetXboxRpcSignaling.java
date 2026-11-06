@@ -6,6 +6,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -67,8 +69,13 @@ import java.util.function.Consumer;
  * Xbox signaling over the JSON-RPC WebSocket service: joins by friends and by connection ID
  * arrive here, and answers and candidates go back as client messages to the joining player.
  *
- * <p>The source keeps its own socket up. {@link #bind} and {@link #connect} start it in the
- * background and never wait for Xbox, so an outage at startup leaves the server channel bound.
+ * <p>As a {@link JoinSource}, each {@code CONNECTREQUEST} becomes a {@link Join} whose replies go
+ * back to the sender's player ID; the client's later {@code CANDIDATEADD} and {@code CONNECTERROR}
+ * messages for that connection ID reach the join through its reply path. Xbox signaling does not
+ * say where the client is, so joins carry {@link SourcedAddress#unknown()}.
+ *
+ * <p>The source keeps its own socket up. {@link #start(JoinSink)} and {@link #connect} start it in
+ * the background and never wait for Xbox, so an outage at startup leaves the endpoint bound.
  * Before every connection attempt the {@link TokenSupplier} is asked for a token, since a token
  * can expire between attempts. Failed attempts are retried with backoff, and a lost socket is
  * replaced in place: the network ID, the registered handlers and every connected player stay
@@ -83,7 +90,7 @@ import java.util.function.Consumer;
  */
 @Sharable
 public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextWebSocketFrame>
-        implements NetherNetClientSignaling, NetherNetServerSignaling {
+        implements NetherNetClientSignaling, JoinSource {
 
     /**
      * Supplies the authorization for the signaling WebSocket. Asked before every connection
@@ -169,10 +176,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
     }
 
-    private record TurnCredentials(List<IceServerInfo> servers, long expirationSeconds) {
+    private record TurnCredentials(List<IceServer> servers, long expirationSeconds) {
     }
 
     private record HeldSignal(String sender, String message) {
+    }
+
+    /** Joins are told apart by sender too, so one client cannot reach another's join by its ID. */
+    private record JoinKey(String sender, long connectionId) {
     }
 
     private final String localNetworkId;
@@ -180,15 +191,16 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private final SignalingSupervisor supervisor;
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<JoinKey, XboxJoin> joins = new ConcurrentHashMap<>();
 
     private volatile String token;
-    private volatile NewConnectionHandler newConnectionHandler;
+    private volatile JoinSink sink;
     private volatile NotFoundHandler notFoundHandler;
-    private volatile List<IceServerInfo> iceServers = List.of();
+    private volatile List<IceServer> iceServers = List.of();
 
     // Guarded by this. The current socket and the credential exchange that makes it usable.
     private Channel channel;
-    private CompletableFuture<List<IceServerInfo>> connectFuture;
+    private CompletableFuture<List<IceServer>> connectFuture;
     private boolean closed;
     // Signals from the current socket that arrived before its first TURN credentials. A join
     // created then would get no TURN servers, and Xbox offers trickle every candidate, so the
@@ -250,6 +262,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     /** @return the current health; never blocks */
+    @Override
     public SignalingHealth health() {
         return supervisor.health();
     }
@@ -258,16 +271,18 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      * Adds a listener for health changes. It sees changes from now on; {@link #health()} gives the
      * current state. It runs on the signaling's event loop and must not block.
      */
+    @Override
     public void addHealthListener(Consumer<SignalingHealth> listener) {
         supervisor.addListener(listener);
     }
 
     /** Removes a listener added with {@link #addHealthListener}. */
+    @Override
     public void removeHealthListener(Consumer<SignalingHealth> listener) {
         supervisor.removeListener(listener);
     }
 
-    /** Starts connecting in the background. {@link #bind} and {@link #connect} call it too. */
+    /** Starts connecting in the background. {@link #start(JoinSink)} and {@link #connect} call it too. */
     public void start() {
         supervisor.start();
     }
@@ -285,7 +300,8 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /** Starts the source and returns at once; joins arrive once it is connected. */
     @Override
-    public void bind(SocketAddress localAddress) {
+    public void start(JoinSink sink) {
+        this.sink = Objects.requireNonNull(sink, "sink");
         start();
     }
 
@@ -295,18 +311,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      * @return the ICE servers once connected; fails if the next connection attempt fails
      */
     @Override
-    public CompletableFuture<List<IceServerInfo>> connect(SocketAddress remoteAddress) {
+    public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
         return supervisor.nextConnection().thenApply(ignored -> iceServers);
     }
 
+    /** The TURN servers of the current credentials, refreshed before they expire. */
     @Override
-    public List<IceServerInfo> getIceServers() {
+    public List<IceServer> iceServers() {
         return iceServers;
-    }
-
-    @Override
-    public void setNewConnectionHandler(NewConnectionHandler handler) {
-        this.newConnectionHandler = handler;
     }
 
     @Override
@@ -325,17 +337,21 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     @Override
-    public void setAdvertisementData(PongData pongData) {
-        // Xbox sessions advertise through MPSD, which the consumer manages.
-    }
-
-    @Override
     public void sendSignal(String targetNetworkId, String data) {
         Channel current = currentChannel();
         if (current == null || !current.isActive()) {
             throw new IllegalStateException("Signaling channel is not active");
         }
+        sendMessage(targetNetworkId, data);
+    }
 
+    /**
+     * Sends a signaling message to a player.
+     *
+     * @return completes once the service accepted the message, or exceptionally when it refused
+     *         it, did not answer in time, or no socket is up
+     */
+    private CompletableFuture<Void> sendMessage(String targetPlayerId, String data) {
         JsonObject innerParams = new JsonObject();
         innerParams.addProperty("netherNetId", localNetworkId);
         innerParams.addProperty("message", data);
@@ -345,13 +361,34 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         innerMsg.addProperty("jsonrpc", "2.0");
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC);
 
-        sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE, createSendParams(targetNetworkId, innerMsg.toString()));
+        return sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
+                createSendParams(targetPlayerId, innerMsg.toString())).thenApply(ignored -> null);
+    }
+
+    /** One join's way back to the player who sent its offer. */
+    private final class XboxJoin extends MessageReplyPath {
+        private final JoinKey key;
+
+        private XboxJoin(JoinKey key) {
+            super(key.connectionId());
+            this.key = key;
+        }
+
+        @Override
+        CompletionStage<Void> send(String message) {
+            return sendMessage(key.sender(), message);
+        }
+
+        @Override
+        void release() {
+            joins.remove(key, this);
+        }
     }
 
     @Override
     public void close() {
         Channel current;
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             if (closed) {
                 return;
@@ -371,6 +408,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                 current.close();
             }
         } finally {
+            joins.clear();
             pendingRequests.forEach((id, request) -> request.future.completeExceptionally(new ClosedChannelException()));
             eventLoopGroup.shutdownGracefully();
         }
@@ -383,8 +421,8 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      *
      * @return completes with the ICE servers once the handshake and the TURN exchange are done
      */
-    CompletableFuture<List<IceServerInfo>> openSocket(String token) {
-        CompletableFuture<List<IceServerInfo>> future = new CompletableFuture<>();
+    CompletableFuture<List<IceServer>> openSocket(String token) {
+        CompletableFuture<List<IceServer>> future = new CompletableFuture<>();
         synchronized (this) {
             if (closed) {
                 future.completeExceptionally(new ClosedChannelException());
@@ -452,7 +490,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     /** Drops the current socket without reporting it as lost. */
     void abortSocket() {
         Channel current;
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             current = channel;
             channel = null;
@@ -473,7 +511,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      * once usable, the supervisor learns it was lost and replaces it.
      */
     private void loseSocket(Channel source, Throwable cause) {
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             if (!isCurrentChannel(source)) {
                 return;
@@ -722,7 +760,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private void refreshTurnCredentials(ChannelHandlerContext ctx) {
         Channel source = ctx.channel();
         sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_TURN_AUTH, new JsonObject()).whenComplete((response, error) -> {
-            CompletableFuture<List<IceServerInfo>> attempt;
+            CompletableFuture<List<IceServer>> attempt;
             synchronized (this) {
                 if (!isCurrentChannel(source)) {
                     return;
@@ -765,7 +803,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /** Parses each server on its own, so one malformed entry does not drop the others. */
     private TurnCredentials parseTurnCredentials(JsonObject json) {
-        List<IceServerInfo> result = new ArrayList<>();
+        List<IceServer> result = new ArrayList<>();
         JsonElement servers = member(json, "TurnAuthServers", "turnAuthServers");
         if (servers != null && servers.isJsonArray()) {
             for (JsonElement element : servers.getAsJsonArray()) {
@@ -779,16 +817,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                     for (JsonElement url : urls.getAsJsonArray()) {
                         urlList.add(url.getAsString());
                     }
-                    IceServerInfo.Builder info = new IceServerInfo.Builder().setUrls(List.copyOf(urlList));
-                    JsonElement username = member(server, "Username", "username");
-                    if (username != null) {
-                        info.setUsername(username.getAsString());
+                    if (urlList.isEmpty()) {
+                        continue;
                     }
-                    JsonElement password = member(server, "Password", "password", "Credential", "credential");
-                    if (password != null) {
-                        info.setPassword(password.getAsString());
-                    }
-                    result.add(info.build());
+                    result.add(new IceServer(urlList, nonEmpty(member(server, "Username", "username")),
+                            nonEmpty(member(server, "Password", "password", "Credential", "credential"))));
                 } catch (RuntimeException e) {
                     log.warn("Skipping a malformed TURN server entry: {}", e.getMessage());
                 }
@@ -805,6 +838,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
         log.debug("Parsed {} ICE servers, lifetime {} s", result.size(), expiration);
         return new TurnCredentials(List.copyOf(result), expiration);
+    }
+
+    private static String nonEmpty(JsonElement value) {
+        return value == null || value.getAsString().isEmpty() ? null : value.getAsString();
     }
 
     private static JsonElement member(JsonObject json, String... names) {
@@ -970,9 +1007,24 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                 return;
             }
 
-            NewConnectionHandler connectionHandler = newConnectionHandler;
-            if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0]) && connectionHandler != null) {
-                connectionHandler.onConnect(connectionId, sender, parts.length > 2 ? parts[2] : "");
+            JoinKey key = new JoinKey(sender, connectionId);
+            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0]);
+            XboxJoin join = joins.get(key);
+            if (join != null) {
+                if (request) {
+                    log.debug("Ignoring a repeated offer for connection ID {}", Long.toUnsignedString(connectionId));
+                } else {
+                    join.received(rawMsg);
+                }
+                return;
+            }
+            JoinSink current = sink;
+            if (request && current != null) {
+                XboxJoin created = new XboxJoin(key);
+                if (joins.putIfAbsent(key, created) == null) {
+                    current.join(new Join(connectionId, sender, parts.length > 2 ? parts[2] : "",
+                            SourcedAddress.unknown(), created));
+                }
             } else {
                 log.debug("No handler found for connection ID: {} (Type: {})", connectionId, parts[0]);
             }

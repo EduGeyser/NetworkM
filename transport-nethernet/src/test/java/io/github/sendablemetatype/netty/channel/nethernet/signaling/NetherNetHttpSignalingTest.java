@@ -2,8 +2,11 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChildChannel;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
+import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
@@ -32,9 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Exercises the HTTP signaling front end against the real netty stack and
- * server channel, with the WebRTC engine replaced by the fake engine: an
- * accepted offer produces a canned full ICE answer on a separate thread,
- * mirroring how the engine reports the description after gathering completes.
+ * endpoint, with the WebRTC engine replaced by the fake engine: an admitted
+ * offer produces a canned full ICE answer on a separate thread, mirroring how
+ * the engine reports the description after gathering completes. Offers that
+ * carry no assertion are admitted unless a test asks for the default policy.
  */
 class NetherNetHttpSignalingTest {
 
@@ -49,6 +53,7 @@ class NetherNetHttpSignalingTest {
     private static HttpClient client;
     private static String baseUrl;
     private static final LinkedBlockingQueue<NetherNetChildChannel> checkedChildren = new LinkedBlockingQueue<>();
+    private static volatile OfferPolicy policy = result -> Optional.empty();
 
     @BeforeAll
     static void setUp() throws Exception {
@@ -57,17 +62,20 @@ class NetherNetHttpSignalingTest {
         engine.answerWith("v=0\r\n");
         engine.gatherWith(CANNED_ANSWER);
         signaling = new NetherNetHttpSignaling((SslContext) null, group);
-        signaling.disableOfferCheck(); // The fake engine takes unsigned offers.
+        signaling.bind(new InetSocketAddress("127.0.0.1", 0));
 
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(group, group)
-                .channelFactory(() -> new NetherNetServerChannel(engine, signaling))
+                .channelFactory(() -> new NetherNetServerChannel(engine))
+                .option(NetherChannelOption.NETHER_SERVER_IDENTITY, ServerIdentity.ephemeral("test"))
+                .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, OfferFixtures.retailCheck())
                 .childHandler(new ChannelInitializer<NetherNetChildChannel>() {
                     @Override protected void initChannel(NetherNetChildChannel channel) {
-                        if (channel.getOfferCheck() != null) checkedChildren.add(channel);
+                        if (channel.getOfferCheck().keyProven()) checkedChildren.add(channel);
                     }
                 });
         serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        ((NetherNetServerChannel) serverChannel).addSource(signaling, result -> policy.refusal(result));
 
         InetSocketAddress bound = signaling.boundAddress();
         baseUrl = "http://127.0.0.1:" + bound.getPort();
@@ -97,7 +105,7 @@ class NetherNetHttpSignalingTest {
 
     @Test
     void checksBeforePeerCreationAndBindsTheChild() throws Exception {
-        signaling.setOfferCheck(OfferFixtures.retailCheck());
+        policy = OfferPolicy.REQUIRE_KEY_PROVEN;
         try {
             String valid = OfferFixtures.retailOffer();
             int previousAccepts = engine.peers().size();
@@ -111,8 +119,9 @@ class NetherNetHttpSignalingTest {
             assertEquals(Optional.of("2535400000000000"), child.getOfferCheck().xuid());
             assertEquals(TransportIdentityBinding.Result.ACCEPTED,
                     TransportIdentityBinding.verifyLogin(child, OfferFixtures.CLIENT_KEY.getPublic()));
+            assertEquals(401, post("/v1/join/opaque-peer", "v=0\r\n").statusCode(), "No assertion");
         } finally {
-            signaling.disableOfferCheck();
+            policy = result -> Optional.empty();
         }
     }
 
@@ -169,9 +178,8 @@ class NetherNetHttpSignalingTest {
         HttpResponse<String> response = post("/v1/join/12345678901234567890", "v=0\r\nfake offer\r\n");
         assertEquals(200, response.statusCode());
         assertEquals("application/sdp", response.headers().firstValue("content-type").orElse(""));
-        // No decorator option is set, so the channel's built in identity
-        // signs the answer: the canned SDP comes back intact with the
-        // a=identity assertion attached.
+        // The endpoint's identity signs the answer: the canned SDP comes
+        // back intact with the a=identity assertion attached.
         assertTrue(response.body().startsWith(CANNED_ANSWER));
         assertTrue(response.body().contains("a=identity:"));
         assertTrue(response.headers().firstValue("connection").orElse("").equalsIgnoreCase("close"));

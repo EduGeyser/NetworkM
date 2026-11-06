@@ -67,7 +67,7 @@ class NetherNetHttpSignalingLifecycleTest {
             return accept;
         });
         listeners.add(signaling);
-        signaling.setNewConnectionHandler((connection, network, offer) -> {});
+        signaling.start(new RecordingSink());
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
         InetSocketAddress original = signaling.boundAddress();
 
@@ -102,7 +102,7 @@ class NetherNetHttpSignalingLifecycleTest {
             throw new IllegalStateException("TLS context unavailable");
         }, worker, () -> accept);
         listeners.add(signaling);
-        signaling.setNewConnectionHandler((connection, network, offer) -> {});
+        signaling.start(new RecordingSink());
 
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
 
@@ -220,9 +220,10 @@ class NetherNetHttpSignalingLifecycleTest {
         EmbeddedChannel channel = new EmbeddedChannel();
         channel.freezeTime();
         AtomicInteger expirations = new AtomicInteger();
-        NetherNetHttpSignaling.PendingExchange exchange = new NetherNetHttpSignaling.PendingExchange(null, null);
+        NetherNetHttpSignaling signaling = listener(newAcceptGroup());
+        NetherNetHttpSignaling.HttpReply exchange = signaling.new HttpReply(null, 1);
         try {
-            exchange.cancelTimeout();
+            exchange.abandon(null);
             var timeout = channel.eventLoop().schedule(() -> {
                 expirations.incrementAndGet();
             }, 30, TimeUnit.SECONDS);
@@ -269,7 +270,7 @@ class NetherNetHttpSignalingLifecycleTest {
 
     private NetherNetHttpSignaling listener(EventLoopGroup accept) {
         NetherNetHttpSignaling signaling = new NetherNetHttpSignaling(() -> null, worker, () -> accept);
-        signaling.setNewConnectionHandler((connection, network, offer) -> {});
+        signaling.start(new RecordingSink());
         listeners.add(signaling);
         return signaling;
     }

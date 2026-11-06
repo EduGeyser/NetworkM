@@ -8,11 +8,11 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddres
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
@@ -303,7 +303,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
     }
 
-    private void startPeer(List<NetherNetSignaling.IceServerInfo> iceServers, int gen) {
+    private void startPeer(List<IceServer> iceServers, int gen) {
         NetherNetEngine current = engine.get();
         PeerConfig peerConfig = new PeerConfig(PeerConfig.Role.OFFERER,
                 iceServers(config.getIceServers(), iceServers), config.getCandidatePolicy(), null, null, null);

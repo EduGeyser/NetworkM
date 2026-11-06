@@ -2,6 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
@@ -25,7 +26,7 @@ final class ChildFixture {
         }
 
         @Override
-        public void failed(String reason) {
+        public void failed(CloseCause cause) {
         }
     };
 
