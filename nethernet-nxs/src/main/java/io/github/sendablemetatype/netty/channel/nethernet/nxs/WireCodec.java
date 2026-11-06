@@ -20,13 +20,14 @@ import com.google.gson.*;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderClient.*;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.*;
-import io.netty.util.NetUtil;
+import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.UnknownHostException;
 import java.util.*;
 
 /**
@@ -725,12 +726,10 @@ final class WireCodec {
     }
 
     private static InetAddress numeric(String address) {
-        InetAddress parsed = address.length() <= 45 && address.matches("[0-9A-Fa-f:.]+")
-                ? NetUtil.createInetAddressFromIpAddressString(address)
-                : null;
-        if (parsed == null) {
-            throw new IllegalArgumentException("Expected a numeric IP address");
+        try {
+            return EndpointAddress.parse(address);
+        } catch (UnknownHostException invalid) {
+            throw new IllegalArgumentException(invalid.getMessage(), invalid);
         }
-        return parsed;
     }
 }
