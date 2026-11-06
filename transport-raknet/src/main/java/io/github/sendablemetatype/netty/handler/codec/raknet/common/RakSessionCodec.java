@@ -25,6 +25,7 @@ import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.DefaultPriorityQueue;
+import io.netty.util.internal.PriorityQueueNode;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.*;
@@ -59,8 +60,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private static final int MAX_RECEIVE_GAP = 32768;
     // Charged per queued ordered message on top of its payload.
     static final int ORDERING_ENTRY_OVERHEAD = 2048;
-    // Transmissions of one datagram an ACK may name: ACKs count when delayed by up to this many retransmission
-    // timeouts, at least 30 ms each. The bound keeps a peer that never acknowledges from growing the history.
+    // Transmissions of one datagram an ACK may name. The timeout doubles from at least 30 ms up to 2 s while resends
+    // fall due without ACKs, so an ACK still counts up to about 21 s after its transmission. The bound keeps a peer
+    // that never acknowledges from growing the history.
     static final int MAX_TRACKED_TRANSMISSIONS = 16;
 
     private static final long CONNECTED_PING_INTERVAL_MS = 2000;
@@ -128,10 +130,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private long currentPingSentAt;
     private long lastPingTime = -1;
     private long lastPongTime = -1;
-    // Tracked transmissions of unacknowledged reliable datagrams by datagram number. The transmissions of a
-    // datagram share one retained reference; the indexed heap is a non-owning deadline index of the datagrams.
-    private IntObjectMap<Transmission> sentDatagrams;
-    private DefaultPriorityQueue<RakDatagramPacket> resendQueue;
+    // Unacknowledged reliable datagrams by the datagram number of each tracked transmission, and by resend deadline
+    private IntObjectMap<SentDatagram> sentDatagrams;
+    private DefaultPriorityQueue<SentDatagram> resendQueue;
     private Queue<IntRange> incomingAcks;
     private Queue<IntRange> incomingNaks;
     private Deque<IntRange> outgoingAcks;
@@ -192,7 +193,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
         this.outgoingPackets = new FastBinaryMinHeap<>(8);
         this.sentDatagrams = new IntObjectHashMap<>();
-        this.resendQueue = new DefaultPriorityQueue<>(Comparator.comparingLong(RakDatagramPacket::getNextSend), 8);
+        this.resendQueue = new DefaultPriorityQueue<>(Comparator.comparingLong(sent -> sent.nextSend), 8);
 
         this.incomingAcks = new ArrayDeque<>();
         this.incomingNaks = new ArrayDeque<>();
@@ -238,18 +239,12 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.splitPacketCount = 0;
 
         if (this.resendQueue != null) {
+            List<SentDatagram> unacknowledged = new ArrayList<>(this.resendQueue);
             this.resendQueue.clear();
-        }
-        if (this.sentDatagrams != null) {
-            // Once per datagram, through its latest transmission
-            List<RakDatagramPacket> held = new ArrayList<>();
-            for (IntObjectMap.PrimitiveEntry<Transmission> entry : this.sentDatagrams.entries()) {
-                if (entry.key() == entry.value().datagram().getSequenceIndex()) {
-                    held.add(entry.value().datagram());
-                }
-            }
             this.sentDatagrams.clear();
-            held.forEach(RakDatagramPacket::release);
+            for (SentDatagram sent : unacknowledged) {
+                sent.datagram.release();
+            }
         }
 
         PriorityQueue<OrderedPacket>[] orderingHeaps = this.orderingHeaps;
@@ -875,8 +870,8 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         if (this.deinitialized) {
             return;
         }
-        RakDatagramPacket next = this.resendQueue.peek();
-        long deadline = next == null ? Long.MAX_VALUE : next.getNextSend();
+        SentDatagram next = this.resendQueue.peek();
+        long deadline = next == null ? Long.MAX_VALUE : next.nextSend;
         if (this.resendFuture != null && deadline == this.resendDeadline) {
             return;
         }
@@ -1001,7 +996,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 // Sparse or hostile ranges must cost at most a scan of the transmissions we track.
                 int[] sequenceIndices = new int[this.sentDatagrams.size()];
                 int count = 0;
-                for (IntObjectMap.PrimitiveEntry<Transmission> entry : this.sentDatagrams.entries()) {
+                for (IntObjectMap.PrimitiveEntry<SentDatagram> entry : this.sentDatagrams.entries()) {
                     if (entry.key() >= range.start && entry.key() <= range.end) {
                         sequenceIndices[count++] = entry.key();
                     }
@@ -1021,53 +1016,31 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     private void onIncomingAcknowledge(ChannelHandlerContext ctx, int sequenceIndex, long curTime, boolean nack) {
-        Transmission transmission = this.sentDatagrams.get(sequenceIndex);
-        if (transmission == null) {
+        SentDatagram sent = this.sentDatagrams.get(sequenceIndex);
+        if (sent == null) {
             return;
         }
-        RakDatagramPacket datagram = transmission.datagram();
         if (nack) {
             // An earlier transmission was already replaced by a resend, so only a NACK for the latest one resends
-            if (sequenceIndex == datagram.getSequenceIndex()) {
-                this.resendQueue.removeTyped(datagram);
-                this.onIncomingNack(ctx, datagram, curTime);
+            if (sequenceIndex == sent.transmissions.getLast().sequenceIndex()) {
+                this.resendQueue.removeTyped(sent);
+                this.onIncomingNack(ctx, sent, curTime);
             }
             return;
         }
 
-        this.forgetTransmissions(datagram);
-        this.resendQueue.removeTyped(datagram);
+        long sentAt = sent.transmission(sequenceIndex).sentAt();
+        for (Transmission transmission : sent.transmissions) {
+            this.sentDatagrams.remove(transmission.sequenceIndex());
+        }
+        this.resendQueue.removeTyped(sent);
+        RakDatagramPacket datagram = sent.datagram;
         try {
             // Measured from the transmission the peer acknowledged, which may be an earlier one
-            this.slidingWindow.onAck(curTime - transmission.sentAt(), datagram.getSize(), sequenceIndex,
-                    this.datagramWriteIndex);
+            this.slidingWindow.onAck(curTime - sentAt, datagram.getSize(), sequenceIndex, this.datagramWriteIndex);
             this.acknowledgeReliable(datagram);
         } finally {
             datagram.release();
-        }
-    }
-
-    private void forgetTransmissions(RakDatagramPacket datagram) {
-        int sequenceIndex = datagram.getSequenceIndex();
-        Transmission transmission;
-        while ((transmission = this.sentDatagrams.get(sequenceIndex)) != null && transmission.datagram() == datagram) {
-            this.sentDatagrams.remove(sequenceIndex);
-            sequenceIndex = transmission.previous();
-        }
-    }
-
-    // Keeps the latest MAX_TRACKED_TRANSMISSIONS transmissions of a datagram that was just resent
-    private void forgetOldestTransmission(RakDatagramPacket datagram) {
-        Transmission oldest = this.sentDatagrams.get(datagram.getSequenceIndex());
-        for (int kept = 1; kept < MAX_TRACKED_TRANSMISSIONS; kept++) {
-            oldest = this.sentDatagrams.get(oldest.previous());
-            if (oldest == null || oldest.datagram() != datagram) {
-                return;
-            }
-        }
-        Transmission forgotten = this.sentDatagrams.get(oldest.previous());
-        if (forgotten != null && forgotten.datagram() == datagram) {
-            this.sentDatagrams.remove(oldest.previous());
         }
     }
 
@@ -1090,27 +1063,31 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
     }
 
-    private void onIncomingNack(ChannelHandlerContext ctx, RakDatagramPacket datagram, long curTime) {
+    private void onIncomingNack(ChannelHandlerContext ctx, SentDatagram sent, long curTime) {
         if (log.isTraceEnabled()) {
-            log.trace("NAK'ed datagram {} from {}", datagram.getSequenceIndex(), this.getRemoteAddress());
+            log.trace("NAK'ed datagram {} from {}", sent.datagram.getSequenceIndex(), this.getRemoteAddress());
         }
 
         this.slidingWindow.onNak(); // TODO: verify this
-        this.sendDatagram(ctx, datagram.retain(), curTime);
+        this.transmit(ctx, sent, curTime);
     }
 
     private int sendStaleDatagrams(ChannelHandlerContext ctx, long curTime) {
         int resendCount = 0;
         int transmissionBandwidth = this.slidingWindow.getRetransmissionBandwidth();
-        RakDatagramPacket datagram;
-        while ((datagram = this.resendQueue.peek()) != null && datagram.getNextSend() <= curTime) {
-            int size = datagram.getSize();
+        SentDatagram sent;
+        while ((sent = this.resendQueue.peek()) != null && sent.nextSend <= curTime) {
+            int size = sent.datagram.getSize();
             if (transmissionBandwidth < size) {
                 break;
             }
             transmissionBandwidth -= size;
+            if (resendCount == 0) {
+                // Before the resends, so they wait the backed-off timeout
+                this.slidingWindow.onRetransmissionTimeout(curTime);
+            }
             this.resendQueue.poll();
-            this.sendDatagram(ctx, datagram.retain(), curTime);
+            this.transmit(ctx, sent, curTime);
             resendCount++;
         }
 
@@ -1208,14 +1185,50 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     /**
-     * Writes a datagram under the next datagram number, consuming the caller's reference. A reliable datagram is
-     * also tracked for resending until acknowledged; its first transmission retains it for all of them.
+     * Writes a new datagram, consuming the caller's reference. A reliable datagram is kept for resending until
+     * acknowledged, and holds that reference until then.
      */
     private void sendDatagram(ChannelHandlerContext ctx, RakDatagramPacket datagram, long time) {
         if (datagram.getPackets().isEmpty()) {
             throw new IllegalArgumentException("RakNetDatagram with no packets");
         }
+        for (EncapsulatedPacket packet : datagram.getPackets()) {
+            if (packet.getReliability().isReliable()) {
+                this.slidingWindow.onReliableSend(datagram);
+                this.transmit(ctx, new SentDatagram(datagram), time);
+                return;
+            }
+        }
+        this.writeDatagram(ctx, datagram, this.nextSequenceIndex());
+    }
 
+    /**
+     * Writes a transmission of a reliable datagram under the next datagram number and tracks it, keeping the
+     * datagram's latest {@link #MAX_TRACKED_TRANSMISSIONS} transmissions.
+     */
+    private void transmit(ChannelHandlerContext ctx, SentDatagram sent, long time) {
+        int sequenceIndex = this.nextSequenceIndex();
+        SentDatagram stale = this.sentDatagrams.put(sequenceIndex, sent);
+        if (stale != null) {
+            // The number came round again while still tracked, so an ACK for it now names this transmission
+            stale.forget(sequenceIndex);
+        }
+        sent.transmissions.add(new Transmission(sequenceIndex, time));
+        if (sent.transmissions.size() > MAX_TRACKED_TRANSMISSIONS) {
+            this.sentDatagrams.remove(sent.transmissions.removeFirst().sequenceIndex());
+        }
+        sent.nextSend = time + this.slidingWindow.getRtoForRetransmission();
+        this.resendQueue.offer(sent);
+        this.writeDatagram(ctx, sent.datagram.retain(), sequenceIndex);
+    }
+
+    private int nextSequenceIndex() {
+        return (int) this.datagramWriteIndex++ & RakSequence.MASK;
+    }
+
+    // Consumes one reference to the datagram
+    private void writeDatagram(ChannelHandlerContext ctx, RakDatagramPacket datagram, int sequenceIndex) {
+        datagram.setSequenceIndex(sequenceIndex);
         RakChannelMetrics metrics = this.getMetrics();
         if (metrics != null) {
             try {
@@ -1224,39 +1237,52 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 this.metricsFailed("rakDatagramsOut", cause);
             }
         }
-
-        int previous = datagram.getSequenceIndex();
-        int sequenceIndex = (int) this.datagramWriteIndex++ & RakSequence.MASK;
-        datagram.setSequenceIndex(sequenceIndex);
-
-        for (EncapsulatedPacket packet : datagram.getPackets()) {
-            // Check if packet is reliable so it can be resent later if a NAK is received.
-            if (packet.getReliability().isReliable()) {
-                this.sentDatagrams.put(sequenceIndex, new Transmission(datagram, time, previous));
-                datagram.setNextSend(time + this.slidingWindow.getRtoForRetransmission());
-                if (previous == -1) {
-                    this.slidingWindow.onReliableSend(datagram);
-                    datagram.retain();
-                } else {
-                    this.forgetOldestTransmission(datagram);
-                }
-                this.resendQueue.offer(datagram);
-                break;
-            }
-        }
         ctx.write(datagram);
     }
 
     /**
-     * One transmission of an unacknowledged reliable datagram. A resend leaves under a new datagram number, and an
-     * ACK for any tracked transmission acknowledges the datagram, as RakNet's datagram history does. Tracking only
-     * the latest one stalls a session whose acknowledgements take longer than the retransmission timeout: each ACK
-     * then names a transmission already replaced, so nothing is ever acknowledged, the RTT estimate never grows,
-     * and the whole window is resent at every timeout.
-     *
-     * @param previous the datagram number of the datagram's transmission before this one, or -1
+     * A reliable datagram the peer has not acknowledged yet, holding one reference to it. Every resend leaves under a
+     * new datagram number, and an ACK for any tracked transmission acknowledges the datagram, as RakNet's datagram
+     * history does. Tracking only the latest one stalls a session whose acknowledgements take longer than the
+     * retransmission timeout: each ACK then names a transmission already replaced, so nothing is ever acknowledged
+     * and the RTT estimate never grows.
      */
-    private record Transmission(RakDatagramPacket datagram, long sentAt, int previous) {
+    private static final class SentDatagram implements PriorityQueueNode {
+        final RakDatagramPacket datagram;
+        // Oldest first; each one's datagram number maps to this in sentDatagrams
+        final List<Transmission> transmissions = new ArrayList<>(2);
+        long nextSend;
+        private int queueIndex = INDEX_NOT_IN_QUEUE;
+
+        SentDatagram(RakDatagramPacket datagram) {
+            this.datagram = datagram;
+        }
+
+        Transmission transmission(int sequenceIndex) {
+            for (Transmission transmission : this.transmissions) {
+                if (transmission.sequenceIndex() == sequenceIndex) {
+                    return transmission;
+                }
+            }
+            throw new IllegalStateException("Datagram number " + sequenceIndex + " is not tracked");
+        }
+
+        void forget(int sequenceIndex) {
+            this.transmissions.removeIf(transmission -> transmission.sequenceIndex() == sequenceIndex);
+        }
+
+        @Override
+        public int priorityQueueIndex(DefaultPriorityQueue<?> queue) {
+            return this.queueIndex;
+        }
+
+        @Override
+        public void priorityQueueIndex(DefaultPriorityQueue<?> queue, int index) {
+            this.queueIndex = index;
+        }
+    }
+
+    private record Transmission(int sequenceIndex, long sentAt) {
     }
 
     private ChannelHandlerContext ctx() {

@@ -16,7 +16,8 @@ congestion window. Changing the setting invalidates pending automatic flushes.
 ACKs release queued data promptly. Retransmission, idle timeout, and incomplete
 split expiry have separate deadlines. A resend goes out under a new datagram
 number, and an ACK for any of a datagram's last 16 transmissions acknowledges
-it, so ACKs slower than the retransmission timeout still open the window.
+it. While resends fall due without ACKs, the retransmission timeout doubles up
+to 2 s, so an ACK still counts up to about 21 s after its transmission.
 Split and ordering buffers retain the
 configurable byte limits. A received split message may have up to 8192 fragments,
 a sent one at most 2048. `maxMessageSize()` returns the largest message a write

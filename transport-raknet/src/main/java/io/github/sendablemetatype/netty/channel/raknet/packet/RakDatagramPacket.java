@@ -18,15 +18,13 @@ package io.github.sendablemetatype.netty.channel.raknet.packet;
 
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.Recycler;
-import io.netty.util.internal.DefaultPriorityQueue;
-import io.netty.util.internal.PriorityQueueNode;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static io.github.sendablemetatype.netty.channel.raknet.RakConstants.*;
 
-public class RakDatagramPacket extends AbstractReferenceCounted implements PriorityQueueNode {
+public class RakDatagramPacket extends AbstractReferenceCounted {
 
     private static final Recycler<RakDatagramPacket> RECYCLER = new Recycler<>() {
         @Override
@@ -40,9 +38,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
     private byte flags = FLAG_VALID;
     // Session-local monotonic milliseconds, not wire timestamps.
     private long sendTime;
-    private long nextSend;
     private int sequenceIndex = -1;
-    private int resendQueueIndex = INDEX_NOT_IN_QUEUE;
 
     public static RakDatagramPacket newInstance() {
         return RECYCLER.get();
@@ -97,9 +93,7 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
         this.packets.clear();
         this.flags = FLAG_VALID;
         this.sendTime = 0;
-        this.nextSend = 0;
         this.sequenceIndex = -1;
-        this.resendQueueIndex = INDEX_NOT_IN_QUEUE;
         setRefCnt(1);
         this.handle.recycle(this);
     }
@@ -136,24 +130,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
         this.sendTime = sendTime;
     }
 
-    public long getNextSend() {
-        return this.nextSend;
-    }
-
-    public void setNextSend(long nextSend) {
-        this.nextSend = nextSend;
-    }
-
-    @Override
-    public int priorityQueueIndex(DefaultPriorityQueue<?> queue) {
-        return this.resendQueueIndex;
-    }
-
-    @Override
-    public void priorityQueueIndex(DefaultPriorityQueue<?> queue, int index) {
-        this.resendQueueIndex = index;
-    }
-
     public int getSequenceIndex() {
         return this.sequenceIndex;
     }
@@ -169,7 +145,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted implements Prior
                 ", packets=" + packets +
                 ", flags=" + flags +
                 ", sendTime=" + sendTime +
-                ", nextSend=" + nextSend +
                 ", sequenceIndex=" + sequenceIndex +
                 '}';
     }
