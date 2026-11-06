@@ -31,7 +31,18 @@ its fixtures define them. The Java API is NetworkM's own.
   host profile (configured, local, or STUN-maintained candidates) and reports
   ticket outcomes. Every NXS child carries a login binding; the application
   decides it with `TransportIdentityBinding.verifyLogin` before the ticket's
-  deadline, or the child is closed.
+  deadline, or the child is closed. A child's connection ID is its ticket ID.
+  Closing the client closes the transport, which removes itself from the
+  endpoint: players whose login was accepted stay connected, and every other
+  NXS child is closed.
+- **DTLS certificate** (`DtlsCertificate`, in transport-nethernet): every NXS
+  peer presents one fixed certificate, since stateless clients build the host's
+  answer from the fingerprint the profile publishes. `NxsHost.open` takes it.
+  `DtlsCertificate.loadOrCreate(path)` creates an ECDSA P-256 certificate signed
+  with SHA-256 on the first start, owner-only, and keeps it; a good place is
+  `dtls-certificate.pem` next to the server identity key. `DtlsCertificate.load`
+  and `DtlsCertificate.of` take a supplied PEM certificate and key. Keep one
+  certificate per endpoint: clients that hold the published profile expect it.
 - **Stateless admission** (`admission`): `StatelessAdmissionCodec` reads and
   issues the NXS1 token a player carries in its ICE username,
   `StatelessAdmissionValidator` checks it against the installed admission keys
@@ -47,14 +58,18 @@ its fixtures define them. The Java API is NetworkM's own.
   the endpoint's pending handshakes while the peer lives, at most four checks at
   once, each closed at most a second after its PONG. Direct checks arrive as held
   checks, assisted ones over the provider's WebSocket, and only under the policy
-  the last successful heartbeat installed. `HostTransport.pollDiagnosticResults`
-  reports how each ended. `DiagnosticProbe` is the prober's side, for a provider
-  that runs its checks in Java.
+  the last successful heartbeat installed; a new policy replaces the old one and
+  stops the checks it no longer covers. `HostTransport.pollDiagnosticResults`
+  reports how each ended, oldest first, from a queue of at most 32; results stay
+  local. `DiagnosticProbe` is the prober's side, for a provider that runs its
+  checks in Java: it offers both data channels from a fixed local endpoint,
+  sends one PING and checks the echo on the selected path. It probes public
+  destinations only, private and loopback ones too under local development.
 - **Settings** (`provider`): `ProviderRuntimeConfiguration` maps a host's NXS
   settings to the client and host configuration. A secret is the value itself or
-  `file:<path>`; a value without the prefix that names an existing file or
-  directory, or starts with a Windows drive, is refused rather than sent as the
-  secret.
+  `file:<path>`, a path relative to the configuration directory unless absolute;
+  a value without the prefix that names an existing file or directory, or starts
+  with a Windows drive, is refused rather than sent as the secret.
 
 ## Tests
 
