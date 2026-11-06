@@ -137,7 +137,8 @@ class NetherNetServerChannelTest {
             ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", taken.getLocalPort()))
                     .awaitUninterruptibly();
             assertInstanceOf(BindException.class, bind.cause());
-            assertFalse(bind.channel().isOpen());
+            // The bootstrap closes the channel from a listener that runs after the failure wakes us.
+            assertTrue(bind.channel().closeFuture().await(2, TimeUnit.SECONDS));
         }
     }
 
