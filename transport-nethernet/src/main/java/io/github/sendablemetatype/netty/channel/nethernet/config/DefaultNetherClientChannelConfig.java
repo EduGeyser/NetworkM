@@ -24,7 +24,7 @@ public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig
     private final Setting<Integer> handshakeTimeoutMillis = options.add(
             NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, DEFAULT_HANDSHAKE_TIMEOUT_MILLIS, Rule.atLeast(1));
     private final Setting<Integer> maxHandshakeAttempts = options.add(
-            NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, DEFAULT_MAX_HANDSHAKE_ATTEMPTS, Rule.atLeast(0));
+            NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, DEFAULT_MAX_HANDSHAKE_ATTEMPTS, Rule.atLeast(1));
     private final Setting<ClientIdentity> identity = options.add(NetherChannelOption.NETHER_CLIENT_IDENTITY,
             null, Rule.orNone());
 
@@ -44,7 +44,7 @@ public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig
         return handshakeTimeoutMillis.get();
     }
 
-    /** @return how many times the handshake is retried */
+    /** @return how many attempts a connect gets, the first one included */
     public int getMaxHandshakeAttempts() {
         return maxHandshakeAttempts.get();
     }

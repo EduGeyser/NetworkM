@@ -214,8 +214,12 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS");
 
     /**
-     * How many times a client retries the handshake before giving up on connecting: 3 by default,
-     * at least 0.
+     * How many attempts a client connect gets before it fails, the first one included: 3 by
+     * default, at least 1. An attempt that does not finish within
+     * {@link #NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS}, or whose peer fails, starts over with a new peer
+     * and connection ID. Signaling that does not trickle (HTTP) gets one attempt whatever this
+     * says: it carries one offer, and the server refuses a second one for the same network ID as a
+     * duplicate while the first is still pending.
      */
     public static final ChannelOption<Integer> NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS");

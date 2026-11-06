@@ -40,9 +40,11 @@ import java.util.function.Supplier;
  * A NetherNet client: offers a connection over its signaling and opens the
  * two data channels. Over signaling that trickles, candidates follow the
  * offer one by one; otherwise the offer waits for gathering and carries them
- * all. A handshake that does not finish in time is retried with a new peer
- * and connection ID; once connected, a failing peer ends the connection like
- * on the server.
+ * all. A handshake that does not finish in time, or whose peer fails, is
+ * attempted again with a new peer and connection ID, up to
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS}
+ * attempts in all, and once only over signaling that does not trickle. Once
+ * connected, a failing peer ends the connection like on the server.
  */
 public class NetherNetClientChannel extends NetherNetChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetClientChannel.class);
@@ -274,7 +276,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         handshakeTimeoutTask = eventLoop().schedule(() -> {
             if (isCurrentHandshake(gen)) {
                 connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
-                resetAndRetryHandshake();
+                retryOrFail("The handshake timed out");
             }
         }, millis, TimeUnit.MILLISECONDS);
     }
@@ -300,16 +302,25 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
     }
 
-    private void resetAndRetryHandshake() {
+    /**
+     * Starts the next attempt with a new peer and connection ID, or fails the connect once
+     * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS}
+     * attempts, the first one included, were made. Signaling that does not trickle gets one
+     * attempt: it carries one offer, and the server refuses a second one for the same network ID
+     * as a duplicate while the first is still pending.
+     *
+     * @param why what ended the current attempt, for the failure
+     */
+    private void retryOrFail(String why) {
         if (!isOpen()) return;
         if (connectPromise != null && connectPromise.isDone() && !connectPromise.isSuccess()) return;
         if (handshakeComplete) return;
 
-        // Counts retries: the option's value plus the first attempt are made.
-        int maxRetries = clientConfig.getMaxHandshakeAttempts();
-        if (retryCount >= maxRetries) {
+        int attempts = retryCount + 1;
+        if (attempts >= clientConfig.getMaxHandshakeAttempts() || !signaling.trickles()) {
             if (connectPromise != null && !connectPromise.isDone()) {
-                connectPromise.tryFailure(new ConnectException("Connection timed out after " + retryCount + " retries"));
+                connectPromise.tryFailure(new ConnectException(
+                        why + "; gave up after " + attempts + (attempts == 1 ? " attempt" : " attempts")));
             }
             close();
             return;
@@ -374,7 +385,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                         NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, signed));
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
-                resetAndRetryHandshake();
+                retryOrFail("Could not send the offer");
                 return;
             }
             offerSent = true;
@@ -404,7 +415,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             return true;
         } catch (Exception e) {
             log.debug("Failed to send ICE candidate", e);
-            resetAndRetryHandshake();
+            retryOrFail("Could not send a candidate");
             return false;
         }
     }
@@ -557,9 +568,9 @@ public class NetherNetClientChannel extends NetherNetChannel {
                     // The reliable channel opened while this hopped onto the loop.
                     transportEnded(cause, reliableChannel);
                 } else {
-                    log.debug("Peer ended during handshake ({}); retrying", cause);
+                    log.debug("Peer ended during handshake ({})", cause);
                     connectionFailed(failureOf(cause));
-                    resetAndRetryHandshake();
+                    retryOrFail("The peer ended during the handshake (" + cause + ")");
                 }
             });
         }

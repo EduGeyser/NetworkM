@@ -107,7 +107,7 @@ class NetherNetClientChannelTest {
         try (Harness h = new Harness()) {
             h.signaling.trickles = false;
             h.signaling.answerTimeout = Duration.ofMillis(1000);
-            h.connect();
+            ChannelFuture connect = h.connect();
             h.advance(1099);
             assertEquals(1, h.signaling.connections.size(), "no retry while the signaling connects");
 
@@ -122,9 +122,51 @@ class NetherNetClientChannelTest {
                     NetherNetConstants.buildSignalConnectResponse(h.connectionId(), ANSWER));
             h.pump();
             h.advance(99);
-            assertEquals(1, h.signaling.connections.size());
+            assertFalse(connect.isDone());
             h.advance(1);
-            assertEquals(2, h.signaling.connections.size(), "once answered, the handshake timeout applies");
+            assertEquals("The handshake timed out; gave up after 1 attempt",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage(),
+                    "once answered, the handshake timeout applies");
+            assertEquals(1, h.signaling.connections.size(), "signaling that does not trickle gets one attempt");
+        }
+    }
+
+    @Test
+    void aConnectMakesTheConfiguredAttemptsTheFirstIncluded() {
+        try (Harness h = new Harness()) {
+            AtomicInteger retries = new AtomicInteger();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void handshakeRetry() {
+                    retries.incrementAndGet();
+                }
+            });
+            assertEquals(3, h.channel.config().getOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS),
+                    "the default");
+            ChannelFuture connect = h.connect();
+            h.advance(100);
+            h.advance(100);
+            assertEquals(3, h.signaling.connections.size());
+            assertFalse(connect.isDone());
+            h.advance(100);
+            assertEquals("The handshake timed out; gave up after 3 attempts",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage());
+            assertEquals(3, h.signaling.connections.size());
+            assertEquals(2, retries.get());
+        }
+    }
+
+    @Test
+    void aPeerFailingOverSignalingThatDoesNotTrickleEndsTheOnlyAttempt() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            ChannelFuture connect = h.connect();
+            h.start().closed(CloseCause.ICE_FAILED);
+            h.pump();
+            assertEquals("The peer ended during the handshake (ICE_FAILED); gave up after 1 attempt",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage());
+            assertEquals(1, h.signaling.connections.size());
+            assertFalse(h.channel.isOpen());
         }
     }
 
@@ -411,15 +453,15 @@ class NetherNetClientChannelTest {
     }
 
     @Test
-    void invalidTimeoutAndRetryValuesAreRejectedWhileZeroRetriesWork() {
+    void invalidTimeoutAndAttemptValuesAreRejectedWhileOneAttemptWorks() {
         try (Harness h = new Harness()) {
             assertThrows(IllegalArgumentException.class,
                     () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 0));
             assertThrows(IllegalArgumentException.class,
                     () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, -1));
             assertThrows(IllegalArgumentException.class,
-                    () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, -1));
-            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 0);
+                    () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 0));
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 1);
             ChannelFuture connect = h.connect();
             h.advance(100);
             assertInstanceOf(ConnectException.class, connect.cause());
@@ -518,7 +560,6 @@ class NetherNetClientChannelTest {
             clock.freezeTime();
             channel.config().setAllocator(allocator);
             channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 100);
-            channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 2);
             channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelActive(ChannelHandlerContext ctx) {
