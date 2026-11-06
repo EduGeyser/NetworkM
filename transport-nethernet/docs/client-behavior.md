@@ -100,6 +100,13 @@ What follows from this:
   key over plain HTTP, and it checks an HTTPS certificate against the resolved
   IP even when given a domain, a retail 26.30 bug it inherited; newer bases
   check the domain (Owner).
+- **A player quitting aborts the SCTP association.** When an Education 26.33
+  player leaves, the server's libwebrtc reports `OnAborted(error=PEER_REPORTED,
+  message=User-Initiated Abort, reason=Close called)`, which libwebrtc always
+  logs at ERROR (`media/sctp/dcsctp_transport.cc:561`). It is the normal close
+  path: libwebrtc ends every association with an ABORT. NetworkM reports it as
+  `ABORTED_BY_REMOTE_PEER`, and EduGeyser showed "Bedrock client disconnected"
+  (Verified by the owner, 2026-11-06).
 - Android builds, seen through MCPELauncher, ignore candidates bundled into an
   SDP answer delivered over WebSocket signaling and only use separate
   `CANDIDATEADD` signals. HTTP answers are not affected, since there the
