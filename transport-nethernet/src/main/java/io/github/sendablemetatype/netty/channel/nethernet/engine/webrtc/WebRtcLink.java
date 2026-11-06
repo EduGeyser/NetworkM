@@ -28,8 +28,9 @@ import java.util.function.Consumer;
  * <p>libwebrtc counts a message in its buffered amount as soon as it tries to
  * send it, also when it then refuses it, and reports the refused bytes with a
  * later decrease ({@code SctpDataChannel::SendImpl}). So a refused send stays
- * counted until that decrease; only a send libwebrtc discarded without trying
- * it, or one that never reached it, leaves the count with its failure.
+ * counted until that decrease, or for good if the channel closes first; only
+ * a send libwebrtc discarded without trying it, or one that never reached it,
+ * leaves the count with its failure.
  */
 final class WebRtcLink implements DataLink {
 
