@@ -68,6 +68,7 @@ final class ProviderLog {
     private final LongSupplier nanoTime;
     /** For each failing operation, when its streak started and when it last warned. */
     private final EnumMap<Operation, long[]> failures = new EnumMap<>(Operation.class);
+    private ProviderClient.Readiness lastReadiness;
 
     ProviderLog(Consumer<ProviderDiagnostic> sink, LongSupplier nanoTime) {
         this.sink = sink;
@@ -155,6 +156,29 @@ final class ProviderLog {
     void replaced() {
         sink.accept(new ProviderDiagnostic(ProviderDiagnostic.Level.WARN, "Another process took over this server's "
                 + "signaling registration. Signaling is stopping."));
+    }
+
+    /**
+     * Says whether the provider routes players here, once per change, with its reasons when it does not. A host that
+     * stopped accepting players expects not to be routed, so that is said at debug only.
+     *
+     * @param accepting Whether the heartbeat reported the host accepting players
+     */
+    void readiness(ProviderClient.Readiness readiness, boolean accepting) {
+        if (readiness.equals(lastReadiness)) {
+            return;
+        }
+        boolean first = lastReadiness == null;
+        lastReadiness = readiness;
+        if (readiness.routable()) {
+            sink.accept(new ProviderDiagnostic(ProviderDiagnostic.Level.INFO, first
+                    ? "The signaling service is routing players to this server."
+                    : "The signaling service is routing players to this server again."));
+            return;
+        }
+        String why = readiness.reasons().isEmpty() ? "it gave no reason" : String.join(", ", readiness.reasons());
+        sink.accept(new ProviderDiagnostic(accepting ? ProviderDiagnostic.Level.WARN : ProviderDiagnostic.Level.DEBUG,
+                "The signaling service is not routing players to this server: " + why + "."));
     }
 
     void detail(Operation operation, String detail) {

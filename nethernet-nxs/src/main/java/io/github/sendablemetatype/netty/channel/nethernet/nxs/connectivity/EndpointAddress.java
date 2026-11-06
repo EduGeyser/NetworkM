@@ -16,10 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
-import io.netty.util.NetUtil;
-
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 
 // Replaced by the transport's EndpointAddress when the lanes merge.
 /**
@@ -38,21 +35,6 @@ final class EndpointAddress {
     }
 
     private EndpointAddress() {
-    }
-
-    /**
-     * Reads an IP literal, never a name, so that no lookup can block or leave the host.
-     */
-    static InetAddress parse(String value) throws UnknownHostException {
-        // The charset also turns away a zone id, brackets and surrounding space, which Netty takes
-        if (value == null || value.length() > 45 || !value.matches("[0-9a-fA-F:.]+")) {
-            throw new UnknownHostException("Expected a numeric IP address");
-        }
-        InetAddress address = NetUtil.createInetAddressFromIpAddressString(value);
-        if (address == null) {
-            throw new UnknownHostException("Invalid IP address");
-        }
-        return address; // Also normalizes IPv4-mapped IPv6.
     }
 
     /**
