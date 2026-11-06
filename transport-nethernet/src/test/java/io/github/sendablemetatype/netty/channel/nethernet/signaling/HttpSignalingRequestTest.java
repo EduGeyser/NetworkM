@@ -280,6 +280,27 @@ class HttpSignalingRequestTest {
     }
 
     @Test
+    void pipelinedJoinWhoseDeadlinePassedBehindTheStatusRequestNeverReachesTheEndpoint() {
+        List<Runnable> calls = new ArrayList<>();
+        // An endpoint that answers at once would otherwise beat the expired deadline
+        sink.onJoin = join -> join.reply().answer(ANSWER);
+        EmbeddedHttp http = connect(NetherNetHttpSignaling.builder(worker)
+                .statusProvider(request -> StatusAnswer.serve(NetherNetServerStatus.builder().name("A").build()))
+                .statusExecutor(calls::add)
+                .negotiationTimeout(Duration.ofMillis(100)));
+        http.send(get("/v1/join") + post("42", OFFER));
+        http.advance(200);
+        calls.getFirst().run();
+        http.channel.runPendingTasks();
+
+        List<Response> responses = http.responses();
+        assertEquals(List.of(200, JoinRefusal.NO_ANSWER_IN_TIME.httpStatus()),
+                responses.stream().map(Response::status).toList());
+        assertTrue(responses.get(1).closes());
+        assertTrue(sink.delivered.isEmpty(), "an offer past its negotiation deadline is not started");
+    }
+
+    @Test
     void clientLeavingAbandonsTheJoin() throws Exception {
         EmbeddedHttp http = connect();
         http.send(post("42", OFFER));
