@@ -76,6 +76,7 @@ import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -370,8 +371,9 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     /**
-     * Runs one request on a connection of its own. The result always completes, also when the
-     * loop group is shutting down, and the request is released whether or not it was written.
+     * Runs one request on a connection of its own. The timeout covers all of it: the name lookup,
+     * the connection, the TLS handshake and the response. The result always completes, also when
+     * the loop group is shutting down, and the request is released whether or not it was written.
      *
      * @param ssl the client context for HTTPS, or null for plain HTTP
      */
@@ -387,13 +389,23 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                 left.release();
             }
         });
+        try {
+            ScheduledFuture<?> deadline = group.next().schedule(() -> {
+                result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
+            }, timeout.toNanos(), TimeUnit.NANOSECONDS);
+            result.whenComplete((response, failure) -> deadline.cancel(false));
+        } catch (RejectedExecutionException e) {
+            // The loop group is shutting down
+            result.completeExceptionally(e);
+            return result;
+        }
         resolve(address).whenComplete((resolved, failure) -> {
             if (failure != null) {
                 result.completeExceptionally(unwrap(failure));
                 return;
             }
             try {
-                connect(address, resolved, ssl, unsent, timeout, group, exchanges, result);
+                connect(address, resolved, ssl, unsent, group, exchanges, result);
             } catch (RuntimeException e) {
                 // Thrown into a stage nobody reads, it would leave the result pending forever
                 result.completeExceptionally(e);
@@ -417,7 +429,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     private static void connect(InetSocketAddress address, InetSocketAddress resolved, SslContext ssl,
-                                AtomicReference<FullHttpRequest> unsent, Duration timeout, EventLoopGroup group,
+                                AtomicReference<FullHttpRequest> unsent, EventLoopGroup group,
                                 ChannelGroup exchanges, CompletableFuture<Response> result) {
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
@@ -472,11 +484,6 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                 });
             }
         });
-        // Throws once the loop is shutting down: the caller completes the result then
-        ScheduledFuture<?> deadline = channel.eventLoop().schedule(() -> {
-            result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
-        }, timeout.toNanos(), TimeUnit.NANOSECONDS);
-        result.whenComplete((response, failure) -> deadline.cancel(false));
     }
 
     /**
