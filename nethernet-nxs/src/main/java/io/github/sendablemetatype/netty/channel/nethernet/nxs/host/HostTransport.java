@@ -154,7 +154,9 @@ public final class HostTransport implements ProviderTransport {
      * What the host configured.
      *
      * @param advertised       The configured endpoints, empty to derive them
-     * @param localDevelopment Whether loopback endpoints may be published, for a provider on this machine
+     * @param localDevelopment Whether the provider runs on this machine: loopback endpoints may then be published, and
+     *                         private and loopback endpoints count as {@linkplain #reachable reachable} for assisted
+     *                         answers and connectivity checks
      * @param stunWarming      Whether maintained publication keeps STUN mappings warm in the background
      */
     record Settings(Publication publication, List<InetSocketAddress> advertised, boolean localDevelopment,
@@ -1097,8 +1099,8 @@ public final class HostTransport implements ProviderTransport {
     }
 
     /**
-     * Takes up to {@code maximum} results of the checks this host admitted, oldest first. The host keeps the latest
-     * {@value DiagnosticHost#MAX_RESULTS} and drops newer ones while nobody takes them. Any thread.
+     * Takes up to {@code maximum} results of the checks this host admitted, oldest first. The host holds at most
+     * {@value DiagnosticHost#MAX_RESULTS}; while that many wait, newer results are dropped. Any thread.
      */
     public List<DiagnosticResult> pollDiagnosticResults(int maximum) {
         if (maximum < 0) {
