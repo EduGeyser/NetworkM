@@ -10,7 +10,8 @@ import java.util.function.Consumer;
  * A data link of {@link FakePeer}. Sends are recorded and settled by the test
  * (or at once, see {@link FakeEngine#autoAcceptSends}). A send adds its size
  * to {@link #queuedBytes()} when it is made, a refusal takes it out again,
- * and otherwise it stays until the test drains it.
+ * and otherwise it stays until the test drains it. Each send settles exactly
+ * once, and its peer's close stage waits for a completion still running.
  */
 public final class FakeDataLink implements DataLink {
     private final FakePeer peer;
@@ -61,17 +62,23 @@ public final class FakeDataLink implements DataLink {
         byte[] bytes = new byte[message.remaining()];
         message.duplicate().get(bytes);
         Send send = new Send(bytes, message.isDirect(), completion);
-        Throwable refused;
-        synchronized (this) {
-            sends.add(send);
-            queued += bytes.length;
-            refused = closed ? new IOException("The data link is closed") : refusal;
-        }
-        if (refused != null) {
-            settle(send, refused);
-        } else if (peer.autoAcceptSends()) {
-            settle(send, null);
-        }
+        peer.settling(() -> {
+            Throwable refused;
+            boolean settleNow;
+            synchronized (this) {
+                sends.add(send);
+                queued += bytes.length;
+                refused = closed ? new IOException("The data link is closed") : refusal;
+                // Settled together with the add, so a close in between cannot settle it as well.
+                settleNow = refused != null || peer.autoAcceptSends();
+                if (settleNow) {
+                    markSettled(send, refused);
+                }
+            }
+            if (settleNow) {
+                send.completion.accept(refused);
+            }
+        });
     }
 
     @Override
@@ -114,14 +121,14 @@ public final class FakeDataLink implements DataLink {
         this.refusal = cause;
     }
 
-    /** Accepts the send at this index. */
+    /** Accepts the send at this index, which must not be settled yet. */
     public void accept(int index) {
-        settle(send(index), null);
+        settle(send(index), null, true);
     }
 
-    /** Refuses the send at this index. */
+    /** Refuses the send at this index, which must not be settled yet. */
     public void reject(int index, Throwable cause) {
-        settle(send(index), cause);
+        settle(send(index), cause, true);
     }
 
     /** Accepts every send not settled yet. */
@@ -131,7 +138,7 @@ public final class FakeDataLink implements DataLink {
             unsettled = sends.stream().filter(send -> !send.settled).toList();
         }
         for (Send send : unsettled) {
-            settle(send, null);
+            settle(send, null, false);
         }
     }
 
@@ -183,7 +190,7 @@ public final class FakeDataLink implements DataLink {
             unsettled = sends.stream().filter(send -> !send.settled).toList();
         }
         for (Send send : unsettled) {
-            settle(send, new IOException("The data link closed"));
+            settle(send, new IOException("The data link closed"), false);
         }
         return true;
     }
@@ -192,16 +199,31 @@ public final class FakeDataLink implements DataLink {
         return sends.get(index);
     }
 
-    private void settle(Send send, Throwable cause) {
-        synchronized (this) {
-            if (send.settled) {
-                throw new IllegalStateException("A send is settled exactly once");
+    /**
+     * Settles a send and runs its completion outside the lock, as an engine
+     * thread would. A send settled meanwhile is skipped, or is the test's
+     * mistake when {@code strict}.
+     */
+    private void settle(Send send, Throwable cause, boolean strict) {
+        peer.settling(() -> {
+            synchronized (this) {
+                if (send.settled) {
+                    if (strict) {
+                        throw new IllegalStateException("A send is settled exactly once");
+                    }
+                    return;
+                }
+                markSettled(send, cause);
             }
-            send.settled = true;
-            if (cause != null) {
-                queued = Math.max(0, queued - send.bytes.length);
-            }
+            send.completion.accept(cause);
+        });
+    }
+
+    // Called with this link's lock held.
+    private void markSettled(Send send, Throwable cause) {
+        send.settled = true;
+        if (cause != null) {
+            queued = Math.max(0, queued - send.bytes.length);
         }
-        send.completion.accept(cause);
     }
 }

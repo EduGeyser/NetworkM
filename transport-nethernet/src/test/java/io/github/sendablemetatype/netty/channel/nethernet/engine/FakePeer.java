@@ -19,6 +19,7 @@ public final class FakePeer implements Peer {
     private final Object serial = new Object();
     // Guards running and terminating; never held while a callback runs.
     private final Object state = new Object();
+    // Callbacks and send settlements in progress; the close stage waits for them.
     private int running;
     private boolean terminating;
 
@@ -341,17 +342,34 @@ public final class FakePeer implements Peer {
                 }
                 running++;
             }
-            try {
-                callback.run();
-            } finally {
-                boolean complete;
-                synchronized (state) {
-                    running--;
-                    complete = terminating && running == 0;
-                }
-                if (complete) {
-                    closeStage.complete(null);
-                }
+            runCounted(callback);
+        }
+    }
+
+    /**
+     * Runs a send's settlement, which may run its completion. Unlike callbacks
+     * it is not serialized with them and still runs while the peer
+     * terminates, but the close stage waits for one in progress, as the
+     * contract promises pending sends settled at termination.
+     */
+    void settling(Runnable settlement) {
+        synchronized (state) {
+            running++;
+        }
+        runCounted(settlement);
+    }
+
+    private void runCounted(Runnable task) {
+        try {
+            task.run();
+        } finally {
+            boolean complete;
+            synchronized (state) {
+                running--;
+                complete = terminating && running == 0;
+            }
+            if (complete) {
+                closeStage.complete(null);
             }
         }
     }
