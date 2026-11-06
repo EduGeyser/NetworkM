@@ -18,6 +18,7 @@ netty-buffer = { group = "io.netty", name = "netty-buffer" }
 netty-codec-base = { group = "io.netty", name = "netty-codec-base" }
 netty-codec-http = { group = "io.netty", name = "netty-codec-http" }
 netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
+netty-pkitesting = { group = "io.netty", name = "netty-pkitesting" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-unix-common = { group = "io.netty", name = "netty-transport-native-unix-common" }
 netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }
