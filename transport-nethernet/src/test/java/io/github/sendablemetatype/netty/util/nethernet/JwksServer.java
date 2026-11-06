@@ -14,11 +14,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class JwksServer implements AutoCloseable {
     private final HttpServer server;
     final AtomicInteger fetches = new AtomicInteger();
+    volatile boolean failing;
 
     JwksServer(String keySet, int maxAgeSeconds) throws IOException {
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext("/keys", exchange -> {
             fetches.incrementAndGet();
+            if (failing) {
+                exchange.sendResponseHeaders(503, -1);
+                exchange.close();
+                return;
+            }
             byte[] body = keySet.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.getResponseHeaders().add("Cache-Control", "max-age=" + maxAgeSeconds);

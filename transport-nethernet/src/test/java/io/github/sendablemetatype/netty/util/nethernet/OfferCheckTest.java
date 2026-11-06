@@ -336,6 +336,19 @@ class OfferCheckTest {
     }
 
     @Test
+    void anUnreachableKeySetIsNotRefetchedForEveryOffer() throws Exception {
+        try (JwksServer keys = new JwksServer(keySet(), 3600)) {
+            keys.failing = true;
+            OfferCheck check = new OfferCheck(List.of(keys.minecraftStandIn()));
+
+            for (int i = 0; i < 10; i++) {
+                assertEquals(Level.KEY_PROVEN, check.check(retailOffer()).level());
+            }
+            assertEquals(1, keys.fetches.get());
+        }
+    }
+
+    @Test
     void cachedKeysOutliveAFailedRefresh() throws Exception {
         OfferCheck check;
         try (JwksServer keys = new JwksServer(keySet(), 1)) {

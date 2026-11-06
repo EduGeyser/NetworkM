@@ -6,13 +6,16 @@ import org.jose4j.http.Get;
 import org.jose4j.jwk.HttpsJwks;
 import org.jose4j.jws.JsonWebSignature;
 import org.jose4j.keys.resolvers.HttpsJwksVerificationKeyResolver;
+import org.jose4j.lang.JoseException;
 import org.jose4j.lang.UnresolvableKeyException;
 
+import java.io.IOException;
 import java.net.URI;
 import java.security.Key;
 import java.security.PublicKey;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A token issuer whose signature attests an offer token, picked by the token's exact {@code iss}.
@@ -95,7 +98,7 @@ public final class TrustedIssuer {
         http.setReadTimeout(TIMEOUT_MILLIS);
         http.setRetries(0);
         http.setResponseBodySizeLimit(MAX_KEY_SET_CHARS);
-        HttpsJwks keySet = new HttpsJwks(keySetUrl.toString());
+        HttpsJwks keySet = new BoundedHttpsJwks(keySetUrl.toString(), unknownKeyRefreshMillis);
         keySet.setSimpleHttpGet(http);
         keySet.setRetainCacheOnErrorDuration(RETAIN_KEYS_ON_ERROR_SECONDS);
         keySet.setRefreshReprieveThreshold(unknownKeyRefreshMillis);
@@ -135,6 +138,38 @@ public final class TrustedIssuer {
      */
     Key resolve(JsonWebSignature token) throws UnresolvableKeyException {
         return keySetResolver != null ? keySetResolver.resolveKey(token, List.of()) : fixedKey;
+    }
+
+    /**
+     * A key set fetched at most once per interval, failed fetches included. jose4j's own limit
+     * counts from the last successful fetch and never applies while no keys are cached, so during
+     * an outage every offer naming an unknown key would wait on a fetch of its own.
+     */
+    private static final class BoundedHttpsJwks extends HttpsJwks {
+        private final long minIntervalMillis;
+        private final AtomicLong lastAttemptMillis = new AtomicLong();
+        private volatile boolean loaded;
+
+        BoundedHttpsJwks(String location, long minIntervalMillis) {
+            super(location);
+            this.minIntervalMillis = minIntervalMillis;
+        }
+
+        @Override
+        public void refresh() throws JoseException, IOException {
+            long now = System.currentTimeMillis();
+            long last = lastAttemptMillis.get();
+            boolean recent = last != 0 && now - last < minIntervalMillis;
+            if (recent || !lastAttemptMillis.compareAndSet(last, now)) {
+                if (loaded) {
+                    // The cached keys stay in use, as after a failed fetch.
+                    return;
+                }
+                throw new IOException("The key set at " + getLocation() + " was fetched moments ago; not fetching again yet");
+            }
+            super.refresh();
+            loaded = true;
+        }
     }
 
     private static final class Minecraft {
