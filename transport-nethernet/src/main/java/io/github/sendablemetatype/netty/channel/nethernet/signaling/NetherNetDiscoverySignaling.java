@@ -31,8 +31,8 @@ import java.util.function.Consumer;
  * {@code 0.0.0.0:7551} ({@link io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants#DISCOVERY_PORT}),
  * answers discovery requests with {@link #setServerData the server data}, and turns each
  * {@code CONNECTREQUEST} into a {@link Join}. Replies go to the address the offer came from, pinned
- * then, and to the client's network ID. Anyone on the network can forge a datagram's source, so
- * joins carry it as {@link AddressSource#SIGNALING_LAN}.
+ * then, and to the client's network ID; the join takes later signals only from both. Anyone on the
+ * network can forge a datagram's source, so joins carry it as {@link AddressSource#SIGNALING_LAN}.
  */
 public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, JoinSource {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetDiscoverySignaling.class);
@@ -229,9 +229,11 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     private void offered(JoinSink sink, long connectionId, long senderId, String offer, InetSocketAddress sender) {
         LanJoin join = new LanJoin(connectionId, senderId, sender);
         try {
-            // Routes the client's later signals for this connection ID to the join, and keeps the
+            // Routes this client's later signals for the connection ID to the join, and keeps the
             // client in the peer table while the join lasts.
-            discovery.registerSignalHandler(connectionId, join::received);
+            if (!discovery.registerJoin(senderId, connectionId, sender, join::received)) {
+                return;
+            }
         } catch (IllegalStateException closing) {
             return;
         }
@@ -272,7 +274,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
 
         @Override
         void release() {
-            discovery.unregisterSignalHandler(connectionId);
+            discovery.unregisterJoin(senderId, connectionId);
         }
     }
 

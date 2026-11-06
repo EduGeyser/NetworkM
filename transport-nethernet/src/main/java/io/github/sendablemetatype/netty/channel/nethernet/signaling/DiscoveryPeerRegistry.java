@@ -15,7 +15,6 @@ final class DiscoveryPeerRegistry {
     private final LongSupplier clock;
     private final Map<Long, Peer> peers = new HashMap<>();
     private final LinkedHashMap<Long, Peer> passive = new LinkedHashMap<>(16, 0.75f, true);
-    private final LinkedHashMap<Long, Observation> recentConnections = new LinkedHashMap<>();
     private final Map<Long, Peer> registeredConnections = new HashMap<>();
     private boolean passiveExpiryScheduled;
     private long nextPassiveExpiry;
@@ -40,6 +39,10 @@ final class DiscoveryPeerRegistry {
         trimPassive();
     }
 
+    /**
+     * A signal for a connection this side registered a handler for: the peer that sent it stays
+     * in the table while the connection is registered.
+     */
     synchronized void rememberSignal(long connectionId, long peerId, InetSocketAddress address) {
         long now = clock.getAsLong();
         expire(now);
@@ -52,41 +55,40 @@ final class DiscoveryPeerRegistry {
                 }
                 pin(peer);
             }
-        } else {
-            // Offers arrive before their callbacks register the connection's signal handler.
-            recentConnections.remove(connectionId);
-            recentConnections.put(connectionId, new Observation(peerId, address, now));
-            while (recentConnections.size() > maxPassive) {
-                recentConnections.pollFirstEntry();
-            }
         }
         trimPassive();
     }
 
     synchronized void register(long connectionId) {
-        long now = clock.getAsLong();
-        expire(now);
-        if (registeredConnections.containsKey(connectionId)) {
-            return;
+        expire(clock.getAsLong());
+        if (!registeredConnections.containsKey(connectionId)) {
+            registeredConnections.put(connectionId, null);
         }
-        Observation observation = recentConnections.remove(connectionId);
-        Peer peer = null;
-        if (observation != null) {
-            peer = peers.get(observation.peerId);
-            if (peer == null) {
-                peer = remember(observation.peerId, observation.address, observation.time);
-            }
-            pin(peer);
-        }
-        registeredConnections.put(connectionId, peer);
     }
 
     synchronized void unregister(long connectionId) {
         long now = clock.getAsLong();
         expire(now);
-        recentConnections.remove(connectionId);
         Peer peer = registeredConnections.remove(connectionId);
         if (peer != null) {
+            unpin(peer, now);
+            trimPassive();
+        }
+    }
+
+    /** Keeps a peer in the table, at this address, until a matching {@link #release}: one join from it. */
+    synchronized void hold(long peerId, InetSocketAddress address) {
+        long now = clock.getAsLong();
+        expire(now);
+        pin(remember(peerId, address, now));
+    }
+
+    /** Ends one {@link #hold} of the peer. */
+    synchronized void release(long peerId) {
+        long now = clock.getAsLong();
+        expire(now);
+        Peer peer = peers.get(peerId);
+        if (peer != null && peer.pins > 0) {
             unpin(peer, now);
             trimPassive();
         }
@@ -107,7 +109,6 @@ final class DiscoveryPeerRegistry {
 
     synchronized void clear() {
         registeredConnections.clear();
-        recentConnections.clear();
         passive.clear();
         peers.clear();
         passiveExpiryScheduled = false;
@@ -116,11 +117,6 @@ final class DiscoveryPeerRegistry {
     synchronized int passiveSize() {
         expire(clock.getAsLong());
         return passive.size();
-    }
-
-    synchronized int recentConnectionCount() {
-        expire(clock.getAsLong());
-        return recentConnections.size();
     }
 
     private Peer remember(long id, InetSocketAddress address, long now) {
@@ -164,13 +160,6 @@ final class DiscoveryPeerRegistry {
                 }
             }
         }
-        Iterator<Observation> observations = recentConnections.values().iterator();
-        while (observations.hasNext()) {
-            if (now - observations.next().time < idleNanos) {
-                break;
-            }
-            observations.remove();
-        }
     }
 
     private void considerExpiry(long lastUsed) {
@@ -197,6 +186,4 @@ final class DiscoveryPeerRegistry {
             this.id = id;
         }
     }
-
-    private record Observation(long peerId, InetSocketAddress address, long time) { }
 }

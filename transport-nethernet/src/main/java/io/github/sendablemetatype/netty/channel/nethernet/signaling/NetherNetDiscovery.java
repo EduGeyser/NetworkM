@@ -39,6 +39,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
 
     private final long networkId;
     private final Map<Long, SignalHandler> signalHandlers = new ConcurrentHashMap<>();
+    private final Map<JoinKey, JoinRoute> joins = new ConcurrentHashMap<>();
     private final DiscoveryPeerRegistry peerAddresses;
     private final Object lifecycleLock = new Object();
     private final Supplier<? extends EventLoopGroup> eventLoopFactory;
@@ -65,6 +66,15 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
          */
         void onOffer(long connectionId, long senderId, String offer, InetSocketAddress sender);
     }
+
+    /**
+     * A join is told apart by its client's network ID too, so one client cannot reach another's
+     * join by its connection ID.
+     */
+    private record JoinKey(long senderId, long connectionId) { }
+
+    /** Where a join's offer came from, pinned then, and where its later signals go. */
+    private record JoinRoute(InetSocketAddress sender, SignalHandler handler) { }
 
     public NetherNetDiscovery(long networkId) {
         this(networkId, () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()));
@@ -232,6 +242,42 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         synchronized (lifecycleLock) {
             this.signalHandlers.remove(connectionId);
             this.peerAddresses.unregister(connectionId);
+        }
+    }
+
+    /**
+     * Routes a client's later signals for one join to the handler: only those from the network ID
+     * and the address its offer came from. Keeps the client in the peer table until
+     * {@link #unregisterJoin}.
+     *
+     * @param senderId the client's network ID
+     * @param connectionId the connection ID the client chose
+     * @param sender where the offer came from
+     * @param handler receives the signals on the discovery's event loop
+     * @return false if this client already has a join with this connection ID
+     * @throws IllegalStateException if discovery is closed
+     */
+    boolean registerJoin(long senderId, long connectionId, InetSocketAddress sender, SignalHandler handler) {
+        JoinRoute route = new JoinRoute(Objects.requireNonNull(sender, "sender"),
+                Objects.requireNonNull(handler, "handler"));
+        synchronized (lifecycleLock) {
+            if (closed) {
+                throw new IllegalStateException("Discovery is closed");
+            }
+            if (joins.putIfAbsent(new JoinKey(senderId, connectionId), route) != null) {
+                return false;
+            }
+            peerAddresses.hold(senderId, sender);
+            return true;
+        }
+    }
+
+    /** Stops routing a join's signals and lets its client leave the peer table. */
+    void unregisterJoin(long senderId, long connectionId) {
+        synchronized (lifecycleLock) {
+            if (joins.remove(new JoinKey(senderId, connectionId)) != null) {
+                peerAddresses.release(senderId);
+            }
         }
     }
 
@@ -416,21 +462,34 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 return;
             }
             long connectionId = Long.parseUnsignedLong(parts[1]);
-            if (!rememberPeer(senderId, sender, connectionId)) {
+            SignalHandler handler = signalHandlers.get(connectionId);
+            if (handler != null) {
+                if (rememberPeer(senderId, sender, connectionId)) {
+                    handler.onSignal(messageData);
+                }
                 return;
             }
 
-            SignalHandler handler = signalHandlers.get(connectionId);
+            JoinRoute join = joins.get(new JoinKey(senderId, connectionId));
+            if (join != null) {
+                if (!join.sender().equals(sender)) {
+                    log.debug("Ignoring a signal for join {} of {} from {}: its offer came from {}",
+                            Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId), sender,
+                            join.sender());
+                } else if (rememberPeer(senderId, sender, null)) {
+                    // A repeated offer reaches the join too, which ignores it.
+                    join.handler().onSignal(messageData);
+                }
+                return;
+            }
 
-            if (handler != null) {
-                handler.onSignal(messageData);
-            } else if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
+            if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
                 OfferHandler offers = offerHandler;
-                if (offers != null) {
+                if (offers == null) {
+                    log.debug("Received a CONNECTREQUEST, but nothing takes offers");
+                } else if (rememberPeer(senderId, sender, null)) {
                     log.trace("Dispatching an offer: ID={} Sender={}", Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId));
                     offers.onOffer(connectionId, senderId, parts[2], sender);
-                } else {
-                    log.debug("Received a CONNECTREQUEST, but nothing takes offers");
                 }
             } else {
                 log.debug("Unhandled signal type: {}", type);
@@ -485,6 +544,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             channel = this.channel;
             group = eventLoops;
             signalHandlers.clear();
+            joins.clear();
             peerAddresses.clear();
         }
         discoveryCallback.set(null);

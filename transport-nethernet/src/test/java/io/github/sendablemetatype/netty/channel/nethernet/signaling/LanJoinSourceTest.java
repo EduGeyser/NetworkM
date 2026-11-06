@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class LanJoinSourceTest {
     private static final long SERVER_ID = 1;
     private static final long CLIENT_ID = 20;
+    private static final long OTHER_ID = 30;
 
     private final EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final CompletableFuture<InetSocketAddress> bound = new CompletableFuture<>();
@@ -111,6 +112,36 @@ class LanJoinSourceTest {
     }
 
     @Test
+    void aJoinTakesSignalsOnlyFromTheClientAndAddressItsOfferCameFrom() throws Exception {
+        source.start(sink);
+        bound.get(2, TimeUnit.SECONDS);
+        try (DatagramSocket other = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            send("CONNECTREQUEST 42 v=0");
+            Join join = awaitJoin(1);
+            List<String> signals = RecordingSink.signalsOf(join);
+
+            send(other, OTHER_ID, "CONNECTREQUEST 42 other");
+            Join otherJoin = awaitJoin(2);
+            assertEquals("other", otherJoin.offer(), "another client's offer with the same ID is a join of its own");
+            List<String> otherSignals = RecordingSink.signalsOf(otherJoin);
+            send(other, OTHER_ID, "CANDIDATEADD 42 candidate:2 1 udp 1 192.168.1.30 5000 typ host");
+            send(other, OTHER_ID, "CONNECTERROR 42 2");
+            send(other, CLIENT_ID, "CONNECTERROR 42 3");
+            send("CANDIDATEADD 42 candidate:1 1 udp 1 192.168.1.20 5000 typ host");
+
+            awaitSize(signals, 1);
+            assertEquals(List.of("candidate candidate:1 1 udp 1 192.168.1.20 5000 typ host"), signals,
+                    "neither the other client nor its address reaches the join");
+            assertEquals(List.of("candidate candidate:2 1 udp 1 192.168.1.30 5000 typ host", "error 2"), otherSignals);
+
+            otherJoin.reply().finished();
+            send("CONNECTERROR 42 2");
+            awaitSize(signals, 2);
+            assertEquals("error 2", signals.get(1), "the other join's end leaves this one routed");
+        }
+    }
+
+    @Test
     void anEndpointChecksTheIdentityOfLanJoins() throws Exception {
         FakeEngine engine = new FakeEngine();
         Channel endpoint = new ServerBootstrap()
@@ -139,12 +170,17 @@ class LanJoinSourceTest {
     }
 
     private void send(String signal) throws Exception {
-        ByteBuf packet = Unpooled.buffer().writeShortLE(NetherNetConstants.ID_DISCOVERY_MESSAGE).writeLongLE(CLIENT_ID)
+        send(client, CLIENT_ID, signal);
+    }
+
+    /** Sends a signal from this socket, claiming this network ID. */
+    private void send(DatagramSocket from, long senderId, String signal) throws Exception {
+        ByteBuf packet = Unpooled.buffer().writeShortLE(NetherNetConstants.ID_DISCOVERY_MESSAGE).writeLongLE(senderId)
                 .writeZero(8).writeLongLE(SERVER_ID).writeIntLE(signal.length())
                 .writeBytes(signal.getBytes(StandardCharsets.UTF_8));
         try {
             byte[] encrypted = NetherNetConstants.encryptDiscoveryPacket(packet);
-            client.send(new DatagramPacket(encrypted, encrypted.length, bound.get(2, TimeUnit.SECONDS)));
+            from.send(new DatagramPacket(encrypted, encrypted.length, bound.get(2, TimeUnit.SECONDS)));
         } finally {
             packet.release();
         }
