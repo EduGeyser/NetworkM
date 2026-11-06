@@ -1,8 +1,10 @@
 /* Copyright 2026 CloudburstMC. Licensed under the Apache License, Version 2.0. */
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic;
 
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
+
 import java.nio.ByteBuffer;
-import java.util.Objects;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec.invalid;
 
@@ -12,31 +14,12 @@ import static io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.
  * the attempt. Thread safe; the engine may call from its own threads.
  */
 public final class DiagnosticChannels {
-    static final String RELIABLE = "ReliableDataChannel", UNRELIABLE = "UnreliableDataChannel";
-
-    /**
-     * What the engine reports for an opened data channel.
-     *
-     * @param maxRetransmits        The retransmission limit, null when unlimited
-     * @param maxPacketLifeTimeMillis The lifetime limit, null when unlimited
-     */
-    public record Channel(String label, String protocol, boolean ordered, Integer maxRetransmits,
-                          Integer maxPacketLifeTimeMillis) {
-        public Channel {
-            Objects.requireNonNull(label, "label");
-            Objects.requireNonNull(protocol, "protocol");
-        }
-
-        /** The reliable NetherNet channel, as the prober creates it. */
-        public static Channel reliable() {
-            return new Channel(RELIABLE, "", true, null, null);
-        }
-
-        /** The unreliable NetherNet channel, as the prober creates it. */
-        public static Channel unreliable() {
-            return new Channel(UNRELIABLE, "", false, 0, null);
-        }
-    }
+    /** The reliable NetherNet channel, as the prober opens it. */
+    public static final ChannelParameters RELIABLE =
+            ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL);
+    /** The unreliable NetherNet channel, as the prober opens it. */
+    public static final ChannelParameters UNRELIABLE =
+            ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL);
 
     private final boolean[] open = new boolean[2];
     private boolean connected, failed, protocolFailed;
@@ -44,23 +27,14 @@ public final class DiagnosticChannels {
     private int receivedFrames, receivedBytes;
 
     /**
-     * A data channel opened. Only the two NetherNet channels, once each, with their reliability are allowed.
+     * A data channel opened. Only the two NetherNet channels, in band and once each, with their reliability are
+     * allowed.
      *
      * @throws IllegalArgumentException If the channel is anything else, which fails the attempt
      */
-    public synchronized void opened(Channel channel) {
-        int index = switch (channel.label()) {
-            case RELIABLE -> 0;
-            case UNRELIABLE -> 1;
-            default -> -1;
-        };
-        boolean reliable = channel.ordered() && channel.maxRetransmits() == null;
-        boolean unreliable = !channel.ordered() && Integer.valueOf(0).equals(channel.maxRetransmits());
-        if (index < 0
-                || open[index]
-                || !channel.protocol().isEmpty()
-                || channel.maxPacketLifeTimeMillis() != null
-                || (index == 0 ? !reliable : !unreliable)) {
+    public synchronized void opened(ChannelParameters channel) {
+        int index = channel.label().equals(RELIABLE.label()) ? 0 : channel.label().equals(UNRELIABLE.label()) ? 1 : -1;
+        if (index < 0 || open[index] || !channel.equals(index == 0 ? RELIABLE : UNRELIABLE)) {
             protocolFailed = true;
             throw invalid();
         }

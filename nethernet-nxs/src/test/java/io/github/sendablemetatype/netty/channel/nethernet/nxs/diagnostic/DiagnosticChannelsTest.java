@@ -1,9 +1,12 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
+import java.util.OptionalInt;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -62,23 +65,25 @@ class DiagnosticChannelsTest {
     @Test
     void onlyTheTwoNetherNetChannelsWithTheirReliabilityOpen() {
         DiagnosticChannels channels = new DiagnosticChannels();
-        channels.opened(DiagnosticChannels.Channel.reliable());
+        channels.opened(DiagnosticChannels.RELIABLE);
         channels.connected();
         assertFalse(channels.ready(), "both channels must open");
-        channels.opened(DiagnosticChannels.Channel.unreliable());
+        channels.opened(DiagnosticChannels.UNRELIABLE);
         assertTrue(channels.ready());
-        assertThrows(IllegalArgumentException.class, () -> channels.opened(DiagnosticChannels.Channel.reliable()),
+        assertThrows(IllegalArgumentException.class, () -> channels.opened(DiagnosticChannels.RELIABLE),
                 "a channel opens once");
         assertTrue(channels.protocolFailed());
         assertFalse(channels.ready());
 
-        for (var channel : java.util.List.of(
-                new DiagnosticChannels.Channel("Other", "", true, null, null),
-                new DiagnosticChannels.Channel("ReliableDataChannel", "x", true, null, null),
-                new DiagnosticChannels.Channel("ReliableDataChannel", "", false, null, null),
-                new DiagnosticChannels.Channel("ReliableDataChannel", "", true, 3, null),
-                new DiagnosticChannels.Channel("UnreliableDataChannel", "", true, 0, null),
-                new DiagnosticChannels.Channel("UnreliableDataChannel", "", false, null, 100))) {
+        OptionalInt none = OptionalInt.empty();
+        for (var channel : List.of(
+                ChannelParameters.reliable("Other"),
+                new ChannelParameters("ReliableDataChannel", true, none, none, false, "x"),
+                new ChannelParameters("ReliableDataChannel", false, none, none, false, ""),
+                new ChannelParameters("ReliableDataChannel", true, OptionalInt.of(3), none, false, ""),
+                new ChannelParameters("ReliableDataChannel", true, none, none, true, ""),
+                new ChannelParameters("UnreliableDataChannel", true, OptionalInt.of(0), none, false, ""),
+                new ChannelParameters("UnreliableDataChannel", false, none, OptionalInt.of(100), false, ""))) {
             DiagnosticChannels fresh = new DiagnosticChannels();
             assertThrows(IllegalArgumentException.class, () -> fresh.opened(channel), channel.toString());
             assertTrue(fresh.protocolFailed());
