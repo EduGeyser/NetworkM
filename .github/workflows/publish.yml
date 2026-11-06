@@ -9,24 +9,32 @@ on:
 permissions:
   contents: read
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release version
+        shell: bash
+        env:
+          NETWORK_PUBLISH_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -z "$NETWORK_PUBLISH_VERSION" || "$NETWORK_PUBLISH_VERSION" == *-SNAPSHOT ]]; then
+            echo 'Provide a non-snapshot release version.' >&2
+            exit 1
+          fi
+  # The full CI matrix on the commit being published, not a subset of it
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
   publish:
+    needs: build
     runs-on: ubuntu-latest
     env:
       NETWORK_PUBLISH_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/setup-gradle-composite
-      - name: Validate release version
-        shell: bash
-        run: |
-          if [[ -z "$NETWORK_PUBLISH_VERSION" || "$NETWORK_PUBLISH_VERSION" == *-SNAPSHOT ]]; then
-            echo 'Provide a non-snapshot release version.' >&2
-            exit 1
-          fi
-      - name: Test
-        run: ./gradlew check -PwebrtcNativePlatform=linux-x86_64
-      - name: Publish both transports
-        run: ./gradlew nmcpPublishAggregationToCentralPortal
+      - name: Publish to Maven Central
+        run: ./gradlew nmcpPublishAggregationToCentralPortal --warning-mode=fail
         env:
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
