@@ -466,6 +466,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         private int maxMessageSize;
         private CompletableFuture<OfferCheckResult> check;
         private ScheduledFuture<?> deadline;
+        /** When the check started and how long it may take, on the event loop's clock. */
+        private long startedNanos;
+        private long timeoutNanos;
         private boolean settled;
 
         private Admission(Registration from, Join join, Bound settings, AdmissionGate.Reservation reservation,
@@ -488,11 +491,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 return;
             }
             join.reply().abandoned().whenComplete((ignored, failure) -> onLoop(this::abandoned));
+            timeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.getOfferCheckTimeoutMillis());
+            startedNanos = eventLoop().ticker().nanoTime();
             check = settings.offerCheck().checkAsync(join.offer(), settings.checkExecutor());
             // A check that finishes after this admits nothing: its stage is already complete.
             deadline = eventLoop().schedule(() -> {
                 check.completeExceptionally(new TimeoutException());
-            }, config.getOfferCheckTimeoutMillis(), TimeUnit.MILLISECONDS);
+            }, timeoutNanos, TimeUnit.NANOSECONDS);
             check.whenComplete((result, failure) -> onLoop(() -> checked(result, failure)));
         }
 
@@ -501,6 +506,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 return;
             }
             deadline.cancel(false);
+            // The deadline only fires once this loop gets to it: a loop that ran late can see a
+            // result that came in past the deadline before the deadline fired.
+            if (failure == null && eventLoop().ticker().nanoTime() - startedNanos >= timeoutNanos) {
+                log.debug("Refusing join {}: its identity check finished after its deadline", id);
+                fail(JoinRefusal.NO_ANSWER_IN_TIME);
+                return;
+            }
             if (failure != null) {
                 Throwable cause = failure instanceof CompletionException ? failure.getCause() : failure;
                 JoinRefusal refusal = switch (cause) {

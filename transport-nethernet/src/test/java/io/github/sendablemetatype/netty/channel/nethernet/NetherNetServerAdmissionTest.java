@@ -13,6 +13,7 @@ import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.github.sendablemetatype.netty.util.nethernet.TrustedIssuer;
+import io.netty.channel.EventLoop;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -26,7 +27,9 @@ import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.ANSWER;
@@ -177,6 +180,40 @@ class NetherNetServerAdmissionTest {
         reply.assertRefused(JoinRefusal.NO_ANSWER_IN_TIME);
         assertTrue(((Future<?>) checks.tasks.peek()).isCancelled(), "the check is withdrawn");
         checks.runNext();
+        harness.sync();
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(0, harness.server.gate().sessions());
+    }
+
+    @Test
+    void aCheckThatFinishesPastItsDeadlineAdmitsNothingWhenTheLoopRanLate() throws Exception {
+        useManualChecks();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS, 100);
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        EventLoop loop = harness.server.eventLoop();
+        CountDownLatch resume = new CountDownLatch(1);
+        CompletableFuture<FakeJoinSource.Reply> reply = new CompletableFuture<>();
+        try {
+            // The join's admission runs first, then the loop stalls past the check's deadline
+            loop.submit(() -> {
+                reply.complete(source.offer(1, OFFER));
+                loop.execute(() -> {
+                    try {
+                        resume.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }).sync();
+            checks.awaitQueued();
+            Thread.sleep(250);
+            checks.runNext();
+        } finally {
+            resume.countDown();
+        }
+
+        reply.get().assertRefused(JoinRefusal.NO_ANSWER_IN_TIME);
         harness.sync();
         assertTrue(harness.engine.peers().isEmpty());
         assertEquals(0, harness.server.gate().sessions());
