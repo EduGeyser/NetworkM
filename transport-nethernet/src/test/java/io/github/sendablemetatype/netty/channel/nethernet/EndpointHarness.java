@@ -110,11 +110,12 @@ final class EndpointHarness implements AutoCloseable {
         throw new AssertionError("The child never negotiated");
     }
 
-    /** The client opens both data channels and the reliable one opens, which activates the child. */
+    /** The client opens both data channels and both open, which activates the child. */
     void activate(FakePeer peer) throws InterruptedException {
         FakeDataLink reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
-        peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
+        FakeDataLink unreliable = peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
         peer.open(reliable);
+        peer.open(unreliable);
         sync();
     }
 

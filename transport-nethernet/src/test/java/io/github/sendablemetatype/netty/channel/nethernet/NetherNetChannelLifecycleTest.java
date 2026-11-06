@@ -363,6 +363,7 @@ class NetherNetChannelLifecycleTest {
                     io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters.unreliable(
                             NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
             fixture.peer.open(fixture.reliable);
+            fixture.peer.open(fixture.unreliable);
             parentResume.countDown();
             parent.child.eventLoop().submit(() -> { }).sync();
             workerResume.countDown();
@@ -419,6 +420,7 @@ class NetherNetChannelLifecycleTest {
                             NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
             if (transportOpensFirst) {
                 fixture.peer.open(fixture.reliable);
+                fixture.peer.open(fixture.unreliable);
             }
             fixture.reliable(0, 1);
             parent.child.eventLoop().submit(() -> { }).sync();
@@ -429,6 +431,7 @@ class NetherNetChannelLifecycleTest {
             if (!transportOpensFirst) {
                 assertEquals(List.of("registered"), events);
                 fixture.peer.open(fixture.reliable);
+                fixture.peer.open(fixture.unreliable);
             }
             fixture.reliable(0, 2);
             fixture.child.eventLoop().submit(() -> { }).sync();

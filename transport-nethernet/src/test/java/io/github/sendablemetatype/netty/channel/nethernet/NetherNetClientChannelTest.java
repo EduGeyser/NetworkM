@@ -28,6 +28,7 @@ import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -531,7 +532,7 @@ class NetherNetClientChannelTest {
             peer.message(reliable, (byte) 0, (byte) 42);
             h.pump();
             assertTrue(h.events.isEmpty());
-            peer.open(reliable);
+            h.openLinks(peer);
             peer.message(reliable, (byte) 0, (byte) 43);
             h.pump();
             assertEquals(List.of("active", "data:42", "data:43"), h.events);
@@ -542,6 +543,48 @@ class NetherNetClientChannelTest {
             h.signaling.notFoundHandlers.getFirst().onNotFound("Late not-found result");
             h.pump();
             assertTrue(h.channel.isActive());
+        }
+    }
+
+    /**
+     * The client connects once both data channels opened, so a write on the unreliable one from
+     * channelActive does not meet a channel that still connects, which the engine would refuse.
+     */
+    @Test
+    void theClientConnectsOnceBothDataChannelsOpened() {
+        try (Harness h = new Harness()) {
+            h.channel.pipeline().addFirst(new ChannelInboundHandlerAdapter() {
+                @Override
+                public void channelActive(ChannelHandlerContext ctx) {
+                    ctx.writeAndFlush(new NetherNetPacket(Unpooled.wrappedBuffer(new byte[]{7}), false));
+                    ctx.fireChannelActive();
+                }
+            });
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.open(peer.links().getFirst());
+            h.pump();
+            assertFalse(connect.isDone(), "connected while the unreliable channel still connects");
+
+            peer.open(peer.links().getLast());
+            h.pump();
+            assertTrue(connect.isSuccess());
+            assertEquals(List.of("active"), h.events);
+            assertEquals(1, peer.links().getLast().sendCount());
+        }
+    }
+
+    /** The connection carries on without the unreliable channel, also when the server closes it before it opened. */
+    @Test
+    void anUnreliableChannelClosedBeforeItOpenedDoesNotHoldUpTheConnect() {
+        try (Harness h = new Harness()) {
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.open(peer.links().getFirst());
+            peer.linkClosed(peer.links().getLast(), CloseCause.REMOTE_CLOSED);
+            h.pump();
+            assertTrue(connect.isSuccess());
+            assertEquals(List.of("active"), h.events);
         }
     }
 
@@ -558,14 +601,14 @@ class NetherNetClientChannelTest {
             h.advance(100);
             assertEquals(0, h.allocator.metric().usedHeapMemory());
             assertTrue(old.closeCalled(), "the retry closes the old attempt's peer");
-            old.open(oldReliable);
+            h.openLinks(old);
             h.pump();
             assertTrue(h.events.isEmpty(), "the old attempt cannot activate the channel");
 
             FakePeer current = h.start();
             FakeDataLink reliable = current.links().getFirst();
             current.message(reliable, (byte) 0, (byte) 44);
-            current.open(reliable);
+            h.openLinks(current);
             h.pump();
             assertEquals(List.of("active", "data:44"), h.events);
             assertEquals(0, h.allocator.metric().usedHeapMemory());
@@ -581,7 +624,7 @@ class NetherNetClientChannelTest {
             FakeDataLink reliable = peer.links().getFirst();
             peer.message(reliable, (byte) 0, (byte) 42);
             h.channel.close();
-            peer.open(reliable);
+            h.openLinks(peer);
             h.pump();
             assertFalse(h.channel.isActive());
             assertTrue(h.events.isEmpty());
@@ -657,7 +700,7 @@ class NetherNetClientChannelTest {
             assertFalse(connect.isDone());
             assertTrue(h.events.isEmpty());
 
-            peer.open(peer.links().getFirst());
+            h.openLinks(peer);
             h.pump();
             assertTrue(connect.isSuccess());
             assertEquals(List.of("active"), h.events);
@@ -716,7 +759,7 @@ class NetherNetClientChannelTest {
         try (Harness h = new Harness()) {
             h.connect();
             FakePeer peer = h.start();
-            peer.open(peer.links().getFirst());
+            h.openLinks(peer);
             h.pump();
             assertTrue(h.channel.isActive());
             peer.closed(CloseCause.ICE_FAILED);
@@ -857,6 +900,11 @@ class NetherNetClientChannelTest {
             signaling.connections.getLast().complete(List.of());
             pump();
             return engine.lastPeer();
+        }
+
+        /** The engine opens both of the client's data channels, as libwebrtc does once SCTP is up. */
+        private void openLinks(FakePeer peer) {
+            peer.links().forEach(peer::open);
         }
 
         /** A signal from the server, as the newest attempt's handler receives it. */

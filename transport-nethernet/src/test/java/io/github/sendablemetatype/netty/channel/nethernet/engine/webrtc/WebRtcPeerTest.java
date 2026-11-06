@@ -375,7 +375,7 @@ class WebRtcPeerTest {
     @ValueSource(strings = {"[INVALID_STATE] ", WebRtcLink.DISCARDED})
     void aSendRefusedBeforeTheCloseFailsAfterItWithTheClosesCause(String refusal) {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -393,7 +393,7 @@ class WebRtcPeerTest {
     @Test
     void aSendRefusedAfterTheCloseFailsAtOnceWithTheClosesCause() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -412,7 +412,7 @@ class WebRtcPeerTest {
     @Test
     void aSendRefusedWhileTheRemoteClosesTheChannelFailsAsClosedByTheRemote() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -425,6 +425,29 @@ class WebRtcPeerTest {
         assertEquals(List.of("channel closed ReliableDataChannel REMOTE_CLOSED", "send failed REMOTE_CLOSED"),
                 listener.snapshot());
         assertEquals(40, link.queuedBytes(), "libwebrtc tried it, so its next decrease reports it");
+    }
+
+    /**
+     * libwebrtc refuses a send on a channel that still connects with the same bare INVALID_STATE
+     * ({@code SctpDataChannel::SendImpl}), and no close need follow. A send made before the
+     * listener heard the open fails at once, also when the open is reported before its refusal.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aSendMadeBeforeTheOpenFailsAtOnceWhenRefused(boolean openReportedFirst) {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link unreliable = remoteLink(peer, ChannelParameters.unreliable("UnreliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        List<Throwable> results = new ArrayList<>();
+        link.send(ByteBuffer.allocate(4), results::add);
+
+        if (openReportedFirst) {
+            unreliable.changeState(RTCDataChannelState.OPEN);
+        }
+        unreliable.send(0).onFailure("[INVALID_STATE] ");
+
+        assertEquals(1, results.size());
+        assertEquals(IOException.class, results.getFirst().getClass());
     }
 
     @Test
@@ -445,7 +468,7 @@ class WebRtcPeerTest {
     @Test
     void aRefusalWaitingForTheCloseFailsAtTeardown() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         List<Throwable> results = new ArrayList<>();
         link.send(ByteBuffer.allocate(4), results::add);
@@ -741,6 +764,14 @@ class WebRtcPeerTest {
             Thread.sleep(1);
             control.runAll();
         }
+    }
+
+    /** A remote link that opened, as a link is once the transport may send on it. */
+    private FakeNative.Link openRemoteLink(WebRtcPeer peer, ChannelParameters parameters) {
+        FakeNative.Link channel = remoteLink(peer, parameters);
+        channel.changeState(RTCDataChannelState.OPEN);
+        listener.events.clear();
+        return channel;
     }
 
     private FakeNative.Link remoteLink(WebRtcPeer peer, ChannelParameters parameters) {

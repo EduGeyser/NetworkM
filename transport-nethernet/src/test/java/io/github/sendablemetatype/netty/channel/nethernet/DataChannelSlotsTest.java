@@ -33,12 +33,10 @@ class DataChannelSlotsTest {
         Link unreliable = new Link(UNRELIABLE);
 
         assertTrue(slots.admit(unreliable));
-        assertFalse(slots.complete());
         assertTrue(slots.admit(reliable));
 
         assertSame(reliable, slots.reliable());
         assertSame(unreliable, slots.unreliable());
-        assertTrue(slots.complete());
     }
 
     @Test

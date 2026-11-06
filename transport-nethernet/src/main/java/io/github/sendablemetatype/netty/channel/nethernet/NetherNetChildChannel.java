@@ -38,8 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * A NetherNet connection a {@link NetherNetServerChannel} accepted. The server
  * exposes it as soon as it admits the join; the child owns its engine peer
  * from creation, negotiates in its own initializer once registered, and goes
- * active when the client opened both data channels and the reliable one is
- * open.
+ * active once both data channels the client opened are open, or the reliable
+ * one is and the unreliable one closed again.
  *
  * <p>Its remote address is where signaling met the client until it goes
  * active, then the selected ICE pair, with a {@link RemoteAddressChangedEvent}
@@ -63,6 +63,7 @@ public class NetherNetChildChannel extends NetherNetChannel {
     private final Negotiation negotiation;
     private final AtomicBoolean activationReported = new AtomicBoolean();
     private volatile boolean reliableOpen;
+    private volatile boolean unreliableSettled;
 
     private final Addressing addressing;
     private boolean addressActivated;
@@ -213,8 +214,23 @@ public class NetherNetChildChannel extends NetherNetChannel {
 
         @Override
         public void onChannelOpen(DataLink link) {
-            if (!stale() && link == slots.reliable()) {
+            if (stale()) {
+                return;
+            }
+            if (link == slots.reliable()) {
                 reliableOpen = true;
+            } else if (link == slots.unreliable()) {
+                unreliableSettled = true;
+            }
+            activateIfReady();
+        }
+
+        /** The connection carries on without the unreliable channel, so its close does not hold up activation. */
+        @Override
+        public void onChannelClosed(DataLink link, CloseCause cause) {
+            super.onChannelClosed(link, cause);
+            if (!stale() && link == slots.unreliable()) {
+                unreliableSettled = true;
                 activateIfReady();
             }
         }
@@ -227,8 +243,16 @@ public class NetherNetChildChannel extends NetherNetChannel {
         }
     }
 
+    /**
+     * Activates once the reliable channel is open and the unreliable one opened or closed. libwebrtc
+     * announces a remote channel before it opens it ({@code DataChannelController::OnDataChannelOpenMessage}
+     * posts the open after the announcement returns), so a channel announced after the reliable one
+     * opened would still be connecting, and libwebrtc refuses what is sent on it then. Vanilla
+     * clients open both channels, so this waits at most for that open. Both opens can be reported
+     * at once on different threads; the flags are volatile, so at least one of them sees both.
+     */
     private void activateIfReady() {
-        if (reliableOpen && slots.complete()) {
+        if (reliableOpen && unreliableSettled) {
             markTransportOpen();
             if (activationReported.compareAndSet(false, true)) {
                 negotiation.activated();

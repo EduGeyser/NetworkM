@@ -41,7 +41,8 @@ import java.util.function.Consumer;
  * must not block either. It never calls a peer connection method: that would
  * wait for the signaling thread, which may be waiting for the network thread.
  *
- * <p>A send libwebrtc refuses because the channel is not open fails with a
+ * <p>A send made after the listener heard the link open, which libwebrtc
+ * refuses because the channel is not open, fails with a
  * {@link DataLinkClosedException} naming why the channel closed, and only
  * after the listener heard of that close. Send results arrive on webrtc-java's
  * callback thread, the close on the network thread, or on the signaling
@@ -49,18 +50,23 @@ import java.util.function.Consumer;
  * the refusal of a send made just after a client quit can arrive before the
  * close: on those natives, 13 of 40 aborts during a burst of sends had a
  * refusal arrive first (measured 2026-11-06). Such a refusal waits for the
- * close.
+ * close. A channel that is open never connects again, so for these sends
+ * "not open" means closing or closed. A send made earlier, which the
+ * {@link DataLink} contract does not allow, can meet a channel still
+ * connecting, which libwebrtc refuses the same way; its refusal fails at
+ * once.
  */
 final class WebRtcLink implements DataLink {
 
     /**
      * The start of webrtc-java's failure for every send libwebrtc refused
-     * because the channel was not open. While the remote peer closes the
-     * channel in an orderly way, for a round trip, libwebrtc tries the send
-     * and refuses it ({@code SctpDataChannel::SendImpl}); once the channel
-     * closed, for any cause, such as a client's quit, it refuses the send
-     * without trying it ({@code SctpDataChannel::SendAsync}). Other refusals
-     * carry other error types.
+     * because the channel was not open. While the channel connects, and for
+     * the round trip while the remote peer closes it in an orderly way,
+     * libwebrtc tries the send and refuses it
+     * ({@code SctpDataChannel::SendImpl}); once the channel closed, for any
+     * cause, such as a client's quit, it refuses the send without trying it
+     * ({@code SctpDataChannel::SendAsync}). Other refusals carry other error
+     * types.
      */
     static final String NOT_OPEN = "[INVALID_STATE] ";
 
@@ -99,7 +105,8 @@ final class WebRtcLink implements DataLink {
      * Never held while waiting for one of libwebrtc's threads.
      */
     private final Object events = new Object();
-    // Written under events; read outside it only to skip reading the error again.
+    // Written under events; read outside it to skip reading the error again,
+    // and by each send, to know whether the listener had heard the open.
     private volatile Reported reported = Reported.NOTHING;
 
     WebRtcLink(WebRtcPeer peer, ChannelParameters parameters, NativeLink channel) {
@@ -244,6 +251,8 @@ final class WebRtcLink implements DataLink {
         private final Consumer<Throwable> completion;
         // Guarded by sends.
         private boolean claimed;
+        // Whether the listener had heard the link open when the send was made.
+        private final boolean afterOpen = reported != Reported.NOTHING;
         // Set under sends before the send waits in refusedBeforeClose, read after it left.
         private String refusal;
         private boolean uncountedRefusal;
@@ -268,7 +277,7 @@ final class WebRtcLink implements DataLink {
             CloseCause cause;
             synchronized (sends) {
                 cause = closedBecause;
-                if (cause == null && !stopped) {
+                if (cause == null && !stopped && afterOpen) {
                     refusal = error;
                     uncountedRefusal = uncounted;
                     refusedBeforeClose.add(this);

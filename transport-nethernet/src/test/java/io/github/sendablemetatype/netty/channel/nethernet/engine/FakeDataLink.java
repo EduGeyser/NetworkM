@@ -13,9 +13,10 @@ import java.util.function.Consumer;
  * to {@link #queuedBytes()} when it is made, a refusal takes it out again,
  * and otherwise it stays until the test drains it, or on a loopback engine
  * until the other side received it. Each send settles exactly once, and its
- * peer's close stage waits for a completion still running. Once the remote
- * peer closed the link, sends fail with a {@link DataLinkClosedException}
- * naming why.
+ * peer's close stage waits for a completion still running. Until the engine
+ * opened the link, sends are refused at once, as libwebrtc refuses them while
+ * a channel connects; once the remote peer closed it, they fail with a
+ * {@link DataLinkClosedException} naming why.
  */
 public final class FakeDataLink implements DataLink {
     private final FakePeer peer;
@@ -24,6 +25,7 @@ public final class FakeDataLink implements DataLink {
     private long queued; // guarded by this
     private long watermark; // guarded by this
     private boolean announced;
+    private volatile boolean opened;
     private volatile boolean closed;
     // Why the remote peer closed the link; null while open and after a local close. Written before closed.
     private volatile CloseCause remoteCause;
@@ -91,8 +93,8 @@ public final class FakeDataLink implements DataLink {
                 sends.add(send);
                 queued += bytes.length;
                 refused = closed ? closedFailure()
+                        : !opened ? new IOException("The data link is not open")
                         : refusal != null ? refusal
-                        : peer.isLoopback() && far == null ? new IOException("The data link is not open")
                         : null;
                 // Settled together with the add, so a close in between cannot settle it as well.
                 settleNow = refused != null || peer.autoAcceptSends();
@@ -197,6 +199,11 @@ public final class FakeDataLink implements DataLink {
             }
         }
         drain(current - bytes);
+    }
+
+    /** The engine opened the link: it carries messages from now on. */
+    void markOpen() {
+        opened = true;
     }
 
     synchronized boolean announced() {

@@ -244,7 +244,7 @@ class HostTransportTest {
         assertEquals(TransportIdentityBinding.Result.ACCEPTED,
                 TransportIdentityBinding.verifyLogin(child, fixture.clientKey.getPublic()));
         FakeDataLink reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
-        peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
+        FakeDataLink unreliable = peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
         AtomicBoolean activated = new AtomicBoolean();
         child.pipeline().addLast(new ChannelInboundHandlerAdapter() {
             @Override
@@ -258,6 +258,7 @@ class HostTransportTest {
         // active is also the first one past the deadline
         child.eventLoop().submit(() -> {
             peer.open(reliable);
+            peer.open(unreliable);
             TimeUnit.NANOSECONDS.sleep(pastDeadline - System.nanoTime());
             return null;
         }).sync();
@@ -418,11 +419,12 @@ class HostTransportTest {
         }
     }
 
-    /** The client opens both data channels and the reliable one opens, which activates the child. */
+    /** The client opens both data channels and both open, which activates the child. */
     private void activate(FakePeer peer) throws InterruptedException {
         FakeDataLink reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
-        peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
+        FakeDataLink unreliable = peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
         peer.open(reliable);
+        peer.open(unreliable);
         fixture.sync();
     }
 
