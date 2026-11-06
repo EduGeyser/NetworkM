@@ -499,9 +499,13 @@ public final class HostTransport implements ProviderTransport {
         sink.join(join);
     }
 
-    /** The NetherNet connection ID of a ticket: the first eight bytes of its ID, so logs can tie them together. */
+    /**
+     * The NetherNet connection ID of a ticket: the ticket ID itself, unique per admitted ticket and the
+     * same string the provider and the logs use. NXS never signals it, so the decimal form NetworkM
+     * gives the IDs it does signal does not apply; a prefix of the ID could be zero or repeat.
+     */
     private static String connectionId(TicketId ticket) {
-        return Long.toUnsignedString(Long.parseUnsignedLong(ticket.value().substring(0, 16), 16));
+        return ticket.value();
     }
 
     /** The endpoint created the child of an admitted ticket, before exposing it. Event loop. */
