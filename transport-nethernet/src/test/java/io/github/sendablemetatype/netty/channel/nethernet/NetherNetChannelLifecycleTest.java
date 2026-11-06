@@ -277,7 +277,7 @@ class NetherNetChannelLifecycleTest {
         ChildFixture parent = new ChildFixture(null);
         try {
             group.register(parent.child).sync();
-            NetherNetChildChannel child = new NetherNetChildChannel(parent.child, null, null, ChildFixture.NO_SIGNALING);
+            NetherNetChildChannel child = ChildFixture.child(parent.child, null, null);
             AtomicInteger closeNotifications = new AtomicInteger();
             child.closeFuture().addListener(future -> closeNotifications.incrementAndGet());
 

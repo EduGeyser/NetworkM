@@ -1,5 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.RemoteAddressTracker;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
@@ -7,6 +10,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.netty.channel.Channel;
 
 import java.net.InetSocketAddress;
@@ -38,8 +42,19 @@ final class ChildFixture {
 
     /** @param parent the server side, or null for a child that is only ever registered */
     ChildFixture(Channel parent) {
-        child = new NetherNetChildChannel(parent, REMOTE, LOCAL, NO_SIGNALING);
+        child = child(parent, REMOTE, LOCAL);
         peer = (FakePeer) child.openPeer(engine, ANSWERER);
+    }
+
+    /**
+     * A child without signaling whose join came from {@code remote} over a connection, or from
+     * nowhere known when it is null, as an Xbox join.
+     */
+    static NetherNetChildChannel child(Channel parent, InetSocketAddress remote, InetSocketAddress local) {
+        SourcedAddress signaled = remote == null ? SourcedAddress.unknown()
+                : new SourcedAddress(remote, AddressSource.SIGNALING, null);
+        return new NetherNetChildChannel(parent, local, NO_SIGNALING, new RemoteAddressTracker(signaled, false),
+                RemoteCandidateIntake.server(), null);
     }
 
     /** The client opens both data channels and the reliable one opens, which activates the child. */

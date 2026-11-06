@@ -19,7 +19,6 @@ package io.github.sendablemetatype.netty.util.nethernet;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.jose4j.jwt.JwtClaims;
-import org.jose4j.lang.JoseException;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -55,11 +54,7 @@ public final class ServerIdentity {
         this.domain = Objects.requireNonNull(domain, "domain");
         this.signer = new AssertionSigner(pair, "server identity");
         this.publicKey = signer.publicKey();
-        try {
-            this.token = buildToken();
-        } catch (JoseException e) {
-            throw new GeneralSecurityException("Cannot sign the server identity token", e);
-        }
+        this.token = buildToken();
     }
 
     /**
@@ -134,10 +129,10 @@ public final class ServerIdentity {
      *
      * @param answerSdp the answer without an identity line
      * @return the answer with the identity inserted, line endings kept
-     * @throws JoseException            if signing fails
+     * @throws GeneralSecurityException if the key cannot sign
      * @throws IllegalArgumentException if the answer has no well-formed fingerprint line
      */
-    public String augmentAnswer(String answerSdp) throws JoseException {
+    public String augmentAnswer(String answerSdp) throws GeneralSecurityException {
         return signer.withAssertion(answerSdp, token, domain);
     }
 
@@ -146,7 +141,7 @@ public final class ServerIdentity {
      * specifies (ruling C-8), {@code iat}, and the domain as {@code iss} when it is not blank. It
      * carries no {@code exp}, which the guide allows, so it never needs re-signing.
      */
-    private String buildToken() throws JoseException {
+    private String buildToken() throws GeneralSecurityException {
         JwtClaims claims = new JwtClaims();
         claims.setClaim("cpk", IdentityPublicKey.toJwk(publicKey));
         claims.setIssuedAtToNow();

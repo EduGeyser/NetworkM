@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
@@ -11,6 +13,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
@@ -18,6 +22,8 @@ import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
+import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
@@ -30,6 +36,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.ConnectException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
@@ -38,6 +45,7 @@ import java.security.KeyPair;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -110,7 +118,7 @@ class NetherNetClientChannelTest {
         try (Harness h = new Harness()) {
             h.signaling.trickles = false;
             h.signaling.answerTimeout = Duration.ofMillis(1000);
-            h.connect();
+            ChannelFuture connect = h.connect();
             h.advance(1099);
             assertEquals(1, h.signaling.connections.size(), "no retry while the signaling connects");
 
@@ -125,9 +133,51 @@ class NetherNetClientChannelTest {
                     new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), ANSWER));
             h.pump();
             h.advance(99);
-            assertEquals(1, h.signaling.connections.size());
+            assertFalse(connect.isDone());
             h.advance(1);
-            assertEquals(2, h.signaling.connections.size(), "once answered, the handshake timeout applies");
+            assertEquals("The handshake timed out; gave up after 1 attempt",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage(),
+                    "once answered, the handshake timeout applies");
+            assertEquals(1, h.signaling.connections.size(), "signaling that does not trickle gets one attempt");
+        }
+    }
+
+    @Test
+    void aConnectMakesTheConfiguredAttemptsTheFirstIncluded() {
+        try (Harness h = new Harness()) {
+            AtomicInteger retries = new AtomicInteger();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void handshakeRetry() {
+                    retries.incrementAndGet();
+                }
+            });
+            assertEquals(3, h.channel.config().getOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS),
+                    "the default");
+            ChannelFuture connect = h.connect();
+            h.advance(100);
+            h.advance(100);
+            assertEquals(3, h.signaling.connections.size());
+            assertFalse(connect.isDone());
+            h.advance(100);
+            assertEquals("The handshake timed out; gave up after 3 attempts",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage());
+            assertEquals(3, h.signaling.connections.size());
+            assertEquals(2, retries.get());
+        }
+    }
+
+    @Test
+    void aPeerFailingOverSignalingThatDoesNotTrickleEndsTheOnlyAttempt() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            ChannelFuture connect = h.connect();
+            h.start().closed(CloseCause.ICE_FAILED);
+            h.pump();
+            assertEquals("The peer ended during the handshake (ICE_FAILED); gave up after 1 attempt",
+                    assertInstanceOf(ConnectException.class, connect.cause()).getMessage());
+            assertEquals(1, h.signaling.connections.size());
+            assertFalse(h.channel.isOpen());
         }
     }
 
@@ -171,6 +221,59 @@ class NetherNetClientChannelTest {
             String offer = h.signaling.sent.getFirst().split(" ", 3)[2];
             OfferCheckResult result = new OfferCheck(List.of()).check(offer);
             assertEquals(OfferCheckResult.Level.KEY_PROVEN, result.level());
+        }
+    }
+
+    @Test
+    void aPinnedServerTrustRefusesAnAnswerWithoutTheIdentityAndMakesNoOtherAttempt() {
+        try (Harness h = new Harness()) {
+            List<NetherConnectionFailure> failures = new ArrayList<>();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void connectionFailed(NetherConnectionFailure reason) {
+                    failures.add(reason);
+                }
+            });
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
+                    ServerTrust.pinnedTo(ServerIdentity.ephemeral("self").publicKey()));
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            h.pump();
+
+            h.signaling.signalHandlers.getLast().onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), ANSWER));
+            h.pump();
+            ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
+            assertEquals("The server's answer carries no identity", failure.getMessage());
+            assertEquals(ServerTrust.Refusal.MISSING,
+                    assertInstanceOf(ServerTrust.Refused.class, failure.getCause()).refusal());
+            assertEquals(List.of(NetherConnectionFailure.SERVER_IDENTITY_REFUSED), failures);
+            assertTrue(peer.remoteAnswers().isEmpty(), "a refused answer never reaches the engine");
+            assertFalse(h.channel.isOpen());
+            h.advance(1000);
+            assertEquals(1, h.signaling.connections.size());
+        }
+    }
+
+    @Test
+    void aPinnedServerTrustPassesTheAnswerOfThePinnedServer() throws Exception {
+        try (Harness h = new Harness()) {
+            ServerIdentity server = ServerIdentity.ephemeral("self");
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_SERVER_TRUST,
+                    ServerTrust.pinnedTo(server.publicKey()));
+            ChannelFuture connect = h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            h.pump();
+
+            String answer = server.augmentAnswer(OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            h.signaling.signalHandlers.getLast().onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), answer));
+            h.pump();
+            assertEquals(List.of(answer), peer.remoteAnswers());
+            assertFalse(connect.isDone());
+            assertTrue(h.channel.isOpen());
         }
     }
 
@@ -414,15 +517,15 @@ class NetherNetClientChannelTest {
     }
 
     @Test
-    void invalidTimeoutAndRetryValuesAreRejectedWhileZeroRetriesWork() {
+    void invalidTimeoutAndAttemptValuesAreRejectedWhileOneAttemptWorks() {
         try (Harness h = new Harness()) {
             assertThrows(IllegalArgumentException.class,
                     () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 0));
             assertThrows(IllegalArgumentException.class,
                     () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, -1));
             assertThrows(IllegalArgumentException.class,
-                    () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, -1));
-            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 0);
+                    () -> h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 0));
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 1);
             ChannelFuture connect = h.connect();
             h.advance(100);
             assertInstanceOf(ConnectException.class, connect.cause());
@@ -511,6 +614,55 @@ class NetherNetClientChannelTest {
         }
     }
 
+    @Test
+    void aClientReportsWhereItDialedAndWhereEachAttemptConnected() {
+        try (Harness h = new Harness()) {
+            assertSame(TransportMetrics.NONE, h.channel.transportMetrics().toCompletableFuture().join(),
+                    "no peer before the connect");
+            InetSocketAddress server = new InetSocketAddress("192.0.2.10", 19132);
+            h.channel.connect(server);
+            h.pump();
+            assertEquals(new SourcedAddress(server, AddressSource.SIGNALING, null), h.channel.signaledAddress());
+
+            FakePeer peer = h.start();
+            InetSocketAddress media = new InetSocketAddress("192.0.2.11", 50000);
+            TransportPath path = new TransportPath(null, TransportPath.CandidateType.HOST, media,
+                    TransportPath.CandidateType.SERVER_REFLEXIVE);
+            peer.path(path);
+            h.pump();
+            assertEquals(Optional.of(path), h.channel.selectedPath());
+            assertEquals(new SourcedAddress(media, AddressSource.ICE, null), h.channel.reportedAddress());
+            assertEquals(media, h.channel.remoteAddress());
+
+            // The attempt times out; the next one has neither a pair nor, until its signaling connects, a peer.
+            h.advance(100);
+            assertEquals(2, h.signaling.connections.size());
+            assertEquals(Optional.empty(), h.channel.selectedPath());
+            assertEquals(Optional.empty(), h.channel.mediaAddress());
+            assertEquals(server, h.channel.remoteAddress());
+            assertSame(TransportMetrics.NONE, h.channel.transportMetrics().toCompletableFuture().join());
+        }
+    }
+
+    @Test
+    void aClientThatDialedANetworkIdKeepsItAndReportsWhereTheServerWas() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            assertEquals(AddressSource.UNKNOWN, h.channel.signaledAddress().source());
+            FakePeer peer = h.start();
+            TransportMetrics metrics = new TransportMetrics(Optional.of(Duration.ofMillis(9)), Optional.empty());
+            peer.setMetrics(metrics);
+            assertSame(metrics, h.channel.transportMetrics().toCompletableFuture().join());
+
+            InetSocketAddress relay = new InetSocketAddress("198.51.100.4", 3478);
+            peer.path(new TransportPath(null, TransportPath.CandidateType.HOST, relay,
+                    TransportPath.CandidateType.RELAY));
+            h.pump();
+            assertEquals(new SourcedAddress(relay, AddressSource.TURN, null), h.channel.reportedAddress());
+            assertEquals(new NetherNetAddress("target"), h.channel.remoteAddress());
+        }
+    }
+
     private static final class Harness implements AutoCloseable {
         private final EmbeddedChannel clock = new EmbeddedChannel();
         private final FakeSignaling signaling = new FakeSignaling();
@@ -523,7 +675,6 @@ class NetherNetClientChannelTest {
             clock.freezeTime();
             channel.config().setAllocator(allocator);
             channel.config().setOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 100);
-            channel.config().setOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 2);
             channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelActive(ChannelHandlerContext ctx) {

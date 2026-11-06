@@ -1,8 +1,17 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
+import java.io.Serial;
 import java.net.SocketAddress;
+import java.util.Objects;
 
-public class NetherNetAddress extends SocketAddress {
+/**
+ * A NetherNet peer addressed by its network ID, as Xbox and LAN signaling route to it. Two
+ * addresses are equal when their network IDs are, so maps and sets keyed by remote address work.
+ */
+public final class NetherNetAddress extends SocketAddress {
+    @Serial
+    private static final long serialVersionUID = 1L;
+
     private final String networkId;
 
     /**
@@ -20,7 +29,7 @@ public class NetherNetAddress extends SocketAddress {
      * @param networkId The string Network ID.
      */
     public NetherNetAddress(String networkId) {
-        this.networkId = networkId;
+        this.networkId = Objects.requireNonNull(networkId, "networkId");
     }
 
     /**
@@ -41,6 +50,16 @@ public class NetherNetAddress extends SocketAddress {
      */
     public long getNetworkIdAsLong() {
         return Long.parseUnsignedLong(networkId);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof NetherNetAddress address && networkId.equals(address.networkId);
+    }
+
+    @Override
+    public int hashCode() {
+        return networkId.hashCode();
     }
 
     /**

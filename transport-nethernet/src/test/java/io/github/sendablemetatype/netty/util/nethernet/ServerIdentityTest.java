@@ -92,6 +92,20 @@ class ServerIdentityTest {
     }
 
     @Test
+    void aKeyThatCannotSignFailsWithoutExposingJose4j() {
+        // A P-256 private key cannot make the ES384 signature the identity needs.
+        KeyPair wrongCurve = new KeyPair(keyPair("EC", "secp384r1").getPublic(),
+                keyPair("EC", "secp256r1").getPrivate());
+
+        GeneralSecurityException failure = assertThrows(GeneralSecurityException.class,
+                () -> ServerIdentity.of(wrongCurve, "self"));
+        assertEquals("Cannot sign with the server identity's key", failure.getMessage());
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            assertFalse(cause.getClass().getName().startsWith("org.jose4j."), cause.toString());
+        }
+    }
+
+    @Test
     void answerWithoutFingerprintsCannotBeSigned() {
         ServerIdentity identity = ServerIdentity.ephemeral("self");
 

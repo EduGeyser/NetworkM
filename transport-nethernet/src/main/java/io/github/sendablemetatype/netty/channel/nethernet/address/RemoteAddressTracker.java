@@ -13,14 +13,15 @@ import java.util.Optional;
  * claims behind it. With the proxied-address preference, an address a trusted signaling proxy
  * declared stands instead of any pair.
  * <p>
- * Event loop only: feed it selected pairs on the channel's loop, so that every change is ordered
- * with the pipeline. Not thread-safe.
+ * Feed it on the channel's event loop only, so that every change is ordered with the pipeline.
+ * Its addresses may be read from any thread.
  */
 public final class RemoteAddressTracker {
     private final SourcedAddress signaled;
     private final boolean preferProxied;
-    private SourcedAddress media;
-    private SourcedAddress reported;
+    // Written on the event loop only; volatile so the channel's accessors read them from any thread.
+    private volatile SourcedAddress media;
+    private volatile SourcedAddress reported;
     private boolean active;
 
     /**

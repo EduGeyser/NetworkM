@@ -402,7 +402,7 @@ class NetherNetServerChannelTest {
     @Test
     void theHandshakeTimeoutClosesTheChildAndReportsIt() throws Exception {
         List<NetherConnectionFailure> failures = new ArrayList<>();
-        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS, 0)
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS, 1)
                 .childOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
                     @Override
                     public void connectionFailed(NetherConnectionFailure reason) {
@@ -411,7 +411,8 @@ class NetherNetServerChannelTest {
                 });
         harness.bind();
         FakeJoinSource.Reply reply = harness.source(true).offer("1", OFFER);
-        harness.child();
+        NetherNetChildChannel child = harness.child();
+        assertTrue(child.closeFuture().await(3, TimeUnit.SECONDS), "the child outlived its handshake timeout");
         harness.sync();
         assertTrue(harness.engine.lastPeer().closeCalled());
         assertEquals(List.of(NetherConnectionFailure.HANDSHAKE_TIMEOUT), failures);

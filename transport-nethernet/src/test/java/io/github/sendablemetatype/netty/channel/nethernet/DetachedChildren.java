@@ -7,6 +7,6 @@ public final class DetachedChildren {
 
     /** A child with no parent, addresses, peer or signaling. */
     public static NetherNetChildChannel create() {
-        return new NetherNetChildChannel(null, null, null, ChildFixture.NO_SIGNALING);
+        return ChildFixture.child(null, null, null);
     }
 }

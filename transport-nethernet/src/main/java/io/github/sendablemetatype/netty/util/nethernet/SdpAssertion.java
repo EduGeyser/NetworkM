@@ -14,8 +14,9 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Step 1 of the offer check: the identity assertion read out of an offer, strictly, without
- * trusting anything in it yet.
+ * Step 1 of the identity checks: the assertion read out of a description, strictly, without
+ * trusting anything in it yet. Offers and answers carry the same envelope, so the offer check and
+ * a client's {@link ServerTrust} both read it here.
  * <p>
  * The {@code idp} block is read only for diagnostics (ruling C-1). The guide's validation steps
  * never check it, it is unsigned, and Education 26.33 sends an empty domain (captured 2026-11-05),
@@ -27,10 +28,10 @@ import java.util.Optional;
  * @param fingerprintProof the detached compact JWS over the fingerprints, {@code header..signature}
  * @param fingerprintJson  the canonical fingerprint JSON the proof signs, rebuilt from the SDP
  */
-record OfferAssertion(String idpDomain, String idpProtocol, String token, String fingerprintProof,
+record SdpAssertion(String idpDomain, String idpProtocol, String token, String fingerprintProof,
                       String fingerprintJson) {
     /** Bounds parsing work on any signaling path; real offers measured 2.0 to 2.5 KB (2026-11-05). */
-    static final int MAX_OFFER_CHARS = 1 << 20;
+    static final int MAX_SDP_CHARS = 1 << 20;
 
     private static final String IDENTITY_PREFIX = "a=identity:";
     private static final String FINGERPRINT_PREFIX = "a=fingerprint:";
@@ -46,13 +47,13 @@ record OfferAssertion(String idpDomain, String idpProtocol, String token, String
     }
 
     /**
-     * @param sdp the offer as signaled, identity line included
+     * @param sdp the description as signaled, identity line included
      * @return the assertion
-     * @throws Stop with {@link Reason#NO_IDENTITY} when the offer carries none, or a
+     * @throws Stop with {@link Reason#NO_IDENTITY} when the description carries none, or a
      *              {@link OfferCheckResult.Level#MALFORMED} reason
      */
-    static OfferAssertion parse(String sdp) throws Stop {
-        if (sdp == null || sdp.length() > MAX_OFFER_CHARS) {
+    static SdpAssertion parse(String sdp) throws Stop {
+        if (sdp == null || sdp.length() > MAX_SDP_CHARS) {
             throw new Stop(Reason.MALFORMED_SDP);
         }
         String identity = null;
@@ -94,7 +95,7 @@ record OfferAssertion(String idpDomain, String idpProtocol, String token, String
         if (parts.length != 3 || parts[0].isEmpty() || !parts[1].isEmpty() || parts[2].isEmpty()) {
             throw new Stop(Reason.MALFORMED_ASSERTION);
         }
-        return new OfferAssertion(domain, protocol, string(assertion, "token"), proof, canonicalJson(fingerprints));
+        return new SdpAssertion(domain, protocol, string(assertion, "token"), proof, canonicalJson(fingerprints));
     }
 
     /**

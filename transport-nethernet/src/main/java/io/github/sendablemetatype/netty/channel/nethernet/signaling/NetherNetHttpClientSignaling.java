@@ -223,7 +223,10 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         });
     }
 
-    /** False: HTTP carries one offer with every candidate in it, and one answer. */
+    /**
+     * False: HTTP carries one offer with every candidate in it, and one answer, so a client channel
+     * makes one attempt over it.
+     */
     @Override
     public boolean trickles() {
         return false;

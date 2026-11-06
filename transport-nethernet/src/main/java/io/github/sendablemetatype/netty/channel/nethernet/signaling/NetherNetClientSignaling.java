@@ -20,7 +20,8 @@ public interface NetherNetClientSignaling extends NetherNetSignaling {
      * Whether candidates travel as signals of their own after the offer. Signaling that does not
      * trickle, such as HTTP, carries one offer and one answer: the client channel then waits for
      * gathering to finish and sends the offer with every candidate in it, as the server does with
-     * its answer.
+     * its answer, and makes one attempt only, since the server refuses a second offer for the same
+     * network ID while the first is pending.
      *
      * @return true unless the signaling carries only full descriptions
      */
@@ -31,8 +32,8 @@ public interface NetherNetClientSignaling extends NetherNetSignaling {
     /**
      * How long the signaling itself waits for the server to answer one of its requests, a status
      * request or the offer, before it reports a failure of its own. The client channel gives each
-     * attempt this much on top of its handshake timeout, until the answer arrives, so that it does
-     * not start over while the signaling can still deliver one.
+     * attempt this much on top of its handshake timeout, until the answer arrives, so that the
+     * attempt does not end while the signaling can still deliver one.
      *
      * @return {@link Duration#ZERO} unless the signaling has such a wait
      */

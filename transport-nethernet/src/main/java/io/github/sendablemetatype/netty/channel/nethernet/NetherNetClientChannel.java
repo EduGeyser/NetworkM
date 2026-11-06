@@ -1,8 +1,9 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherClientChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
-import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
@@ -12,16 +13,17 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.ServerTrust;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.jose4j.lang.JoseException;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -30,8 +32,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -41,19 +45,27 @@ import java.util.function.Supplier;
  * A NetherNet client: offers a connection over its signaling and opens the
  * two data channels. Over signaling that trickles, candidates follow the
  * offer one by one; otherwise the offer waits for gathering and carries them
- * all. A handshake that does not finish in time is retried with a new peer
- * and connection ID; once connected, a failing peer ends the connection like
- * on the server.
+ * all. A handshake that does not finish in time, or whose peer fails, is
+ * attempted again with a new peer and connection ID, up to
+ * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS}
+ * attempts in all, and once only over signaling that does not trickle. Once
+ * connected, a failing peer ends the connection like on the server.
  */
 public class NetherNetClientChannel extends NetherNetChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetClientChannel.class);
 
     private final EngineRef engine;
     private final NetherNetClientSignaling signaling;
+    private final DefaultNetherClientChannelConfig clientConfig;
     private final Object attemptLock = new Object();
 
     private volatile String connectionId;
     private volatile String targetNetworkId; // Peer ID (String, for Realms)
+
+    // Where the client dialed, and the newest selected pair's remote side (event loop writes).
+    private volatile SourcedAddress signaled = SourcedAddress.unknown();
+    private volatile SourcedAddress media;
+    private InetSocketAddress dialed; // event loop
 
     private volatile boolean handshakeComplete = false;
 
@@ -110,7 +122,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
         this.engine = engine;
         this.signaling = signaling;
         this.connectionId = this.cycleConnectionId();
-        this.config = new DefaultNetherClientChannelConfig(this);
+        this.clientConfig = new DefaultNetherClientChannelConfig(this);
+        this.config = clientConfig;
     }
 
     public void setTargetNetworkId(String id) {
@@ -171,8 +184,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 NetherNetClientChannel.this.setTargetNetworkId(address.getNetworkId());
                 NetherNetClientChannel.this.remoteAddress = remote;
             } else if (remote instanceof InetSocketAddress address) {
+                dialed = address;
                 NetherNetClientChannel.this.remoteAddress = address;
                 NetherNetClientChannel.this.setTargetNetworkId("0"); // "0" triggers auto-discovery in signaling
+                if (!address.isUnresolved()) {
+                    signaled = new SourcedAddress(address, AddressSource.SIGNALING, null);
+                }
             } else {
                 promise.setFailure(new IllegalArgumentException("Unsupported address: " + remote.getClass()));
                 return;
@@ -273,13 +290,13 @@ public class NetherNetClientChannel extends NetherNetChannel {
         handshakeTimeoutTask = eventLoop().schedule(() -> {
             if (isCurrentHandshake(gen)) {
                 connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
-                resetAndRetryHandshake();
+                retryOrFail("The handshake timed out");
             }
         }, millis, TimeUnit.MILLISECONDS);
     }
 
     private long handshakeTimeoutMillis() {
-        return config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
+        return clientConfig.getHandshakeTimeoutMillis();
     }
 
     /**
@@ -299,16 +316,25 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
     }
 
-    private void resetAndRetryHandshake() {
+    /**
+     * Starts the next attempt with a new peer and connection ID, or fails the connect once
+     * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS}
+     * attempts, the first one included, were made. Signaling that does not trickle gets one
+     * attempt: it carries one offer, and the server refuses a second one for the same network ID
+     * as a duplicate while the first is still pending.
+     *
+     * @param why what ended the current attempt, for the failure
+     */
+    private void retryOrFail(String why) {
         if (!isOpen()) return;
         if (connectPromise != null && connectPromise.isDone() && !connectPromise.isSuccess()) return;
         if (handshakeComplete) return;
 
-        // Counts retries: the option's value plus the first attempt are made.
-        int maxRetries = this.config().getOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS);
-        if (retryCount >= maxRetries) {
+        int attempts = retryCount + 1;
+        if (attempts >= clientConfig.getMaxHandshakeAttempts() || !signaling.trickles()) {
             if (connectPromise != null && !connectPromise.isDone()) {
-                connectPromise.tryFailure(new ConnectException("Connection timed out after " + retryCount + " retries"));
+                connectPromise.tryFailure(new ConnectException(
+                        why + "; gave up after " + attempts + (attempts == 1 ? " attempt" : " attempts")));
             }
             close();
             return;
@@ -329,6 +355,11 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
         try {
             retirePeer();
+            // The next attempt finds its own pair.
+            media = null;
+            if (dialed != null) {
+                remoteAddress = dialed;
+            }
             signaling.removeSignalHandler(this.connectionId);
             this.cycleConnectionId();
             offerSent = false;
@@ -342,7 +373,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     private void startPeer(List<IceServer> iceServers, int gen) {
         NetherNetEngine current = engine.get();
         PeerConfig peerConfig = new PeerConfig(PeerConfig.Role.OFFERER,
-                iceServers(config.getIceServers(), iceServers), config.getCandidatePolicy(), null, null, null);
+                iceServers(clientConfig.getIceServers(), iceServers), clientConfig.getCandidatePolicy(), null, null, null);
         Peer created = current.createPeer(peerConfig, new Events(gen));
         attachPeer(created);
         bindReliable(created.openChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL)));
@@ -364,7 +395,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             String signed;
             try {
                 signed = signed(offer);
-            } catch (JoseException | IllegalArgumentException e) {
+            } catch (GeneralSecurityException | IllegalArgumentException e) {
                 failHandshake(gen, "Could not sign the offer with the client identity", e);
                 return;
             }
@@ -373,7 +404,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                         NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, signed));
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
-                resetAndRetryHandshake();
+                retryOrFail("Could not send the offer");
                 return;
             }
             offerSent = true;
@@ -391,8 +422,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
     }
 
     /** The offer with the configured identity's assertion, or as it is without one. */
-    private String signed(String offer) throws JoseException {
-        ClientIdentity identity = config().getOption(NetherChannelOption.NETHER_CLIENT_IDENTITY);
+    private String signed(String offer) throws GeneralSecurityException {
+        ClientIdentity identity = clientConfig.getIdentity();
         return identity == null ? offer : identity.withAssertion(offer);
     }
 
@@ -403,7 +434,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             return true;
         } catch (Exception e) {
             log.debug("Failed to send ICE candidate", e);
-            resetAndRetryHandshake();
+            retryOrFail("Could not send a candidate");
             return false;
         }
     }
@@ -433,6 +464,17 @@ public class NetherNetClientChannel extends NetherNetChannel {
             }
             if (!isOpen() || handshakeComplete) return;
             if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)) {
+                ServerTrust trust = clientConfig.getServerTrust();
+                if (trust != null) {
+                    // Pure computation, two signature checks; another attempt would meet the same server.
+                    try {
+                        trust.verify(data);
+                    } catch (ServerTrust.Refused refused) {
+                        connectionFailed(NetherConnectionFailure.SERVER_IDENTITY_REFUSED);
+                        failHandshake(generation, refused.getMessage(), refused);
+                        return;
+                    }
+                }
                 try {
                     setMaxOutboundMessageSize(NetherNetConstants.parseMaxMessageSize(data));
                 } catch (IllegalArgumentException e) {
@@ -549,12 +591,56 @@ public class NetherNetClientChannel extends NetherNetChannel {
                     // The reliable channel opened while this hopped onto the loop.
                     transportEnded(cause, reliableChannel);
                 } else {
-                    log.debug("Peer ended during handshake ({}); retrying", cause);
+                    log.debug("Peer ended during handshake ({})", cause);
                     connectionFailed(failureOf(cause));
-                    resetAndRetryHandshake();
+                    retryOrFail("The peer ended during the handshake (" + cause + ")");
                 }
             });
         }
+    }
+
+    /**
+     * Follows the newest selected pair: a client that dialed an IP address or a name reports the
+     * pair's remote side as its remote address; one that dialed a network ID keeps it.
+     */
+    @Override
+    void followPath(TransportPath path) {
+        InetSocketAddress remote = path.remote();
+        media = SourcedAddress.selectedPair(remote, path.remoteType(), false, null);
+        if (remoteAddress instanceof InetSocketAddress && !remote.equals(remoteAddress)) {
+            remoteAddress = remote;
+        }
+    }
+
+    /**
+     * The address this client dialed, as {@link AddressSource#SIGNALING}. A network ID, a name
+     * that is not resolved yet, or no connect at all give a unique placeholder as
+     * {@link AddressSource#UNKNOWN}.
+     */
+    @Override
+    public SourcedAddress signaledAddress() {
+        return signaled;
+    }
+
+    /**
+     * The server side of the newest selected pair, as {@link AddressSource#ICE}, or
+     * {@link AddressSource#TURN} when the server answered through a TURN relay. Each attempt starts
+     * empty.
+     */
+    @Override
+    public Optional<SourcedAddress> mediaAddress() {
+        return Optional.ofNullable(media);
+    }
+
+    /**
+     * The media address once ICE selected a pair, else the signaled address. A client that dialed
+     * an IP address or a name reports the same address from {@link #remoteAddress()}; one that
+     * dialed a network ID keeps that there, and this says where the server turned out to be.
+     */
+    @Override
+    public SourcedAddress reportedAddress() {
+        SourcedAddress current = media;
+        return current != null ? current : signaled;
     }
 
     private String cycleConnectionId() {
