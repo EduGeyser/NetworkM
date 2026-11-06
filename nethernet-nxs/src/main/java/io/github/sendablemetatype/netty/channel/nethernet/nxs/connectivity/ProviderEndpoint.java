@@ -52,8 +52,13 @@ public record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> a
         return relayed(bind, external, localDevelopment, bind.getAddress().isAnyLocalAddress() ? interfaces() : List.of());
     }
 
-    static ProviderEndpoint relayed(InetSocketAddress bind, List<InetSocketAddress> external, boolean localDevelopment,
-                                    List<InetAddress> interfaces) throws IOException {
+    /**
+     * As {@link #relayed(InetSocketAddress, List, boolean)}, with the local addresses given rather than enumerated.
+     *
+     * @param interfaces The addresses the gameplay port is bound on, such as the endpoint gathered them
+     */
+    public static ProviderEndpoint relayed(InetSocketAddress bind, List<InetSocketAddress> external,
+                                           boolean localDevelopment, List<InetAddress> interfaces) throws IOException {
         checkBind(bind);
         Set<InetSocketAddress> endpoints = configured(external, localDevelopment);
         if (endpoints.isEmpty()) {
@@ -71,8 +76,14 @@ public record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> a
         return sorted(bind, endpoints);
     }
 
-    static ProviderEndpoint resolve(InetSocketAddress bind, List<InetSocketAddress> external, boolean localDevelopment,
-                                    List<InetAddress> interfaces) throws IOException {
+    /**
+     * As {@link #resolve(InetSocketAddress, List, boolean)}, with the local addresses of a wildcard bind given rather
+     * than enumerated.
+     *
+     * @param interfaces The addresses the gameplay port is bound on, such as the endpoint gathered them
+     */
+    public static ProviderEndpoint resolve(InetSocketAddress bind, List<InetSocketAddress> external,
+                                           boolean localDevelopment, List<InetAddress> interfaces) throws IOException {
         checkBind(bind);
         Set<InetSocketAddress> endpoints = configured(external, localDevelopment);
         if (!bind.getAddress().isAnyLocalAddress()) {

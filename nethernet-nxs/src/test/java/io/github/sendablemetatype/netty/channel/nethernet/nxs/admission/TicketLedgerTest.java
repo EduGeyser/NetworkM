@@ -9,11 +9,11 @@ import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class AdmissionGateTest extends AdmissionFixture {
+class TicketLedgerTest extends AdmissionFixture {
     final InetSocketAddress other = new InetSocketAddress("127.0.0.1", 23451);
 
-    AdmissionGate gate() {
-        return new AdmissionGate(new AdmissionGate.Limits(2, 2, 1, 1000), validator());
+    TicketLedger gate() {
+        return new TicketLedger(new TicketLedger.Limits(2, 1000), validator());
     }
 
     AdmissionRequest elsewhere() {
@@ -29,21 +29,14 @@ class AdmissionGateTest extends AdmissionFixture {
 
     @Test
     void refusesLimitsItCouldNotHonour() {
-        assertDoesNotThrow(AdmissionGate.Limits::defaults);
+        assertDoesNotThrow(TicketLedger.Limits::defaults);
 
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(0, 2, 1, 1000), "no sessions");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(65537, 65537, 1, 1000),
-                "more sessions than it will hold");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(4, 3, 1, 1000),
-                "fewer claims than sessions, which would strand capacity");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(2, 262145, 1, 1000),
+        assertThrows(IllegalArgumentException.class, () -> new TicketLedger.Limits(0, 1000), "no claims");
+        assertThrows(IllegalArgumentException.class, () -> new TicketLedger.Limits(262145, 1000),
                 "more claims than it will hold");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(2, 2, 0, 1000), "no pending");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(2, 2, 3, 1000),
-                "more pending than sessions");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(2, 2, 1, 99),
+        assertThrows(IllegalArgumentException.class, () -> new TicketLedger.Limits(2, 99),
                 "a handshake window too short to complete one");
-        assertThrows(IllegalArgumentException.class, () -> new AdmissionGate.Limits(2, 2, 1, 120_001),
+        assertThrows(IllegalArgumentException.class, () -> new TicketLedger.Limits(2, 120_001),
                 "or long enough to hold capacity all day");
     }
 
@@ -61,7 +54,7 @@ class AdmissionGateTest extends AdmissionFixture {
     @Test
     void refusesWhenTheClaimsItRemembersAreFull() throws Exception {
         // Sessions are free, but every token it has seen is still remembered
-        var gate = new AdmissionGate(new AdmissionGate.Limits(2, 2, 2, 1000), validator());
+        var gate = new TicketLedger(new TicketLedger.Limits(2, 1000), validator());
         var first = gate.reserve(request(), now, 0);
         assertNotNull(first);
         assertTrue(gate.ready(first));
@@ -131,7 +124,7 @@ class AdmissionGateTest extends AdmissionFixture {
         var gate = gate();
         var executor = Executors.newFixedThreadPool(8);
         try {
-            List<Callable<AdmissionGate.Reservation>> calls = new ArrayList<>();
+            List<Callable<TicketLedger.Reservation>> calls = new ArrayList<>();
             for (int i = 0; i < 64; i++) {
                 calls.add(() -> gate.reserve(request(), now, 0));
             }
@@ -146,7 +139,6 @@ class AdmissionGateTest extends AdmissionFixture {
             executor.shutdown();
         }
         assertEquals(1, gate.stats().sessions());
-        assertEquals(1, gate.stats().pending());
         assertNull(gate.reserve(elsewhere(), now, 0));
     }
 
@@ -173,7 +165,7 @@ class AdmissionGateTest extends AdmissionFixture {
         var r = gate.reserve(request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
-        gate.loginDecided(r, true);
+        gate.verifier(r).acceptForwardedIdentity();
         assertNull(gate.reserve(elsewhere(), now, 0));
         assertEquals(1, gate.stats().replayRejected());
         assertTrue(gate.sweep(now + 120_000, 120_000_000_000L).isEmpty());
@@ -202,10 +194,10 @@ class AdmissionGateTest extends AdmissionFixture {
         assertEquals(List.of(r), gate.close());
         assertFalse(gate.ready(r));
         assertNull(gate.admission(r));
-        assertEquals(1, gate.stats().pending());
+        assertEquals(1, gate.stats().sessions());
         assertNull(gate.reserve(request(), now, 0));
         assertTrue(gate.finish(r));
-        assertEquals(0, gate.stats().pending());
+        assertEquals(0, gate.stats().sessions());
         assertEquals(0, gate.stats().claims());
     }
 
@@ -221,32 +213,16 @@ class AdmissionGateTest extends AdmissionFixture {
     }
 
     @Test
-    void pendingWarningsAreAggregatedAndRateLimited() throws Exception {
-        assertEquals(1024, AdmissionGate.Limits.defaults().pending());
-        var trusted = validator().validate(request(), now);
-        var v = new StatelessAdmissionValidator(TestSignalingProvider.AUDIENCE, 60_000);
-        v.installKeys(List.of(new AdmissionKey("K001", TestSignalingProvider.SECRET)));
-        var gate = new AdmissionGate(new AdmissionGate.Limits(2, 4, 1, 1000), v);
-        var first = TestSignalingProvider.answer(trusted.remoteDescription(), trusted.remoteFingerprint().value(), 49199,
-                now + 30_000, TestSignalingProvider.AUDIENCE, false);
-        var next = TestSignalingProvider.answer(trusted.remoteDescription(), trusted.remoteFingerprint().value(), 49199,
-                now + 30_000, TestSignalingProvider.AUDIENCE, false);
-        var r = gate.reserve(request(first.token(), remote), now, 0);
-        var nextRequest = new AdmissionRequest(next.token(), remote, other);
-        assertNull(gate.reserve(request("invalidToken", remote), now, 0));
-        assertNull(gate.pollPendingLimitWarning(0));
-        for (int i = 0; i < 3; i++) {
-            assertNull(gate.reserve(nextRequest, now, 0));
-        }
-        assertEquals(new AdmissionGate.PendingLimitWarning(1, 1, 3), gate.pollPendingLimitWarning(0));
-        for (int i = 0; i < 2; i++) {
-            assertNull(gate.reserve(nextRequest, now, 0));
-        }
-        assertNull(gate.pollPendingLimitWarning(4_999_999_999L));
-        assertTrue(gate.ready(r));
-        assertEquals(new AdmissionGate.PendingLimitWarning(1, 1, 2), gate.pollPendingLimitWarning(5_000_000_000L));
-        assertNotNull(gate.reserve(nextRequest, now, 0));
-        assertEquals(1, gate.stats().pending());
-        assertEquals(5, gate.stats().capacityRejected());
+    void anAssistedReservationIsKeptByItsTicketAlone() throws Exception {
+        // An assisted join knows only the candidates the client claims, which must not block a tuple
+        var gate = gate();
+        var assisted = validator().validate(request(), now);
+        assertNotNull(gate.reserveAuthenticated(assisted, null, now, 0));
+        assertNull(gate.reserveAuthenticated(validator().validate(request(), now), null, now, 0),
+                "the same ticket twice is a replay");
+
+        assertNotNull(gate.reserve(request(anotherToken(), remote), now, 0),
+                "a stateless ticket from the claimed address still gets in");
+        assertEquals(2, gate.stats().sessions());
     }
 }

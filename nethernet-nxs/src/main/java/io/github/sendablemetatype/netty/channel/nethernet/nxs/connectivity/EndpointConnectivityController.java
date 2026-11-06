@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint.StunReading;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 
 import java.net.InetSocketAddress;
@@ -72,7 +74,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
 
     private static final class Lane {
         final List<EndpointSelection.Candidate> direct;
-        StunObservation observation;
+        StunObserver observation;
         InetSocketAddress fresh;
 
         Lane(List<EndpointSelection.Candidate> direct) {
@@ -81,7 +83,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
     }
 
     private final EndpointSelection selection;
-    private final StunMonitor.Factory factory;
+    private final StunObserver.MonitorFactory factory;
     private final LongSupplier nanoTime;
     private final Duration maxAge;
     private final EnumMap<AddressFamily, Lane> lanes = new EnumMap<>(AddressFamily.class);
@@ -91,15 +93,17 @@ public final class EndpointConnectivityController implements AutoCloseable {
     /**
      * @param numericServers    The STUN server per family, numeric; families without one get no monitor
      * @param maxObservationAge How long a mapping counts after its last answer, at most five minutes
-     * @param factory           Opens monitors on the listener's exact bind address and port, never a utility socket
+     * @param factory           Opens monitors on the endpoint's shared ICE port, never a socket of their own, such as
+     *                          {@link StunObserver#sharedPort}
      */
     public EndpointConnectivityController(EndpointSelection selection, Map<AddressFamily, InetSocketAddress> numericServers,
-                                          Duration maxObservationAge, StunMonitor.Factory factory) {
+                                          Duration maxObservationAge, StunObserver.MonitorFactory factory) {
         this(selection, numericServers, maxObservationAge, factory, System::nanoTime);
     }
 
     EndpointConnectivityController(EndpointSelection selection, Map<AddressFamily, InetSocketAddress> numericServers,
-                                   Duration maxObservationAge, StunMonitor.Factory factory, LongSupplier nanoTime) {
+                                   Duration maxObservationAge, StunObserver.MonitorFactory factory,
+                                   LongSupplier nanoTime) {
         this.selection = Objects.requireNonNull(selection);
         this.factory = Objects.requireNonNull(factory);
         this.nanoTime = Objects.requireNonNull(nanoTime);
@@ -136,7 +140,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
     /** Where each family stands now, after reading the STUN monitors. */
     public synchronized Snapshot snapshot() {
         EnumMap<AddressFamily, FamilySnapshot> result = new EnumMap<>(AddressFamily.class);
-        List<StunObservation> polled = new ArrayList<>();
+        List<StunObserver> polled = new ArrayList<>();
         for (AddressFamily family : AddressFamily.values()) {
             Lane lane = lanes.get(family);
             State inactive = inactive(family, lane);
@@ -149,7 +153,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
         }
         // A family that STUN cannot serve only matters while the other has no public mapping either
         boolean covered = lanes.values().stream().anyMatch(lane -> lane.fresh != null);
-        for (StunObservation observation : polled) {
+        for (StunObserver observation : polled) {
             observation.report(covered);
         }
         return new Snapshot(candidateRevision, result);
@@ -176,20 +180,21 @@ public final class EndpointConnectivityController implements AutoCloseable {
     }
 
     private FamilySnapshot sample(Lane lane) {
-        StunObservation observation = lane.observation;
+        StunObserver observation = lane.observation;
         observation.poll();
         if (observation.failed()) {
             setFresh(lane, null);
             return view(lane, State.MONITOR_FAILED, null);
         }
-        Optional<StunObservation.Observed> latest = observation.observed();
+        // A numeric server has one address, so the observer keeps at most one reading for it.
+        Optional<StunObserver.Observed> latest = observation.observed().stream().findFirst();
         if (latest.isEmpty()) {
             setFresh(lane, null);
             return view(lane, State.STUN_PENDING, null);
         }
-        StunObservation.Observed observed = latest.get();
+        StunObserver.Observed observed = latest.get();
         StunReading reading = observed.reading();
-        boolean answered = reading.answered();
+        boolean answered = StunObserver.answered(reading);
         Observation view = new Observation(
                 reading.server(),
                 reading.mapped(),
@@ -219,8 +224,8 @@ public final class EndpointConnectivityController implements AutoCloseable {
                 Optional.ofNullable(lane.fresh));
     }
 
-    private StunObservation observation(InetSocketAddress server) {
-        return new StunObservation(server, maxAge, selection.bind().getPort(), factory, nanoTime);
+    private StunObserver observation(InetSocketAddress server) {
+        return new StunObserver(server, maxAge, selection.bind().getPort(), factory, nanoTime);
     }
 
     private void setFresh(Lane lane, InetSocketAddress fresh) {

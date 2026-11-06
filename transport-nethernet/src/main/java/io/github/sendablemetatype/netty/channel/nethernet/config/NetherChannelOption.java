@@ -4,6 +4,7 @@ import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
@@ -12,6 +13,7 @@ import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.netty.channel.ChannelOption;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 
 public class NetherChannelOption<T> extends ChannelOption<T> {
@@ -83,6 +85,35 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      */
     public static final ChannelOption<List<InetSocketAddress>> NETHER_SERVER_ADVERTISED_ADDRESSES =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_ADVERTISED_ADDRESSES");
+
+    /**
+     * STUN servers a server channel asks for this host's public address from its shared ICE port,
+     * as numeric addresses or unresolved names with a port ({@link StunObserver#parseServer} reads
+     * {@code stun:} URLs). Each answer then announces the fresh mappings as server reflexive
+     * candidates, the way an advertised address that this host does not hold is announced. Empty
+     * by default: no discovery.
+     * <p>
+     * The servers are asked in the background, every 15 seconds, which also keeps the NAT mapping
+     * open, so no join waits for them; names are looked up off the event loop, and again after
+     * {@link #NETHER_SERVER_STUN_MAX_AGE} without a mapping. A mapping is announced until that age
+     * after its last answer, or until the server reports another. A mapping on another port than
+     * the ICE port is announced on the ICE port too, for a router that moved the port on the way
+     * out but forwards the ICE port itself; without such a forward that costs a peer one failed
+     * check.
+     * <p>
+     * Binding fails when this is set together with {@link #NETHER_SERVER_ADVERTISED_ADDRESSES}, with
+     * PROXY protocol relays in front of the ICE port, or without the shared ICE port: a port window
+     * has no fixed port whose mapping could be learned.
+     */
+    public static final ChannelOption<List<InetSocketAddress>> NETHER_SERVER_STUN_SERVERS =
+            valueOf(NetherChannelOption.class, "NETHER_SERVER_STUN_SERVERS");
+
+    /**
+     * How long a mapping {@link #NETHER_SERVER_STUN_SERVERS} found is still announced after its
+     * last answer, as long as the server reports no other. 5 minutes by default.
+     */
+    public static final ChannelOption<Duration> NETHER_SERVER_STUN_MAX_AGE =
+            valueOf(NetherChannelOption.class, "NETHER_SERVER_STUN_MAX_AGE");
 
     /**
      * Whether a server channel checks guessed candidates at the address a client signaled from,

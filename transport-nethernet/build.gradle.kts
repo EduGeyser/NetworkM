@@ -52,6 +52,19 @@ tasks.jar {
     manifest.attributes["Automatic-Module-Name"] = "io.github.sendablemetatype.netty.transport.nethernet"
 }
 
+// The fake engine and the other test helpers, for the tests of modules built on this one. Never published.
+val testJar = tasks.register<Jar>("testJar") {
+    archiveClassifier.set("tests")
+    from(sourceSets.test.get().output)
+}
+val testHelpers = configurations.create("testHelpers") {
+    isCanBeConsumed = true
+    isCanBeResolved = false
+}
+artifacts {
+    add(testHelpers.name, testJar)
+}
+
 tasks.register<JavaExec>("runDiscovery") {
     mainClass.set("io.github.sendablemetatype.netty.util.nethernet.NetherNetScanner")
     classpath = sourceSets["main"].runtimeClasspath
