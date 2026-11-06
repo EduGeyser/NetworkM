@@ -62,6 +62,19 @@ public final class FakeDataLink implements DataLink {
 
     @Override
     public void send(ByteBuffer message, Consumer<Throwable> completion) {
+        send(message, completion, true);
+    }
+
+    /**
+     * Sends a text message, which the engine interface never does, so a test
+     * can play a remote peer that does. On a loopback engine it arrives at the
+     * other side as text.
+     */
+    public void sendText(ByteBuffer message, Consumer<Throwable> completion) {
+        send(message, completion, false);
+    }
+
+    private void send(ByteBuffer message, Consumer<Throwable> completion, boolean binary) {
         byte[] bytes = new byte[message.remaining()];
         message.duplicate().get(bytes);
         Send send = new Send(bytes, message.isDirect(), completion);
@@ -83,7 +96,7 @@ public final class FakeDataLink implements DataLink {
                 }
             }
             if (refused == null && far != null) {
-                transmit(far, bytes);
+                transmit(far, bytes, binary);
             }
             if (settleNow) {
                 send.completion.accept(refused);
@@ -196,10 +209,10 @@ public final class FakeDataLink implements DataLink {
     }
 
     /** Loopback: delivers a message on the other side, then takes its bytes out of this link's queue. */
-    private void transmit(FakeDataLink far, byte[] bytes) {
+    private void transmit(FakeDataLink far, byte[] bytes, boolean binary) {
         far.peer.post(() -> {
             if (!far.closed()) {
-                far.peer.message(far, bytes);
+                far.peer.deliver(far, bytes, binary);
             }
             drain(bytes.length);
         });

@@ -72,6 +72,13 @@ public abstract class EngineConformanceTest {
     /** Whether the engine moves packets over real sockets, which some tests need. */
     protected abstract boolean realNetwork();
 
+    /**
+     * Sends a text message on a link of the engine. The engine interface
+     * sends binary messages only, so this plays a remote peer that sends
+     * strings.
+     */
+    protected abstract void sendText(DataLink link, byte[] message) throws Exception;
+
     @BeforeEach
     void openEngine() {
         engine = newEngine();
@@ -128,6 +135,22 @@ public abstract class EngineConformanceTest {
         awaitCondition(() -> results.size() == 8, "Not every send completed");
         // A copy that keeps the nulls of successful sends; List.copyOf rejects them.
         assertEquals(Collections.nCopies(8, null), new ArrayList<>(results));
+    }
+
+    @Test
+    void aTextMessageArrivesAsTextAndNotAsBinary() throws Exception {
+        Pair pair = connect(true, answererConfig());
+        DataLink link = pair.client.links.get(RELIABLE);
+        byte[] text = "text".getBytes(StandardCharsets.UTF_8);
+        byte[] binary = "binary".getBytes(StandardCharsets.UTF_8);
+
+        sendText(link, text);
+        link.send(ByteBuffer.wrap(binary), ignored -> {
+        });
+
+        // The link is ordered, so the text message arrived first
+        assertEquals(new Received(RELIABLE, binary), pair.server.messages.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertEquals(List.of(new Received(RELIABLE, text)), List.copyOf(pair.server.texts));
     }
 
     @Test
@@ -550,6 +573,7 @@ public abstract class EngineConformanceTest {
         final List<DataLink> remoteLinks = Collections.synchronizedList(new ArrayList<>());
         final Set<String> refused = ConcurrentHashMap.newKeySet();
         final BlockingQueue<Received> messages = new LinkedBlockingQueue<>();
+        final BlockingQueue<Received> texts = new LinkedBlockingQueue<>();
         final Semaphore queueLow = new Semaphore(0);
         final BlockingQueue<Closed> channelsClosed = new LinkedBlockingQueue<>();
         volatile TransportPath lastPath;
@@ -645,6 +669,14 @@ public abstract class EngineConformanceTest {
             byte[] bytes = new byte[message.remaining()];
             message.duplicate().get(bytes);
             messages.add(new Received(link.parameters().label(), bytes));
+        }
+
+        @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            callback();
+            byte[] bytes = new byte[message.remaining()];
+            message.duplicate().get(bytes);
+            texts.add(new Received(link.parameters().label(), bytes));
         }
 
         @Override

@@ -41,6 +41,16 @@ class NetherNetChannelLifecycleTest {
     }
 
     @Test
+    void aTextSegmentIsReadAsGameData() {
+        try (ActiveChild h = new ActiveChild()) {
+            h.peer.text(h.reliable(), (byte) 1, (byte) 5);
+            h.fixture.reliable(0, 6);
+            h.run();
+            assertEquals(List.of("active", "read:5,6"), h.events);
+        }
+    }
+
+    @Test
     void rejectedInboundTaskIsRetriedForQuietConnection() throws Exception {
         InboundRecoveryLoop loop = new InboundRecoveryLoop();
         ChildFixture fixture = new ChildFixture(null).openLinks();

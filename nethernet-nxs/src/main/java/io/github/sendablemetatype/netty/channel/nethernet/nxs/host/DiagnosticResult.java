@@ -30,7 +30,10 @@ public record DiagnosticResult(String attemptId, String keyId, DiagnosticHostPol
 
     /** How a check ended. */
     public enum Outcome {
-        /** The host answered the PING and the peer closed cleanly while the permit still held. */
+        /**
+         * The engine accepted the host's PONG for transmission, and the peer closed cleanly while the permit still
+         * held.
+         */
         PONG_SENT,
         /** The permit expired, or the policy, key, endpoint or provider authority behind it was withdrawn. */
         WITHDRAWN,
@@ -38,7 +41,7 @@ public record DiagnosticResult(String attemptId, String keyId, DiagnosticHostPol
         OBSERVATION_INVALIDATED,
         /** The data channels did not open and exchange the frames within the handshake limit. */
         HANDSHAKE_TIMEOUT,
-        /** The connection or a data channel failed before the PONG. */
+        /** The connection or a data channel failed, or the engine refused the PONG, before the PONG was sent. */
         TRANSPORT_FAILED,
         /** The engine could not create the peer or answer the offer, or answered with another identity. */
         NEGOTIATION_FAILED,

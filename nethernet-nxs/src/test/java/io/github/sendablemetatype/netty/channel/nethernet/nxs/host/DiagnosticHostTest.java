@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -99,6 +100,7 @@ class DiagnosticHostTest {
         peer.message(reliable, DiagnosticExchange.encode(permit.claims.attemptIdHex(), DiagnosticExchange.PING, 0,
                 nonce));
         await(() -> reliable.sendCount() == 1, "the PONG");
+        reliable.accept(0);
         assertArrayEquals(DiagnosticExchange.encode(permit.claims.attemptIdHex(), DiagnosticExchange.PONG, 0, nonce),
                 reliable.sentBytes().getFirst());
 
@@ -127,8 +129,27 @@ class DiagnosticHostTest {
         FakeDataLink reliable = connect(peer, CLIENT);
         peer.message(reliable, ping(permit));
         await(() -> reliable.sendCount() == 1, "the PONG");
+        reliable.accept(0);
 
         assertEquals(Outcome.PONG_SENT, result().outcome(), "a prober that never closes is not waited for");
+        assertTrue(peer.terminated());
+    }
+
+    @Test
+    void aPongIsSentOnlyOnceTheEngineAcceptedIt() throws Exception {
+        directHost();
+        Permit permit = permit(DiagnosticAdmissionCodec.PROFILE, CLIENT);
+        fixture.hold(permit.credentials.localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        FakeDataLink reliable = connect(peer, CLIENT);
+        peer.message(reliable, ping(permit));
+        await(() -> reliable.sendCount() == 1, "the PONG");
+
+        // Still out past the time the host lingers after a PONG, then refused
+        Thread.sleep(TimeUnit.NANOSECONDS.toMillis(DiagnosticHost.LINGER_NANOS) + 300);
+        assertTrue(fixture.transport.pollDiagnosticResults(1).isEmpty(), "a PONG the engine has not accepted");
+        reliable.reject(0, new IOException("The engine refused the PONG"));
+        assertEquals(Outcome.TRANSPORT_FAILED, result().outcome());
         assertTrue(peer.terminated());
     }
 
@@ -231,6 +252,19 @@ class DiagnosticHostTest {
     }
 
     @Test
+    void aPingSentAsTextFailsTheCheck() throws Exception {
+        directHost();
+        Permit permit = permit(DiagnosticAdmissionCodec.PROFILE, CLIENT);
+        fixture.hold(permit.credentials.localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        FakeDataLink reliable = connect(peer, CLIENT);
+        peer.text(reliable, ping(permit));
+
+        assertEquals(Outcome.INVALID_PROTOCOL, result().outcome());
+        assertEquals(0, reliable.sendCount(), "no PONG answers a text message");
+    }
+
+    @Test
     void anAssistedCheckIsAnsweredWithOneCandidateAndNoIdentity() throws Exception {
         assistedHost();
         Permit permit = permit(DiagnosticAdmissionCodec.ASSISTED_PROFILE, PUBLIC_PROBER);
@@ -253,6 +287,7 @@ class DiagnosticHostTest {
         FakeDataLink reliable = connect(peer, PUBLIC_PROBER);
         peer.message(reliable, ping(permit));
         await(() -> reliable.sendCount() == 1, "the PONG");
+        reliable.accept(0);
         peer.closed(CloseCause.REMOTE_CLOSED);
         DiagnosticResult result = result();
         assertEquals(Outcome.PONG_SENT, result.outcome());

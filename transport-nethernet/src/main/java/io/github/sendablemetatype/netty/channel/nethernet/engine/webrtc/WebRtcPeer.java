@@ -441,13 +441,21 @@ final class WebRtcPeer implements Peer {
         }
     }
 
-    /** The message path, kept free of allocations. */
-    void deliver(WebRtcLink link, ByteBuffer message) {
+    /**
+     * The message path, kept free of allocations.
+     *
+     * @param binary whether libwebrtc marks the message binary rather than text
+     */
+    void deliver(WebRtcLink link, ByteBuffer message, boolean binary) {
         if (!listening) {
             return;
         }
         try {
-            listener.onMessage(link, message);
+            if (binary) {
+                listener.onMessage(link, message);
+            } else {
+                listener.onTextMessage(link, message);
+            }
         } catch (RuntimeException e) {
             log.warn("A NetherNet peer listener failed", e);
         }

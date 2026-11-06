@@ -27,10 +27,14 @@ public final class FakeIceEndpoint implements IceEndpoint {
     private final Map<InetSocketAddress, InetSocketAddress> stunMappings = new ConcurrentHashMap<>();
     private final List<InetSocketAddress> stunMonitors = new CopyOnWriteArrayList<>();
     private final AtomicInteger stunReads = new AtomicInteger();
+    private final boolean holdClose;
+    private final CompletableFuture<IceEndpoint> opened = new CompletableFuture<>();
+    private final CompletableFuture<Void> closeStage = new CompletableFuture<>();
     private volatile boolean closed;
 
-    FakeIceEndpoint(int port) {
+    FakeIceEndpoint(int port, boolean holdClose) {
         this.port = port;
+        this.holdClose = holdClose;
     }
 
     @Override
@@ -116,11 +120,34 @@ public final class FakeIceEndpoint implements IceEndpoint {
     public CompletionStage<Void> close() {
         closed = true;
         handler = null;
-        return CompletableFuture.completedFuture(null);
+        if (!holdClose) {
+            closeStage.complete(null);
+        }
+        return closeStage.minimalCompletionStage();
     }
 
+    /** Whether {@link #close()} was called. */
     public boolean closed() {
         return closed;
+    }
+
+    /** Whether the close stage completed. */
+    public boolean terminated() {
+        return closeStage.isDone();
+    }
+
+    /** Completes the open stage {@link FakeEngine#holdEndpointOpen} held. */
+    public void finishOpen() {
+        opened.complete(this);
+    }
+
+    /** Completes a close stage {@link FakeEngine#holdEndpointClose} held. */
+    public void finishClose() {
+        closeStage.complete(null);
+    }
+
+    CompletionStage<IceEndpoint> opened() {
+        return opened.minimalCompletionStage();
     }
 
     public List<String> relays() {

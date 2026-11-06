@@ -285,6 +285,11 @@ final class FakeNative {
         }
 
         @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            events.add("text " + link.parameters().label() + " " + message.remaining());
+        }
+
+        @Override
         public void onQueueLow(DataLink link) {
             events.add("queue low " + link.parameters().label());
         }

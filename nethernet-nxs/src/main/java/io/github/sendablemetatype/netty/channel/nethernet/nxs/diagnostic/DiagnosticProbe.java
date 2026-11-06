@@ -239,6 +239,9 @@ public final class DiagnosticProbe {
     private boolean done, answerVerified, transportEstablished;
     private long anchorWall, anchorNanos, deadlineNanos, currentWall;
     private final List<ScheduledFuture<?>> timers = new ArrayList<>();
+    /** The endpoint and STUN monitor stages, which the cleanup waits for. */
+    private CompletableFuture<IceEndpoint> opening;
+    private CompletableFuture<IceEndpoint.StunMonitor> monitoring;
     private IceEndpoint endpoint;
     private Peer peer;
     private volatile DataLink reliable;
@@ -282,7 +285,7 @@ public final class DiagnosticProbe {
         this.stunServer = server;
     }
 
-    /** Completes once the probe's peer and endpoint are gone. */
+    /** Completes once the probe's peer, STUN monitor and endpoint are gone, also ones still being created at its end. */
     public CompletionStage<Void> termination() {
         return termination.minimalCompletionStage();
     }
@@ -332,14 +335,15 @@ public final class DiagnosticProbe {
         if (!proceed()) {
             return;
         }
-        engine.openEndpoint(new EndpointConfig(bind.getPort(), List.of(bind.getAddress())))
-                .whenComplete((opened, failure) -> onExecutor(() -> opened(opened, failure),
-                        () -> closeQuietly(opened)));
+        opening = engine.openEndpoint(new EndpointConfig(bind.getPort(), List.of(bind.getAddress())))
+                .toCompletableFuture();
+        opening.whenComplete((opened, failure) -> onExecutor(() -> opened(opened, failure),
+                () -> closeQuietly(opened)));
     }
 
     private void opened(IceEndpoint opened, Throwable failure) {
+        // An attempt that ended meanwhile closes the endpoint itself
         if (done) {
-            closeQuietly(opened);
             return;
         }
         if (failure != null) {
@@ -360,12 +364,13 @@ public final class DiagnosticProbe {
             return;
         }
         if (stunServer != null) {
-            endpoint.monitorStun(stunServer).whenComplete((stun, refused) -> onExecutor(() -> {
-                if (done || refused != null) {
-                    closeQuietly(stun);
-                    if (!done) {
-                        finish(Reason.GATHERING);
-                    }
+            monitoring = endpoint.monitorStun(stunServer).toCompletableFuture();
+            monitoring.whenComplete((stun, refused) -> onExecutor(() -> {
+                if (done) {
+                    return;
+                }
+                if (refused != null) {
+                    finish(Reason.GATHERING);
                 } else {
                     monitor = stun;
                 }
@@ -535,13 +540,17 @@ public final class DiagnosticProbe {
                 || family(remote.getAddress()) != family) {
             return false;
         }
-        // A NAT may show the host another mapping than the STUN server saw, which libwebrtc reports as a local
-        // peer-reflexive candidate
-        boolean assistedLocal = job.target().assisted() && (local.equals(gatheredLocal)
-                || current.localType() == TransportPath.CandidateType.PEER_REFLEXIVE
-                && destination(local.getAddress()));
+        // The peer gathers on the bound socket only, so every local candidate is that socket or a mapping of it. A
+        // probe behind NAT learns the mapping the host saw from the host's check responses, which libwebrtc then
+        // reports as a local peer-reflexive candidate: on a direct probe from a private address, and on an assisted
+        // one whose NAT showed the host another mapping than the STUN server saw. A host elsewhere sees a public
+        // mapping; a private one means probe and host share a network, which only local development allows, so the
+        // mapping must be a destination.
+        boolean mapped = current.localType() == TransportPath.CandidateType.PEER_REFLEXIVE
+                && destination(local.getAddress());
+        boolean localAllowed = local.equals(bind) || local.equals(gatheredLocal) || mapped;
         boolean remoteAllowed = target != null ? remote.equals(target) : destination(remote.getAddress());
-        if (!(local.equals(bind) || assistedLocal) || !remoteAllowed) {
+        if (!localAllowed || !remoteAllowed) {
             return false;
         }
         selectedLocal = local;
@@ -614,7 +623,10 @@ public final class DiagnosticProbe {
         return nanos - deadlineNanos < 0 && currentWall < job.expiresAt();
     }
 
-    /** Ends the attempt: stops waiting, closes the peer and then the endpoint, and reports. */
+    /**
+     * Ends the attempt: stops waiting, closes the peer and the STUN monitor, then the endpoint, and reports. A monitor
+     * or endpoint still being created when the attempt ends is closed once it exists, and the report waits for that.
+     */
     private void finish(Reason ending) {
         if (done) {
             return;
@@ -625,12 +637,23 @@ public final class DiagnosticProbe {
         if (pending != null) {
             pending.cancel(false);
         }
-        closeQuietly(monitor);
         boolean pinged = exchange != null && exchange.complete();
         CompletableFuture<Void> peerClosed = peer == null ? CompletableFuture.completedFuture(null)
                 : peer.close().toCompletableFuture();
-        peerClosed.thenCompose(ignored -> endpoint == null ? CompletableFuture.<Void>completedFuture(null)
-                        : endpoint.close().toCompletableFuture())
+        CompletableFuture<Void> monitorClosed = monitoring == null ? CompletableFuture.completedFuture(null)
+                : monitoring.handle((stun, refused) -> {
+                    closeQuietly(stun);
+                    return null;
+                });
+        CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
+                : opening.exceptionally(notOpened -> null);
+        // The endpoint goes last, also when the peer failed to close
+        CompletableFuture<Void> endpointClosed = CompletableFuture.allOf(peerClosed.exceptionally(failed -> null),
+                        monitorClosed)
+                .thenCompose(ignored -> opened)
+                .thenCompose(created -> created == null ? CompletableFuture.<Void>completedFuture(null)
+                        : created.close().toCompletableFuture());
+        CompletableFuture.allOf(peerClosed, endpointClosed)
                 .whenComplete((ignored, failure) -> onExecutor(() -> report(pinged, failure == null),
                         () -> report(pinged, failure == null)));
     }
@@ -750,6 +773,12 @@ public final class DiagnosticProbe {
         @Override
         public void onMessage(DataLink link, ByteBuffer message) {
             channels.received(link == reliable, message);
+            onExecutor(DiagnosticProbe.this::step);
+        }
+
+        @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            channels.receivedText();
             onExecutor(DiagnosticProbe.this::step);
         }
 

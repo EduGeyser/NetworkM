@@ -278,6 +278,10 @@ class NetherNetProxyRelayNativeTest {
         }
 
         @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+        }
+
+        @Override
         public void onLocalCandidate(String candidate, String mid) {
         }
 

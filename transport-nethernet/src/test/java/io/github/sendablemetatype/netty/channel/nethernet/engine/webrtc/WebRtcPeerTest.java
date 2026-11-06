@@ -419,6 +419,20 @@ class WebRtcPeerTest {
                 listener.snapshot());
     }
 
+    @Test
+    void aTextMessageIsReportedAsText() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+        channel.state = RTCDataChannelState.OPEN;
+        peer.onRemoteChannel(channel);
+
+        channel.observer.onMessage(new RTCDataChannelBuffer(ByteBuffer.allocate(5), false));
+        channel.observer.onMessage(new RTCDataChannelBuffer(ByteBuffer.allocate(7), true));
+
+        assertEquals(List.of("remote ReliableDataChannel", "open ReliableDataChannel", "text ReliableDataChannel 5",
+                "message ReliableDataChannel 7"), listener.snapshot());
+    }
+
     @ParameterizedTest
     @CsvSource({
             ",,,false,REMOTE_CLOSED",

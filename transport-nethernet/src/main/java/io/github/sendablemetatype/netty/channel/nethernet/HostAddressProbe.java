@@ -118,6 +118,10 @@ final class HostAddressProbe {
         }
 
         @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+        }
+
+        @Override
         public void onQueueLow(DataLink link) {
         }
 
