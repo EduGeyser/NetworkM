@@ -134,6 +134,17 @@ class NetherNetDisconnectReasonTest {
     }
 
     @Test
+    void nothingArrivingAfterBrokenFramingIsDelivered() {
+        try (ActiveChild h = new ActiveChild()) {
+            h.fixture.reliable(0, 1);
+            h.fixture.reliable(0);
+            h.fixture.unreliable(0, 9);
+            h.run();
+            assertEquals(List.of("active", "read:1", "BAD_PACKET", "inactive"), h.events);
+        }
+    }
+
+    @Test
     void aMessageOverTheReassemblyCapFiresSplitQueueTooLong() {
         try (ActiveChild h = new ActiveChild(child ->
                 child.config().setOption(NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES, 2))) {

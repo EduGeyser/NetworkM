@@ -77,7 +77,8 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
  * reliable channel ends it with {@link TransportDisconnectReason#BAD_PACKET}, a
  * message over
  * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_MAX_REASSEMBLED_BYTES}
- * with {@link TransportDisconnectReason#SPLIT_QUEUE_TOO_LONG}.
+ * with {@link TransportDisconnectReason#SPLIT_QUEUE_TOO_LONG}. Nothing that
+ * arrives after the transport ended the connection is delivered.
  *
  * <p><b>Ending.</b> The channel stays active until it closes, so every close
  * after activation passes through {@code channelInactive}. When the transport
@@ -526,7 +527,11 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      * once; whole messages wait for the event loop in arrival order.
      */
     final void inbound(DataLink link, ByteBuffer message) {
-        if (!open || inboundClosed) {
+        // Once the transport ended the connection nothing more is admitted, on
+        // either data channel: vanilla reads nothing past broken framing, and
+        // for any other ending the close is already on its way. Messages that
+        // arrived before still drain if the loop reaches them first.
+        if (!open || inboundClosed || ending.get() != null) {
             return;
         }
         NetherChannelMetrics metrics = config.getMetrics();
