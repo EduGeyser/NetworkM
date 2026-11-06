@@ -1,498 +1,318 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
-import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
-import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
-import java.net.ConnectException;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.ANSWER;
+import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.OFFER;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(15)
 class NetherNetServerChannelTest {
-    private static final String OFFER = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:data\r\n"
-            + "a=max-message-size:262144\r\n";
-
-    private final MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+    private final EndpointHarness harness = new EndpointHarness();
 
     @AfterEach
     void tearDown() {
-        group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        harness.close();
     }
 
-    @Test
-    void aFailedSignalingBindNeverCreatesAnEngine() throws Exception {
-        AtomicInteger creations = new AtomicInteger();
-        StubSignaling signaling = new StubSignaling(true);
+    // Binding and engines.
 
-        ChannelFuture future = owned(() -> {
+    @Test
+    void bindingWithoutAServerIdentityFailsAndCreatesNoEngine() {
+        AtomicInteger creations = new AtomicInteger();
+        ChannelFuture bind = owned(() -> {
             creations.incrementAndGet();
             return new FakeEngine();
-        }, signaling).bind(new InetSocketAddress(0));
+        }).option(NetherChannelOption.NETHER_SERVER_IDENTITY, null).bind(new InetSocketAddress("127.0.0.1", 0))
+                .awaitUninterruptibly();
 
-        assertThrows(Exception.class, future::sync);
-        assertEquals(0, creations.get(), "no engine when the signaling bind fails");
-        future.channel().close().syncUninterruptibly();
-        assertTrue(signaling.closed);
+        assertInstanceOf(IllegalStateException.class, bind.cause());
+        assertTrue(bind.cause().getMessage().contains("NETHER_SERVER_IDENTITY"));
+        assertEquals(0, creations.get());
+        assertFalse(bind.channel().isOpen(), "a failed bind closes the channel");
     }
 
     @Test
-    void anOwnedEngineIsCreatedOnceAfterBindAndClosedWithTheChannel() throws Exception {
+    void anOwnedEngineIsCreatedOnceAtBindAndClosedWithTheChannel() {
         AtomicInteger creations = new AtomicInteger();
         FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-
-        ChannelFuture future = owned(() -> {
+        Channel server = owned(() -> {
             creations.incrementAndGet();
-            assertTrue(signaling.bound, "signaling binds first");
             return engine;
-        }, signaling).bind(new InetSocketAddress(0)).sync();
+        }).bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
         assertEquals(1, creations.get());
         assertFalse(engine.isClosed());
 
-        future.channel().close().syncUninterruptibly();
+        server.close().syncUninterruptibly();
         assertEquals(1, engine.closeCalls());
-        assertTrue(signaling.closed);
     }
 
     @Test
-    void aFailingEngineSupplierFailsTheBindAndClosesSignaling() {
-        StubSignaling signaling = new StubSignaling(false);
+    void aFailingEngineSupplierFailsTheBind() {
         UnsatisfiedLinkError missing = new UnsatisfiedLinkError("native library unavailable");
-        ChannelFuture future = owned(() -> {
+        ChannelFuture bind = owned(() -> {
             throw missing;
-        }, signaling).bind(new InetSocketAddress(0)).awaitUninterruptibly();
-        assertSame(missing, future.cause());
-        assertTrue(signaling.closed);
+        }).bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
+        assertSame(missing, bind.cause());
     }
 
     @Test
     void aSharedEngineIsNeverClosedAndServesASecondBind() throws Exception {
-        FakeEngine engine = new FakeEngine();
         for (int bind = 0; bind < 2; bind++) {
-            StubSignaling signaling = new StubSignaling(false);
-            Channel server = shared(engine, signaling).bind(new InetSocketAddress(0)).sync().channel();
-            ((NetherNetServerChannel) server).acceptConnection(bind + 1, OFFER, "peer");
-            server.eventLoop().submit(() -> { }).sync();
+            NetherNetServerChannel server = harness.bind();
+            harness.source(true).offer(bind + 1, OFFER);
+            harness.child();
             server.close().syncUninterruptibly();
         }
-        assertEquals(2, engine.peers().size());
-        assertEquals(0, engine.closeCalls());
+        assertEquals(2, harness.engine.peers().size());
+        assertEquals(0, harness.engine.closeCalls());
+        harness.server = null;
     }
 
     @Test
-    void anInvalidOfferLimitSignalsFailureBeforeCreatingAPeer() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        NetherNetServerChannel server = bindShared(engine, signaling);
-        try {
-            for (boolean failSend : new boolean[]{false, true}) {
-                signaling.failSend = failSend;
-                server.acceptConnection(42, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-                        + "a=max-message-size:1\r\n", "7");
-                server.eventLoop().submit(() -> { }).sync();
-                assertEquals(new Sent("7", "CONNECTERROR 42 Failed to establish connection"),
-                        signaling.sent.poll(2, TimeUnit.SECONDS));
-                assertTrue(signaling.handlers.isEmpty());
-                assertTrue(engine.peers().isEmpty());
-                assertTrue(server.isOpen());
-            }
-        } finally {
-            server.close().syncUninterruptibly();
+    void peersShareOneIcePortAtTheBoundAddressByDefault() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        harness.source(true).offer(1, OFFER);
+        harness.source(false).offer(2, OFFER);
+        harness.negotiating();
+        harness.sync();
+
+        int port = ((InetSocketAddress) server.localAddress()).getPort();
+        assertNotEquals(0, port, "port 0 picks a free port");
+        for (FakePeer peer : harness.engine.peers()) {
+            assertNotNull(peer.config().endpoint());
+            assertEquals(port, peer.config().endpoint().port());
         }
+        assertSame(harness.engine.peer(0).config().endpoint(), harness.engine.peer(1).config().endpoint());
     }
 
     @Test
-    void theChildIsExposedAtAcceptAndNegotiatesOnceRegistered() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        signaling.iceServers = List.of(new NetherNetServerSignaling.IceServerInfo("user", "secret",
-                List.of("turn:relay.example:3478")));
-        CountDownLatch registered = new CountDownLatch(1);
-        AtomicReference<Channel> accepted = new AtomicReference<>();
-        List<Integer> signalsAtRegistration = new ArrayList<>();
-        NetherNetServerChannel server = (NetherNetServerChannel) new ServerBootstrap()
-                .group(group)
-                .channelFactory(() -> new NetherNetServerChannel(engine, signaling))
-                .option(NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR, answer -> answer + "a=decorated\r\n")
-                .option(NetherChannelOption.NETHER_ICE_SERVERS, List.of(new IceServer(List.of("stun:stun.example"), null, null)))
-                .childHandler(new ChannelInboundHandlerAdapter() {
-                    @Override
-                    public void channelRegistered(ChannelHandlerContext ctx) {
-                        accepted.set(ctx.channel());
-                        signalsAtRegistration.add(signaling.sent.size());
-                        registered.countDown();
-                        ctx.fireChannelRegistered();
-                    }
-                })
-                .bind(new InetSocketAddress(0)).sync().channel();
-        try {
-            server.acceptConnection(3, OFFER, "remote");
-            assertTrue(registered.await(2, TimeUnit.SECONDS), "exposed before any answer");
-            Channel child = accepted.get();
-            child.eventLoop().submit(() -> { }).sync();
-            FakePeer peer = engine.lastPeer();
-            assertEquals(List.of(OFFER), peer.remoteOffers(), "negotiates in its own initializer");
-            assertEquals(PeerConfig.Role.ANSWERER, peer.config().role());
-            assertEquals(List.of("stun:stun.example", "turn:relay.example:3478"),
-                    peer.config().iceServers().stream().flatMap(ice -> ice.urls().stream()).toList());
-            assertEquals("3", child.attr(NetherNetChildChannel.CONNECTION_ID).get());
-            assertFalse(child.isActive());
+    void portsPerSessionAreAnOption() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
+        harness.bind();
+        harness.source(true).offer(1, OFFER);
+        assertNull(harness.negotiating().config().endpoint());
+    }
 
-            peer.completeAnswer("v=0\r\n");
-            peer.localCandidate("candidate:1 1 udp 1 192.0.2.1 5000 typ host", "data");
-            child.eventLoop().submit(() -> { }).sync();
-            assertEquals(new Sent("remote", "CONNECTRESPONSE 3 v=0\r\na=decorated\r\n"), signaling.sent.poll());
-            assertEquals(new Sent("remote", "CANDIDATEADD 3 candidate:1 1 udp 1 192.0.2.1 5000 typ host"),
-                    signaling.sent.poll(), "local candidates follow the answer");
+    // Sources.
 
-            FakeDataLink reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
-            peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
-            FakeDataLink extra = peer.remoteChannel(ChannelParameters.reliable("Extra"));
-            assertTrue(extra.closed(), "the engine closes what the child refuses");
-            peer.open(reliable);
-            child.eventLoop().submit(() -> { }).sync();
-            assertTrue(child.isActive());
-        } finally {
-            server.close().syncUninterruptibly();
-        }
-        assertEquals(List.of(0), signalsAtRegistration, "exposed before the answer went out");
+    @Test
+    void severalSourcesFeedOneEndpointAndEachJoinRepliesOnItsOwnPath() throws Exception {
+        harness.engine.answerWith(ANSWER);
+        harness.engine.gatherWith(ANSWER + "a=candidate:1 1 udp 2122260223 192.0.2.5 5000 typ host\r\n"
+                + "a=end-of-candidates\r\n");
+        NetherNetServerChannel server = (NetherNetServerChannel) harness.bootstrap.register().sync().channel();
+        harness.server = server;
+        FakeJoinSource xbox = new FakeJoinSource(true);
+        server.addSource(xbox, EndpointHarness.ADMIT_ALL);
+        assertEquals(0, xbox.starts.get(), "a source starts once the endpoint is bound");
+        server.bind(new InetSocketAddress("127.0.0.1", 0)).sync();
+        assertEquals(1, xbox.starts.get());
+        FakeJoinSource http = harness.source(false);
+        assertEquals(1, http.starts.get(), "a bound endpoint starts a source at once");
+        assertEquals(List.of(xbox, http), server.sources());
+
+        FakeJoinSource.Reply trickled = xbox.offer(1, OFFER);
+        FakeJoinSource.Reply full = http.offer(2, OFFER);
+
+        String trickledAnswer = trickled.answer();
+        assertTrue(trickledAnswer.contains("a=identity:"));
+        assertFalse(trickledAnswer.contains("a=candidate"), "candidates trickle after the answer");
+        String fullAnswer = full.answer();
+        assertTrue(fullAnswer.contains("a=identity:"));
+        assertTrue(fullAnswer.contains("a=candidate:1 1 udp 2122260223 192.0.2.5 5000 typ host\r\n"));
+        assertTrue(fullAnswer.endsWith("a=end-of-candidates\r\n"));
+        List<String> ids = List.of(harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get(),
+                harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
+        assertTrue(ids.containsAll(List.of("1", "2")));
     }
 
     @Test
-    void signalsBeforeThePeerExistsWaitInABoundedList() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        NetherNetServerChannel server = bindShared(engine, signaling);
-        CountDownLatch blocked = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        try {
-            server.eventLoop().execute(() -> {
-                blocked.countDown();
-                awaitQuietly(release);
-            });
-            assertTrue(blocked.await(2, TimeUnit.SECONDS));
-            server.acceptConnection(9, OFFER, "remote");
-            for (int i = 0; i < NetherNetServerChannel.MAX_EARLY_SIGNALS + 6; i++) {
-                signaling.handlers.get(9L).onSignal("CANDIDATEADD 9 candidate:" + i);
-            }
-            release.countDown();
-            server.eventLoop().submit(() -> { }).sync();
-
-            List<FakePeer.RemoteCandidate> applied = engine.lastPeer().remoteCandidates();
-            assertEquals(NetherNetServerChannel.MAX_EARLY_SIGNALS, applied.size());
-            assertEquals(new FakePeer.RemoteCandidate("candidate:0", "data"), applied.getFirst());
-            assertEquals("candidate:63", applied.getLast().candidate());
-
-            signaling.handlers.get(9L).onSignal("CANDIDATEADD 9 candidate:late");
-            assertEquals("candidate:late", engine.lastPeer().remoteCandidates().getLast().candidate());
-        } finally {
-            release.countDown();
-            server.close().syncUninterruptibly();
-        }
+    void addingTheSameSourceTwiceFails() throws Exception {
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        assertThrows(IllegalStateException.class, () -> harness.server.addSource(source));
     }
 
     @Test
-    void theHandshakeTimeoutClosesTheChildAndItsPeer() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        NetherNetServerChannel server = (NetherNetServerChannel) shared(engine, signaling)
-                .option(NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS, 0)
-                .bind(new InetSocketAddress(0)).sync().channel();
-        try {
-            server.acceptConnection(1, OFFER, "1");
-            awaitClosed(engine);
-            assertEquals(1, engine.lastPeer().closeCalls());
-            server.eventLoop().submit(() -> { }).sync();
-            assertTrue(signaling.handlers.isEmpty());
-        } finally {
-            server.close().syncUninterruptibly();
-        }
+    void removingASourceClosesItButLeavesItsPlayersConnected() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource source = harness.source(true);
+        source.offer(1, OFFER);
+        FakePeer peer = harness.negotiating();
+        peer.completeAnswer(ANSWER);
+        NetherNetChildChannel child = harness.child();
+        harness.activate(peer);
+        assertTrue(child.isActive());
+
+        assertTrue(server.removeSource(source));
+        assertTrue(source.closed);
+        assertFalse(server.removeSource(source));
+        assertEquals(List.of(), server.sources());
+        harness.sync();
+        assertTrue(child.isActive());
+        assertFalse(peer.closeCalled());
+
+        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        assertEquals(1, harness.engine.peers().size());
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void aFailedAnswerSignalsOneErrorAndClosesTheChild(boolean signalingFails) throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        signaling.failSend = signalingFails;
-        NetherNetServerChannel server = bindShared(engine, signaling);
-        try {
-            server.acceptConnection(4, OFFER, "42");
-            FakePeer peer = awaitNegotiation(engine);
-            peer.failAnswer(new IllegalStateException("SetRemoteDescription failed"));
-            peer.closed(CloseCause.NEGOTIATION_FAILED);
-            awaitClosed(engine);
-            server.eventLoop().submit(() -> { }).sync();
+    // Negotiation.
 
-            assertEquals(new Sent("42", "CONNECTERROR 4 Negotiation failed"), signaling.sent.poll(2, TimeUnit.SECONDS));
-            assertTrue(signaling.sent.isEmpty());
-            assertEquals(1, peer.closeCalls());
-            assertTrue(signaling.handlers.isEmpty());
-        } finally {
-            server.close().syncUninterruptibly();
-        }
+    @Test
+    void theChildIsExposedAtAdmissionAndNegotiatesOnceRegistered() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_ICE_SERVERS,
+                List.of(new IceServer(List.of("stun:stun.example"), null, null)));
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        source.iceServers = List.of(new IceServer(List.of("turn:relay.example:3478"), "user", "secret"));
+        FakeJoinSource.Reply reply = source.offer(3, OFFER);
+
+        NetherNetChildChannel child = harness.child();
+        FakePeer peer = harness.negotiating();
+        assertEquals(List.of(), reply.drain(), "exposed before any answer");
+        assertEquals(PeerConfig.Role.ANSWERER, peer.config().role());
+        assertEquals(List.of("stun:stun.example", "turn:relay.example:3478"),
+                peer.config().iceServers().stream().flatMap(ice -> ice.urls().stream()).toList());
+        assertEquals("3", child.attr(NetherNetChildChannel.CONNECTION_ID).get());
+        assertFalse(child.isActive());
+
+        peer.completeAnswer(ANSWER);
+        peer.localCandidate("candidate:1 1 udp 1 192.0.2.1 5000 typ host", "data");
+        harness.sync();
+        assertTrue(reply.answer().contains("a=identity:"));
+        assertEquals("candidate candidate:1 1 udp 1 192.0.2.1 5000 typ host", reply.next(),
+                "local candidates follow the answer");
+
+        harness.activate(peer);
+        assertTrue(child.isActive());
     }
 
     @Test
-    void aFailingDecoratorFailsTheExchange() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        engine.answerWith("v=0\r\n");
-        StubSignaling signaling = new StubSignaling(false);
-        NetherNetServerChannel server = (NetherNetServerChannel) shared(engine, signaling)
-                .option(NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR, answer -> {
-                    throw new IllegalStateException("no key");
-                })
-                .bind(new InetSocketAddress(0)).sync().channel();
-        try {
-            server.acceptConnection(5, OFFER, "5");
-            awaitClosed(engine);
-            assertEquals(new Sent("5", "CONNECTERROR 5 answer decoration failed"), signaling.sent.poll(2, TimeUnit.SECONDS));
-        } finally {
-            server.close().syncUninterruptibly();
-        }
+    void aFailedAnswerRefusesOnceAndClosesTheChild() throws Exception {
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(4, OFFER);
+        FakePeer peer = harness.negotiating();
+        peer.failAnswer(new IllegalStateException("SetRemoteDescription failed"));
+        peer.closed(CloseCause.NEGOTIATION_FAILED);
+        harness.sync();
+
+        reply.assertRefused(JoinRefusal.INTERNAL);
+        assertEquals(List.of(), reply.drain());
+        assertEquals(1, peer.closeCalls());
+        assertEquals(1, reply.finished.get());
     }
 
     @Test
-    void aPeerTheEngineCannotCreateSignalsAnErrorAndClosesTheChild() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        engine.failCreation(new NoClassDefFoundError("native binding unavailable"));
-        StubSignaling signaling = new StubSignaling(false);
-        LinkedBlockingQueue<Channel> children = new LinkedBlockingQueue<>();
-        NetherNetServerChannel server = (NetherNetServerChannel) shared(engine, signaling)
-                .childHandler(new ChannelInitializer<Channel>() {
-                    @Override
-                    protected void initChannel(Channel child) {
-                        children.add(child);
-                    }
-                })
-                .bind(new InetSocketAddress(0)).sync().channel();
-        try {
-            server.acceptConnection(6, OFFER, "6");
-            server.eventLoop().submit(() -> { }).sync();
-            assertEquals(new Sent("6", "CONNECTERROR 6 Failed to establish connection"), signaling.sent.poll(2, TimeUnit.SECONDS));
-            assertNull(children.poll(100, TimeUnit.MILLISECONDS), "a child without a peer is never exposed");
-            assertTrue(signaling.handlers.isEmpty());
-        } finally {
-            server.close().syncUninterruptibly();
-        }
+    void anAnswerThatCannotBeSignedFailsTheJoin() throws Exception {
+        harness.engine.answerWith("v=0\r\n");
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(5, OFFER);
+        reply.assertRefused(JoinRefusal.INTERNAL);
+        harness.sync();
+        assertTrue(harness.engine.lastPeer().closeCalled());
+    }
+
+    @Test
+    void aPeerTheEngineCannotCreateIsRefusedAndNeverExposed() throws Exception {
+        harness.engine.failCreation(new NoClassDefFoundError("native binding unavailable"));
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(6, OFFER);
+        reply.assertRefused(JoinRefusal.INTERNAL);
+        assertNull(harness.children.poll(100, TimeUnit.MILLISECONDS), "a child without a peer is never exposed");
+        harness.sync();
+        assertEquals(1, reply.finished.get());
+        assertEquals(0, harness.server.gate().sessions());
     }
 
     @Test
     void aConnectErrorFromTheClientClosesTheChild() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        NetherNetServerChannel server = bindShared(engine, signaling);
-        try {
-            server.acceptConnection(7, OFFER, "7");
-            awaitNegotiation(engine);
-            signaling.handlers.get(7L).onSignal("CONNECTERROR 7 gave up");
-            awaitClosed(engine);
-            assertTrue(signaling.sent.isEmpty());
-        } finally {
-            server.close().syncUninterruptibly();
-        }
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(7, OFFER);
+        FakePeer peer = harness.negotiating();
+        reply.signal(new RemoteSignal.Error(2));
+        harness.sync();
+        assertTrue(peer.closeCalled());
+        assertEquals(List.of(), reply.drain());
     }
 
     @Test
-    void fullIceSignalingAnswersWithTheGatheredDescriptionAndTricklesNothing() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        signaling.fullIce = true;
-        NetherNetServerChannel server = (NetherNetServerChannel) shared(engine, signaling)
-                .option(NetherChannelOption.NETHER_SERVER_ANSWER_DECORATOR, answer -> answer)
-                .bind(new InetSocketAddress(0)).sync().channel();
-        try {
-            server.acceptConnection(8, OFFER, "8");
-            FakePeer peer = awaitNegotiation(engine);
-            peer.completeAnswer("v=0\r\n");
-            peer.localCandidate("candidate:1", "data");
-            peer.gatheringComplete("v=0\r\na=candidate:1\r\na=end-of-candidates\r\n");
-            assertEquals(new Sent("8", "CONNECTRESPONSE 8 v=0\r\na=candidate:1\r\na=end-of-candidates\r\n"),
-                    signaling.sent.poll(2, TimeUnit.SECONDS));
-            assertNull(signaling.sent.poll(100, TimeUnit.MILLISECONDS));
-        } finally {
-            server.close().syncUninterruptibly();
-        }
-    }
-
-    @Test
-    void serverCloseClosesChildrenAndReportsAcceptedJoins() throws Exception {
-        FakeEngine engine = new FakeEngine();
-        StubSignaling signaling = new StubSignaling(false);
-        List<String> accepted = new ArrayList<>();
-        NetherNetServerChannel server = (NetherNetServerChannel) shared(engine, signaling)
-                .option(NetherChannelOption.NETHER_SERVER_METRICS, new NetherServerMetrics() {
+    void theHandshakeTimeoutClosesTheChildAndReportsIt() throws Exception {
+        List<NetherConnectionFailure> failures = new ArrayList<>();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS, 0)
+                .childOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
                     @Override
-                    public void connectionAccepted(String networkId, boolean verifiedIdentity) {
-                        accepted.add(networkId + " " + verifiedIdentity);
+                    public void connectionFailed(NetherConnectionFailure reason) {
+                        failures.add(reason);
                     }
-                })
-                .bind(new InetSocketAddress(0)).sync().channel();
-        server.acceptConnection(3, OFFER, "3");
-        awaitNegotiation(engine);
-
-        server.close().sync();
-
-        awaitClosed(engine);
-        group.next().submit(() -> { }).sync();
-        assertTrue(signaling.handlers.isEmpty());
-        assertEquals(List.of("3 false"), accepted);
-        assertEquals(0, engine.closeCalls(), "a shared engine stays with its owner");
+                });
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        harness.child();
+        harness.sync();
+        assertTrue(harness.engine.lastPeer().closeCalled());
+        assertEquals(List.of(NetherConnectionFailure.HANDSHAKE_TIMEOUT), failures);
+        assertEquals(1, reply.finished.get());
     }
 
-    private ServerBootstrap owned(Supplier<? extends NetherNetEngine> engines, NetherNetServerSignaling signaling) {
+    @Test
+    void closingTheEndpointClosesItsSourcesChildrenAndPort() throws Exception {
+        List<String> accepted = new ArrayList<>();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_METRICS, new NetherServerMetrics() {
+            @Override
+            public void connectionAccepted(String networkId, boolean verifiedIdentity) {
+                accepted.add(networkId + " " + verifiedIdentity);
+            }
+        });
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        source.offer(3, OFFER);
+        FakePeer peer = harness.negotiating();
+
+        harness.server.close().sync();
+        harness.sync();
+
+        assertTrue(source.closed);
+        assertTrue(peer.closeCalled());
+        assertTrue(((FakeIceEndpoint) peer.config().endpoint()).closed());
+        assertEquals(List.of("remote-3 false"), accepted);
+        assertEquals(0, harness.engine.closeCalls(), "a shared engine stays with its owner");
+        assertThrows(IllegalStateException.class, () -> harness.server.addSource(new FakeJoinSource(true)));
+    }
+
+    private ServerBootstrap owned(Supplier<? extends NetherNetEngine> engines) {
         return new ServerBootstrap()
-                .group(group)
-                .channelFactory(() -> new NetherNetServerChannel(engines, signaling))
+                .group(harness.group)
+                .channelFactory(() -> new NetherNetServerChannel(EngineRef.owned(engines), OfferCheck::newExecutor))
+                .option(NetherChannelOption.NETHER_SERVER_IDENTITY, EndpointHarness.IDENTITY)
+                .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, new OfferCheck(List.of()))
                 .childHandler(new ChannelInboundHandlerAdapter());
-    }
-
-    private ServerBootstrap shared(NetherNetEngine engine, NetherNetServerSignaling signaling) {
-        return new ServerBootstrap()
-                .group(group)
-                .channelFactory(() -> new NetherNetServerChannel(engine, signaling))
-                .childHandler(new ChannelInboundHandlerAdapter());
-    }
-
-    private NetherNetServerChannel bindShared(NetherNetEngine engine, NetherNetServerSignaling signaling)
-            throws InterruptedException {
-        return (NetherNetServerChannel) shared(engine, signaling).bind(new InetSocketAddress(0)).sync().channel();
-    }
-
-    /** Waits until the newest peer was asked to answer. */
-    private static FakePeer awaitNegotiation(FakeEngine engine) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (System.nanoTime() < deadline) {
-            if (!engine.peers().isEmpty() && !engine.lastPeer().remoteOffers().isEmpty()) {
-                return engine.lastPeer();
-            }
-            Thread.sleep(5);
-        }
-        throw new AssertionError("The child never negotiated");
-    }
-
-    private static void awaitClosed(FakeEngine engine) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (System.nanoTime() < deadline) {
-            if (!engine.peers().isEmpty() && engine.lastPeer().closeCalled()) {
-                return;
-            }
-            Thread.sleep(5);
-        }
-        throw new AssertionError("The child's peer was never closed");
-    }
-
-    private static void awaitQuietly(CountDownLatch latch) {
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private record Sent(String target, String data) {
-    }
-
-    private static final class StubSignaling implements NetherNetServerSignaling {
-        private final boolean failBind;
-        volatile boolean bound;
-        volatile boolean closed;
-        volatile boolean failSend;
-        volatile boolean fullIce;
-        volatile List<IceServerInfo> iceServers = List.of();
-        final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
-        final LinkedBlockingQueue<Sent> sent = new LinkedBlockingQueue<>();
-
-        private StubSignaling(boolean failBind) {
-            this.failBind = failBind;
-        }
-
-        @Override
-        public void bind(SocketAddress localAddress) throws ConnectException {
-            if (failBind) {
-                throw new ConnectException("port taken");
-            }
-            bound = true;
-        }
-
-        @Override
-        public void setNewConnectionHandler(NewConnectionHandler handler) {
-        }
-
-        @Override
-        public void setAdvertisementData(PongData pongData) {
-        }
-
-        @Override
-        public List<IceServerInfo> getIceServers() {
-            return iceServers;
-        }
-
-        @Override
-        public boolean fullIceAnswers() {
-            return fullIce;
-        }
-
-        @Override
-        public void sendSignal(String targetNetworkId, String data) {
-            sent.add(new Sent(targetNetworkId, data));
-            if (failSend) {
-                throw new IllegalStateException("Signaling unavailable");
-            }
-        }
-
-        @Override
-        public void setSignalHandler(long connectionId, SignalHandler handler) {
-            handlers.put(connectionId, handler);
-        }
-
-        @Override
-        public void removeSignalHandler(long connectionId) {
-            handlers.remove(connectionId);
-        }
-
-        @Override
-        public String getLocalNetworkId() {
-            return "0";
-        }
-
-        @Override
-        public void close() {
-            closed = true;
-        }
     }
 }

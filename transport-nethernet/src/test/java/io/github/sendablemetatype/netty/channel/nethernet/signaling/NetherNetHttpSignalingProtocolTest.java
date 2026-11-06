@@ -36,8 +36,7 @@ class NetherNetHttpSignalingProtocolTest {
     private InetSocketAddress bind(SslContext sslContext) throws Exception {
         group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
         signaling = new NetherNetHttpSignaling(sslContext, group);
-        signaling.setNewConnectionHandler((connectionId, remoteNetworkId, offerSdp) -> {
-        });
+        signaling.start(new RecordingSink());
         signaling.bind(new InetSocketAddress("127.0.0.1", 0));
         return signaling.boundAddress();
     }

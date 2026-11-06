@@ -1,6 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -41,16 +41,28 @@ class NetherNetHttpSingleRequestTest {
         }
     };
     private final List<Offer> offers = new ArrayList<>();
-    private final List<String> errors = new ArrayList<>();
+    /** The joins the endpoint stopped waiting for, because the client can no longer get an answer. */
+    private final List<Long> abandoned = new ArrayList<>();
+    private RuntimeException joinFailure;
 
     @BeforeEach
     void setUp() {
         channel.freezeTime();
-        signaling.disableOfferCheck(); // These framing and lifecycle fixtures carry unsigned SDP.
         signaling.initConnection(channel);
-        signaling.setNewConnectionHandler((connectionId, networkId, sdp) -> {
-            offers.add(new Offer(connectionId, networkId, sdp));
-            signaling.setSignalHandler(connectionId, errors::add);
+        signaling.start(new JoinSink() {
+            @Override
+            public void join(Join join) {
+                offers.add(new Offer(join.connectionId(), join.remoteNetworkId(), join.offer(), join));
+                join.reply().abandoned().thenRun(() -> abandoned.add(join.connectionId()));
+                if (joinFailure != null) {
+                    throw joinFailure;
+                }
+            }
+
+            @Override
+            public boolean admits(SourcedAddress source) {
+                return true;
+            }
         });
     }
 
@@ -117,7 +129,7 @@ class NetherNetHttpSingleRequestTest {
         assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"));
         assertTrue(response.endsWith("negotiated answer"));
         assertFalse(channel.isOpen());
-        assertTrue(errors.isEmpty());
+        assertTrue(abandoned.isEmpty());
     }
 
     @ParameterizedTest
@@ -143,18 +155,18 @@ class NetherNetHttpSingleRequestTest {
 
         advance(14);
         assertTrue(channel.isOpen());
-        assertNotNull(signaling.remoteAddressOf(connectionId));
+        assertTrue(signaling.isPending(connectionId));
         assertNull(channel.readOutbound());
         advance(2);
 
-        assertTrue(readResponse().startsWith("HTTP/1.1 502 Bad Gateway\r\n"));
+        assertTrue(readResponse().startsWith("HTTP/1.1 504 Gateway Timeout\r\n"));
         assertFalse(channel.isOpen());
-        assertNull(signaling.remoteAddressOf(connectionId));
-        assertEquals(1, errors.size());
-        assertTrue(errors.getFirst().endsWith(" negotiation timeout"));
+        assertFalse(signaling.isPending(connectionId));
+        assertEquals(List.of(connectionId), abandoned);
         advance(30);
-        assertEquals(1, errors.size());
+        assertEquals(1, abandoned.size());
         assertNull(channel.readOutbound());
+        assertTrue(offers.getFirst().join().reply().answer("late").toCompletableFuture().isCompletedExceptionally());
     }
 
     @ParameterizedTest
@@ -180,8 +192,8 @@ class NetherNetHttpSingleRequestTest {
         assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"));
         assertTrue(response.endsWith("first answer"));
         assertEquals(1, response.split("HTTP/1.1", -1).length - 1);
-        assertNull(signaling.remoteAddressOf(offers.getFirst().connectionId()));
-        assertTrue(errors.isEmpty());
+        assertFalse(signaling.isPending(offers.getFirst().connectionId()));
+        assertTrue(abandoned.isEmpty());
     }
 
     private static Stream<Arguments> pipelinedRequests() {
@@ -195,18 +207,14 @@ class NetherNetHttpSingleRequestTest {
 
     @Test
     void requestCallbackFailureRemovesThePendingExchangeAndTimeout() {
-        signaling.setNewConnectionHandler((connectionId, networkId, sdp) -> {
-            offers.add(new Offer(connectionId, networkId, sdp));
-            signaling.setSignalHandler(connectionId, errors::add);
-            throw new IllegalStateException("negotiation could not start");
-        });
+        joinFailure = new IllegalStateException("negotiation could not start");
         ByteBuf input = receive(post("42", "v=0\r\n"));
 
         assertFalse(channel.isOpen());
         assertEquals(0, input.refCnt());
-        assertNull(signaling.remoteAddressOf(offers.getFirst().connectionId()));
+        assertFalse(signaling.isPending(offers.getFirst().connectionId()));
         advance(30);
-        assertTrue(errors.isEmpty());
+        assertTrue(abandoned.isEmpty());
         assertNull(channel.readOutbound());
     }
 
@@ -214,13 +222,13 @@ class NetherNetHttpSingleRequestTest {
     void disconnectWhileWaitingRemovesThePendingExchangeAndTimeout() {
         receive(post("42", "v=0\r\n"));
         long connectionId = offers.getFirst().connectionId();
-        assertNotNull(signaling.remoteAddressOf(connectionId));
+        assertTrue(signaling.isPending(connectionId));
 
         channel.close();
         advance(30);
 
-        assertNull(signaling.remoteAddressOf(connectionId));
-        assertTrue(errors.isEmpty());
+        assertFalse(signaling.isPending(connectionId));
+        assertEquals(List.of(connectionId), abandoned, "Once, though the deadline passed too");
         assertNull(channel.readOutbound());
     }
 
@@ -238,8 +246,7 @@ class NetherNetHttpSingleRequestTest {
     }
 
     private void answer(String sdp) {
-        Offer offer = offers.getFirst();
-        signaling.sendSignal(offer.networkId(), NetherNetConstants.buildSignalConnectResponse(offer.connectionId(), sdp));
+        offers.getFirst().join().reply().answer(sdp);
         channel.runPendingTasks();
     }
 
@@ -261,6 +268,6 @@ class NetherNetHttpSingleRequestTest {
                 + sdp.getBytes(StandardCharsets.UTF_8).length + "\r\n\r\n" + sdp;
     }
 
-    private record Offer(long connectionId, String networkId, String sdp) {
+    private record Offer(long connectionId, String networkId, String sdp, Join join) {
     }
 }

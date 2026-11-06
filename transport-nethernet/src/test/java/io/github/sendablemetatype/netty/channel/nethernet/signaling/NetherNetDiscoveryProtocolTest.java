@@ -132,7 +132,7 @@ class NetherNetDiscoveryProtocolTest {
     void callbacksCanRegisterHandlersAndQuietConnectionsKeepTheirRoutes() throws Exception {
         try (Discovery discovery = new Discovery()) {
             CompletableFuture<Void> registered = new CompletableFuture<>();
-            discovery.value.setNewConnectionHandler((connectionId, sender, offer) -> {
+            discovery.value.setOfferHandler((connectionId, senderId, offer, sender) -> {
                 try {
                     CompletableFuture.runAsync(() -> discovery.value.registerSignalHandler(connectionId, signal -> { }))
                             .get(2, TimeUnit.SECONDS);
