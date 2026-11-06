@@ -143,7 +143,21 @@ What follows from this:
 - BDS gives every NetherNet session its own UDP port, counting up from
   `server-port`, and releases it when the session ends. It cannot serve several
   sessions on one port: limited to one port with `server-udp-ports`, only one
-  session at a time works (Measured, BDS 1.26.52.3).
+  session at a time works (Measured, BDS 1.26.52.3). BDS 1.26.63.1 changes
+  this on paper: its `server.properties` defaults to `transport=nethernet` and
+  documents `server-udp-ports=19132` as "Single UDP port shared by all clients"
+  (port ranges still allowed); under NetherNet `server-portv6` is ignored in
+  favor of one dual-stack socket on `server-port` (Read from the shipped
+  `server.properties`, 2026-11-06; several sessions on the one port not yet
+  measured).
+- BDS 1.26.63.1 answers `GET /v1/join` over plain HTTP with the same 7-member
+  document with or without the client's query, `Connection: close`:
+  `name`, `protocol` (2225), `version` (three parts, `1.26.63`), `level`,
+  `players`, `maxPlayers`, `gameType`. It serves no TLS without a certificate:
+  a TLS ClientHello ends in a fatal alert. A POST with no body gets
+  `400 Missing SDP offer in request body` (`text/plain`); a POST with a body that
+  is not an offer gets the same `200` with body `37` as an offer without
+  `a=identity` (Captured, 2026-11-06).
 - BDS answers with `a=setup:active`, so it is the DTLS client. Its ClientHello
   offers DTLS 1.2 only, with ChaCha20 suites first and no post-quantum groups.
   Its SCTP INIT uses ports 5000/5000, `a_rwnd` 5242880 and 65535 streams each
