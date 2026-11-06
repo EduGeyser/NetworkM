@@ -46,7 +46,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private EventLoopGroup eventLoops;
     private volatile Channel channel;
     private volatile byte[] serverData;
-    private volatile NetherNetServerSignaling.NewConnectionHandler newConnectionHandler;
+    private volatile OfferHandler offerHandler;
     private volatile boolean closed;
 
     /**
@@ -54,6 +54,18 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
      *
      * @param networkId The Network ID to use for discovery.
      */
+    /** Receives offers for connection IDs that have no signal handler yet. */
+    @FunctionalInterface
+    interface OfferHandler {
+        /**
+         * @param connectionId the connection ID the client chose
+         * @param senderId the client's network ID
+         * @param offer the offer SDP
+         * @param sender where the datagram came from
+         */
+        void onOffer(long connectionId, long senderId, String offer, InetSocketAddress sender);
+    }
+
     public NetherNetDiscovery(long networkId) {
         this(networkId, () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()));
     }
@@ -223,8 +235,8 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }
     }
 
-    public void setNewConnectionHandler(NetherNetServerSignaling.NewConnectionHandler handler) {
-        this.newConnectionHandler = handler;
+    void setOfferHandler(OfferHandler handler) {
+        this.offerHandler = handler;
     }
 
     /**
@@ -238,7 +250,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }, 0, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    public void sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
+    public ChannelFuture sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
         byte[] dataBytes = data.getBytes(StandardCharsets.UTF_8);
         ByteBuf buf = Unpooled.buffer();
         buf.writeShortLE(NetherNetConstants.ID_DISCOVERY_MESSAGE);
@@ -249,7 +261,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         buf.writeIntLE(dataBytes.length);
         buf.writeBytes(dataBytes);
 
-        sendPacket(buf, recipient);
+        return sendPacket(buf, recipient);
     }
 
     // New sendSignal looking up Address from ID
@@ -262,7 +274,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }
     }
 
-    private void sendPacket(ByteBuf packetData, InetSocketAddress target) {
+    private ChannelFuture sendPacket(ByteBuf packetData, InetSocketAddress target) {
         try {
             Objects.requireNonNull(target, "target");
             Channel channel = this.channel;
@@ -270,7 +282,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 throw new IllegalStateException("Discovery is not bound");
             }
             byte[] encrypted = NetherNetConstants.encryptDiscoveryPacket(packetData);
-            channel.writeAndFlush(new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target));
+            return channel.writeAndFlush(new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target));
         } catch (Exception e) {
             throw new RuntimeException("Failed to send discovery packet", e);
         } finally {
@@ -413,13 +425,12 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             if (handler != null) {
                 handler.onSignal(messageData);
             } else if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
-                NetherNetServerSignaling.NewConnectionHandler connectionHandler = newConnectionHandler;
-                if (connectionHandler != null) {
-                    String payload = parts.length > 2 ? parts[2] : "";
-                    log.trace("Dispatching New Connection: ID={} Sender={}", Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId));
-                    connectionHandler.onConnect(connectionId, Long.toUnsignedString(senderId), payload);
+                OfferHandler offers = offerHandler;
+                if (offers != null) {
+                    log.trace("Dispatching an offer: ID={} Sender={}", Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId));
+                    offers.onOffer(connectionId, senderId, parts[2], sender);
                 } else {
-                    log.debug("Received CONNECT_REQUEST but no NewConnectionHandler is set!");
+                    log.debug("Received a CONNECTREQUEST, but nothing takes offers");
                 }
             } else {
                 log.debug("Unhandled signal type: {}", type);
@@ -477,7 +488,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             peerAddresses.clear();
         }
         discoveryCallback.set(null);
-        newConnectionHandler = null;
+        offerHandler = null;
         try {
             if (channel != null) {
                 channel.close();

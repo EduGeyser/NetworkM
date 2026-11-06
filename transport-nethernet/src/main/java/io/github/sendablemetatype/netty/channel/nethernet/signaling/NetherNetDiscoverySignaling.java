@@ -1,7 +1,10 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelFuture;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -13,12 +16,25 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
-public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, NetherNetServerSignaling {
+/**
+ * NetherNet signaling over LAN discovery datagrams, for clients that find a server on their
+ * network and for servers they find.
+ *
+ * <p>As a {@link JoinSource}, it listens on the address it was created with, usually
+ * {@code 0.0.0.0:7551} ({@link io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants#DISCOVERY_PORT}),
+ * answers discovery requests with {@link #setServerData the server data}, and turns each
+ * {@code CONNECTREQUEST} into a {@link Join}. Replies go to the address the offer came from, pinned
+ * then, and to the client's network ID. Anyone on the network can forge a datagram's source, so
+ * joins carry it as {@link AddressSource#SIGNALING_LAN}.
+ */
+public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, JoinSource {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetDiscoverySignaling.class);
 
     private final NetherNetDiscovery discovery;
@@ -28,6 +44,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
     private final Object lifecycleLock = new Object();
     private DiscoveryAttempt pendingConnect;
     private volatile boolean closed;
+    private final SourceHealth health = new SourceHealth();
 
     // State captured after connect
     private volatile InetSocketAddress remoteAddress;
@@ -179,34 +196,105 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
         };
     }
 
+    /**
+     * Starts taking joins: binds the discovery socket in the background, unless a client
+     * connection already bound it. The health turns {@link SignalingState#CONNECTED} once it
+     * listens, or {@link SignalingState#CLOSED} with the failure when the bind fails.
+     */
     @Override
-    public void bind(SocketAddress localAddress) {
+    public void start(JoinSink sink) {
+        Objects.requireNonNull(sink, "sink");
         if (closed) {
             throw new IllegalStateException("Discovery signaling is closed");
         }
-        if (!this.discovery.isActive()) {
-            if (localAddress instanceof InetSocketAddress) {
-                this.discovery.bind((InetSocketAddress) localAddress);
-            } else {
-                this.discovery.bind(bindAddress);
+        discovery.setOfferHandler((connectionId, senderId, offer, sender) -> offered(sink, connectionId, senderId,
+                offer, sender));
+        if (discovery.isActive()) {
+            health.set(SignalingState.CONNECTED, null);
+            return;
+        }
+        health.set(SignalingState.STARTING, null);
+        // Binding waits for the socket's own event loop; start never blocks the endpoint's.
+        Thread.ofVirtual().name("nethernet-lan-bind").start(() -> {
+            try {
+                discovery.bind(bindAddress);
+                health.set(SignalingState.CONNECTED, null);
+            } catch (RuntimeException e) {
+                log.warn("LAN discovery could not listen on {}: {}", bindAddress, e.getMessage());
+                health.set(SignalingState.CLOSED, e);
             }
+        });
+    }
+
+    private void offered(JoinSink sink, long connectionId, long senderId, String offer, InetSocketAddress sender) {
+        LanJoin join = new LanJoin(connectionId, senderId, sender);
+        try {
+            // Routes the client's later signals for this connection ID to the join, and keeps the
+            // client in the peer table while the join lasts.
+            discovery.registerSignalHandler(connectionId, join::received);
+        } catch (IllegalStateException closing) {
+            return;
+        }
+        sink.join(new Join(connectionId, Long.toUnsignedString(senderId), offer,
+                new SourcedAddress(sender, AddressSource.SIGNALING_LAN, null), join));
+    }
+
+    /** One join's way back to the client, at the address its offer came from. */
+    private final class LanJoin extends MessageReplyPath {
+        private final long connectionId;
+        private final long senderId;
+        private final InetSocketAddress sender;
+
+        private LanJoin(long connectionId, long senderId, InetSocketAddress sender) {
+            super(connectionId);
+            this.connectionId = connectionId;
+            this.senderId = senderId;
+            this.sender = sender;
+        }
+
+        @Override
+        CompletionStage<Void> send(String message) {
+            CompletableFuture<Void> sent = new CompletableFuture<>();
+            try {
+                ChannelFuture write = discovery.sendSignal(sender, senderId, message);
+                write.addListener(done -> {
+                    if (done.isSuccess()) {
+                        sent.complete(null);
+                    } else {
+                        sent.completeExceptionally(done.cause());
+                    }
+                });
+            } catch (RuntimeException e) {
+                sent.completeExceptionally(e);
+            }
+            return sent;
+        }
+
+        @Override
+        void release() {
+            discovery.unregisterSignalHandler(connectionId);
         }
     }
 
     @Override
-    public void setNewConnectionHandler(NetherNetServerSignaling.NewConnectionHandler handler) {
-        this.discovery.setNewConnectionHandler(handler);
+    public SignalingHealth health() {
+        return health.get();
     }
 
-    /**
-     * Not supported: LAN advertises server data v7, which needs the protocol and version that
-     * {@link PongData} does not carry. Use {@link #setServerData(LanServerData.V7)}.
-     *
-     * @throws UnsupportedOperationException always
-     */
     @Override
-    public void setAdvertisementData(PongData pongData) {
-        throw new UnsupportedOperationException("LAN discovery advertises v7 server data; use setServerData");
+    public void addHealthListener(Consumer<SignalingHealth> listener) {
+        health.addListener(listener);
+    }
+
+    @Override
+    public void removeHealthListener(Consumer<SignalingHealth> listener) {
+        health.removeListener(listener);
+    }
+
+    /** LAN peers reach each other directly; there are no STUN or TURN servers. */
+    @Override
+    public List<IceServer> iceServers() {
+        return List.of();
     }
 
     /**
@@ -280,6 +368,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
             }
         } finally {
             this.discovery.close();
+            health.set(SignalingState.CLOSED, null);
         }
     }
 }
