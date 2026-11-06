@@ -163,7 +163,10 @@ final class WebRtcIceEndpoint implements IceEndpoint {
                 control.execute(() -> {
                     try {
                         endpoint.dispose();
-                    } catch (RuntimeException e) {
+                    } catch (RuntimeException | Error e) {
+                        if (!NativeErrors.isCallFailure(e)) {
+                            throw e;
+                        }
                         log.debug("Error closing an ICE endpoint: {}", e.toString());
                     } finally {
                         closed.complete(null);
@@ -182,7 +185,10 @@ final class WebRtcIceEndpoint implements IceEndpoint {
             control.execute(() -> {
                 try {
                     setting.run();
-                } catch (RuntimeException e) {
+                } catch (RuntimeException | Error e) {
+                    if (!NativeErrors.isCallFailure(e)) {
+                        throw e;
+                    }
                     log.warn("Error {} on the ICE endpoint: {}", what, e.toString());
                 }
             });
@@ -197,7 +203,10 @@ final class WebRtcIceEndpoint implements IceEndpoint {
             control.execute(() -> {
                 try {
                     result.complete(query.get());
-                } catch (RuntimeException e) {
+                } catch (RuntimeException | Error e) {
+                    if (!NativeErrors.isCallFailure(e)) {
+                        throw e;
+                    }
                     result.completeExceptionally(e);
                 }
             });

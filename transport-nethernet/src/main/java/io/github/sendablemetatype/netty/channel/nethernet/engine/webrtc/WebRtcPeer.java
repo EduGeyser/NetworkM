@@ -114,7 +114,11 @@ final class WebRtcPeer implements Peer {
             }
             try {
                 connection = creator.apply(new Events());
-            } catch (RuntimeException | LinkageError e) {
+            } catch (RuntimeException | Error e) {
+                // A LinkageError means webrtc-java has no natives here.
+                if (!(e instanceof LinkageError) && !NativeErrors.isCallFailure(e)) {
+                    throw e;
+                }
                 log.warn("Creating a WebRTC peer connection failed", e);
                 negotiationFailed("CreatePeerConnection", e.toString());
             }
@@ -254,7 +258,12 @@ final class WebRtcPeer implements Peer {
                     log.debug("Remote candidate refused ({}): {}", error, remote.attribute());
                 }
             });
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            // An unparsable candidate is a plain Error; it must not cost the
+            // candidates held behind it.
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
             log.debug("Remote candidate refused ({}): {}", e.toString(), remote.attribute());
         }
     }
@@ -284,7 +293,10 @@ final class WebRtcPeer implements Peer {
             }
             try {
                 link.bind(current.createDataChannel(parameters));
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | Error e) {
+                if (!NativeErrors.isCallFailure(e)) {
+                    throw e;
+                }
                 negotiationFailed("CreateDataChannel", e.toString());
             }
         });
@@ -307,7 +319,10 @@ final class WebRtcPeer implements Peer {
         }
         try {
             return metricsOf(current.transportMetrics());
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
             log.debug("Reading transport metrics failed: {}", e.toString());
             return TransportMetrics.NONE;
         }
@@ -483,7 +498,10 @@ final class WebRtcPeer implements Peer {
         String sdp;
         try {
             sdp = current.localDescription();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
             negotiationFailed("GetLocalDescription", e.toString());
             return;
         }

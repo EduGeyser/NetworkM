@@ -110,13 +110,17 @@ final class FakeNative {
         @Override
         public String localDescription() {
             if (throwOnRead) {
-                throw new IllegalStateException("native read failed");
+                throw new Error("native read failed");
             }
             return localDescription;
         }
 
+        /** Parses the candidate first, as webrtc-java does; it reports an unparsable one with a plain Error. */
         @Override
         public void addIceCandidate(RTCIceCandidate candidate, AddIceCandidateObserver observer) {
+            if (!candidate.sdp.startsWith("candidate:")) {
+                throw new Error("Create ICE candidate failed: " + candidate.sdp);
+            }
             record("candidate " + candidate.sdpMid + " " + candidate.sdp);
             candidates.add(candidate);
         }
@@ -130,6 +134,9 @@ final class FakeNative {
 
         @Override
         public RTCTransportMetrics transportMetrics() {
+            if (throwOnRead) {
+                throw new Error("native read failed");
+            }
             return metrics;
         }
 
@@ -169,7 +176,8 @@ final class FakeNative {
         volatile RTCDataChannelState state = RTCDataChannelState.CONNECTING;
         volatile LinkError error;
         volatile RTCDataChannelObserver observer;
-        RuntimeException sendFailure;
+        // What sendAsync throws: a RuntimeException or a plain Error, as webrtc-java does.
+        Throwable sendFailure;
 
         Link(ChannelParameters parameters, List<String> log) {
             this.parameters = parameters;
@@ -204,8 +212,11 @@ final class FakeNative {
 
         @Override
         public void sendAsync(ByteBuffer data, RTCDataChannelSendObserver observer) {
-            if (sendFailure != null) {
-                throw sendFailure;
+            switch (sendFailure) {
+                case RuntimeException e -> throw e;
+                case Error e -> throw e;
+                case null, default -> {
+                }
             }
             synchronized (sends) {
                 sends.add(observer);

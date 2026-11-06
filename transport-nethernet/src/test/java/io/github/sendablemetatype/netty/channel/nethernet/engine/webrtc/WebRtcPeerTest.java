@@ -106,11 +106,16 @@ class WebRtcPeerTest {
         assertEquals(List.of("closed NEGOTIATION_FAILED"), listener.snapshot());
     }
 
-    @Test
-    void aPeerThatCannotBeCreatedFailsItsFirstStage() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aPeerThatCannotBeCreatedFailsItsFirstStage(boolean nativesMissing) {
         WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null);
         peer.start(observer -> {
-            throw new UnsatisfiedLinkError("no natives");
+            if (nativesMissing) {
+                throw new UnsatisfiedLinkError("no natives");
+            }
+            // webrtc-java's report of a factory that could not start.
+            throw new Error("Start network thread failed");
         });
         control.runAll();
 
@@ -153,6 +158,24 @@ class WebRtcPeerTest {
                 "candidate data candidate:1 1 udp 1 192.0.2.1 5000 typ host",
                 "candidate data candidate:2 1 udp 1 192.0.2.2 5000 typ host",
                 "candidate 0 candidate:3 1 udp 1 192.0.2.3 5000 typ host"), nativeLog);
+    }
+
+    @Test
+    void anUnparsableRemoteCandidateCostsOnlyItself() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        peer.addRemoteCandidate("candidate:1 1 udp 1 192.0.2.1 5000 typ host", "0");
+        peer.addRemoteCandidate("no candidate", "0");
+        peer.addRemoteCandidate("candidate:2 1 udp 1 192.0.2.2 5000 typ host", "0");
+
+        peer.answer(OFFER);
+        control.runAll();
+        peer.addRemoteCandidate("still no candidate", "0");
+        control.runAll();
+
+        assertEquals(List.of("SET_REMOTE",
+                "candidate 0 candidate:1 1 udp 1 192.0.2.1 5000 typ host",
+                "candidate 0 candidate:2 1 udp 1 192.0.2.2 5000 typ host"), nativeLog);
+        assertTrue(listener.snapshot().isEmpty());
     }
 
     @Test
@@ -280,12 +303,15 @@ class WebRtcPeerTest {
         reliable.send(1).onFailure("[RESOURCE_EXHAUSTED] queue full");
         reliable.sendFailure = new IllegalStateException("RTCDataChannel is closed");
         link.send(ByteBuffer.allocate(70), results::add);
+        reliable.sendFailure = new Error("std::bad_alloc");
+        link.send(ByteBuffer.allocate(30), results::add);
 
         assertEquals(0, link.queuedBytes());
-        assertEquals(3, results.size());
+        assertEquals(4, results.size());
         assertNull(results.get(0));
         assertInstanceOf(IOException.class, results.get(1));
         assertInstanceOf(IllegalStateException.class, results.get(2));
+        assertEquals(Error.class, results.get(3).getClass());
         assertEquals(1, listener.snapshot().stream().filter(event -> event.startsWith("queue low")).count());
     }
 
@@ -405,6 +431,11 @@ class WebRtcPeerTest {
         CompletableFuture<TransportMetrics> none = peer.metrics().toCompletableFuture();
         control.runAll();
         assertEquals(TransportMetrics.NONE, none.join());
+
+        connection.throwOnRead = true;
+        CompletableFuture<TransportMetrics> unreadable = peer.metrics().toCompletableFuture();
+        control.runAll();
+        assertEquals(TransportMetrics.NONE, unreadable.join());
 
         peer.close();
         assertEquals(TransportMetrics.NONE, peer.metrics().toCompletableFuture().join());
