@@ -22,16 +22,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * What LAN discovery answers requests with: a fixed record, encoded once, or a {@link LanAdvertiser}
- * asked per request through {@link ProviderCalls}, with the same deadline and bound as HTTP's status
- * provider. When the advertiser does not deliver, the last server data it delivered in time goes
+ * asked per request through {@link ProviderCalls}, with a deadline of its own and the same bound as
+ * HTTP's status provider. When the advertiser does not deliver, the last server data it delivered in time goes
  * out instead, or no response while there is none. Each advertiser has a fallback of its own, so
  * a call to one that was replaced never reaches its successor's. Only v7 server data is advertised
  * (ruling F-3).
  */
 final class LanAdvertisements {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(LanAdvertisements.class);
-    /** As HTTP's status provider has by default. */
-    static final Duration ADVERTISER_TIMEOUT = Duration.ofSeconds(1);
     // Hex expansion, 24 plaintext header bytes, a 32-byte MAC and AES padding must fit a 65,507-byte UDP payload.
     private static final int MAX_SERVER_DATA_BYTES = 32_723;
 
@@ -91,17 +89,12 @@ final class LanAdvertisements {
     private record Sent(Optional<byte[]> payload) implements Reply {
     }
 
-    private final Duration timeout;
     private final Executor executor;
     /** Null while nothing is advertised: requests get no response. */
     private volatile Mode mode;
 
-    /**
-     * @param timeout  how long one advertiser call may take
-     * @param executor runs the advertiser's calls; not an I/O loop
-     */
-    LanAdvertisements(Duration timeout, Executor executor) {
-        this.timeout = timeout;
+    /** @param executor runs the advertiser's calls; not an I/O loop */
+    LanAdvertisements(Executor executor) {
         this.executor = executor;
     }
 
@@ -114,9 +107,18 @@ final class LanAdvertisements {
         mode = new Fixed(encode(Objects.requireNonNull(data, "data")));
     }
 
-    /** Asks this advertiser per request from now on. */
-    void ask(LanAdvertiser advertiser) {
+    /**
+     * Asks this advertiser per request from now on.
+     *
+     * @param timeout how long one call may take
+     * @throws IllegalArgumentException if the timeout is not positive; what was advertised stays
+     */
+    void ask(LanAdvertiser advertiser, Duration timeout) {
         Objects.requireNonNull(advertiser, "advertiser");
+        Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("timeout must be positive: " + timeout);
+        }
         mode = new Asked(advertiser, new ProviderCalls("LAN advertiser", log, timeout, executor),
                 new AtomicReference<>());
     }

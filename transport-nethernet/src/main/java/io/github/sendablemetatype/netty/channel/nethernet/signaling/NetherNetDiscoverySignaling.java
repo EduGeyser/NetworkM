@@ -14,6 +14,7 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.ClosedChannelException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -39,6 +40,9 @@ import java.util.function.Consumer;
  */
 public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, JoinSource {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetDiscoverySignaling.class);
+
+    /** The default deadline of one {@link LanAdvertiser} call, as HTTP's status provider has. */
+    public static final Duration DEFAULT_ADVERTISER_TIMEOUT = NetherNetHttpSignaling.DEFAULT_STATUS_TIMEOUT;
 
     private final NetherNetDiscovery discovery;
     private final InetSocketAddress bindAddress;
@@ -314,13 +318,28 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     }
 
     /**
-     * Asks the advertiser what to answer each discovery request with. Replaces fixed server data.
+     * Asks the advertiser what to answer each discovery request with, with a deadline of
+     * {@link #DEFAULT_ADVERTISER_TIMEOUT} per call. Replaces fixed server data.
      *
      * @param advertiser the advertiser
      * @see NetherNetDiscovery#setAdvertiser(LanAdvertiser)
      */
     public void setAdvertiser(LanAdvertiser advertiser) {
         this.discovery.setAdvertiser(advertiser);
+    }
+
+    /**
+     * Asks the advertiser what to answer each discovery request with, with this deadline per
+     * call: past it the request gets the last server data the advertiser produced in time instead.
+     * Replaces fixed server data.
+     *
+     * @param advertiser the advertiser
+     * @param timeout    the deadline of one call, 1 s for {@link #setAdvertiser(LanAdvertiser)}
+     * @throws IllegalArgumentException if the timeout is not positive; what was advertised stays
+     * @see NetherNetDiscovery#setAdvertiser(LanAdvertiser, Duration)
+     */
+    public void setAdvertiser(LanAdvertiser advertiser, Duration timeout) {
+        this.discovery.setAdvertiser(advertiser, timeout);
     }
 
     @Override

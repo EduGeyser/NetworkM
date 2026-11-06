@@ -44,7 +44,7 @@ class LanAdvertiserTest {
     private final EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final CompletableFuture<InetSocketAddress> bound = new CompletableFuture<>();
     private final NetherNetDiscovery discovery = new NetherNetDiscovery(SERVER_ID, () -> group,
-            new DiscoveryPeerRegistry(), DEADLINE, null) {
+            new DiscoveryPeerRegistry()) {
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             bound.complete((InetSocketAddress) ctx.channel().localAddress());
@@ -115,7 +115,7 @@ class LanAdvertiserTest {
             }
             case 5 -> null;
             default -> LanAdvertisement.advertise(oversized);
-        });
+        }, DEADLINE);
         discovery.bind(new InetSocketAddress("127.0.0.1", 0));
         try {
             sendRequest(Unpooled.EMPTY_BUFFER);
@@ -143,6 +143,18 @@ class LanAdvertiserTest {
         assertThrows(SocketTimeoutException.class, this::receive);
         assertEquals(0, calls.get());
         assertEquals(data(1), discover());
+    }
+
+    @Test
+    void anAdvertiserDeadlineMustBePositive() throws Exception {
+        discovery.setServerData(data(1));
+        LanAdvertiser advertiser = request -> LanAdvertisement.advertise(data(2));
+
+        assertThrows(IllegalArgumentException.class, () -> discovery.setAdvertiser(advertiser, Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> discovery.setAdvertiser(advertiser, Duration.ofMillis(-1)));
+        assertThrows(NullPointerException.class, () -> discovery.setAdvertiser(advertiser, null));
+        discovery.bind(new InetSocketAddress("127.0.0.1", 0));
+        assertEquals(data(1), discover(), "what was advertised stays");
     }
 
     @Test
