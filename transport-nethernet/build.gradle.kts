@@ -40,6 +40,8 @@ tasks.test {
     systemProperty("webrtc.nativeTests", webrtcNativePlatform.isPresent.toString())
     if (webrtcNativePlatform.isPresent) {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
+        // webrtc-java reads its native log threshold once, when the first test loads the library.
+        systemProperty("io.github.sendablemetatype.webrtc.logging.severity", "WARNING")
     }
 }
 
