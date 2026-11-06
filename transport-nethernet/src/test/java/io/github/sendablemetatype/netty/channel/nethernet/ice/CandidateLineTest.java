@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;

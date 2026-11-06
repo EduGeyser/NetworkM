@@ -15,7 +15,6 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
-import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
@@ -289,7 +288,7 @@ public class NetherNetChildChannel extends NetherNetChannel {
         }
 
         private void apply(TransportPath path, InetSocketAddress relay) {
-            SourcedAddress pair = SourcedAddress.selectedPair(path.remote(), typeOf(path.remoteType()),
+            SourcedAddress pair = SourcedAddress.selectedPair(path.remote(), path.remoteType(),
                     intake.isPeerRelay(path.remote()), relay);
             Optional<RemoteAddressChangedEvent> change = tracker.selectedPair(pair);
             if (change.isPresent()) {
@@ -297,16 +296,6 @@ public class NetherNetChildChannel extends NetherNetChannel {
                 pipeline().fireUserEventTriggered(change.get());
             }
         }
-    }
-
-    /** Only whether the pair is relayed matters to the address source. */
-    private static CandidateType typeOf(TransportPath.CandidateType type) {
-        return switch (type) {
-            case HOST -> CandidateType.HOST;
-            case SERVER_REFLEXIVE -> CandidateType.SERVER_REFLEXIVE;
-            case PEER_REFLEXIVE, UNKNOWN -> CandidateType.PEER_REFLEXIVE;
-            case RELAY -> CandidateType.RELAY;
-        };
     }
 
     @Override

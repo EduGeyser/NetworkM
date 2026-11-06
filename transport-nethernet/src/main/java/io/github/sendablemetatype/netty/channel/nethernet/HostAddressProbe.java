@@ -12,8 +12,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateLine;
-import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;

@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 import io.netty.util.NetUtil;
 
@@ -32,7 +33,7 @@ public final class CandidateLine {
     /**
      * @param line A candidate as an engine reports it ({@code candidate:...}), as an SDP attribute
      *             ({@code a=candidate:...}) or as a trickle signal carries it
-     * @return The candidate, or empty when the line is not one or lacks a field
+     * @return The candidate, or empty when the line is not one, lacks a field or names no known type
      */
     public static Optional<CandidateLine> parse(String line) {
         String sdp = line.strip();
@@ -51,8 +52,8 @@ public final class CandidateLine {
         if (port > 65535) {
             return Optional.empty();
         }
-        String finalSdp = sdp;
-        return CandidateType.fromSdpName(tokens[7]).map(type -> new CandidateLine(finalSdp, tokens, type, port));
+        CandidateType type = CandidateType.fromSdpName(tokens[7]);
+        return type == CandidateType.UNKNOWN ? Optional.empty() : Optional.of(new CandidateLine(sdp, tokens, type, port));
     }
 
     /**
@@ -105,7 +106,7 @@ public final class CandidateLine {
     }
 
     /**
-     * @return The candidate's type
+     * @return The candidate's type, never {@link CandidateType#UNKNOWN}
      */
     public CandidateType type() {
         return this.type;

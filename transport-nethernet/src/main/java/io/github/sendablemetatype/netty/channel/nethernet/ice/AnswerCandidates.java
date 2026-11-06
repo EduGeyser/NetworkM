@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -221,7 +222,7 @@ public final class AnswerCandidates {
                 continue;
             }
             boolean sameFamily = address != null && address.getClass() == candidateAddress.getClass();
-            int candidatePreference = candidate.type().defaultPreference();
+            int candidatePreference = connectionPreference(candidate.type());
             if ((sameFamily && candidatePreference <= preference)
                     || (address instanceof Inet4Address && !(candidateAddress instanceof Inet4Address))) {
                 continue;
@@ -244,5 +245,19 @@ public final class AnswerCandidates {
             }
         }
         return connection;
+    }
+
+    /**
+     * How strongly libwebrtc prefers a candidate of this type as the {@code m=} and {@code c=}
+     * address: relayed over reflexive over host, as RFC 8445 section 5.1.4 recommends for the
+     * default candidate ({@code Candidate::type_preference} in {@code api/candidate.h}).
+     */
+    private static int connectionPreference(CandidateType type) {
+        return switch (type) {
+            case RELAY -> 3;
+            case SERVER_REFLEXIVE -> 2;
+            case HOST -> 1;
+            case PEER_REFLEXIVE, UNKNOWN -> 0;
+        };
     }
 }

@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.util.address.EndpointAddress;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.logging.InternalLogger;

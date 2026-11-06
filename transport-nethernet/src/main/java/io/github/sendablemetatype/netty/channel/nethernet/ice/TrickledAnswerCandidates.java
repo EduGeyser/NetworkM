@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.ice;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
+
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;

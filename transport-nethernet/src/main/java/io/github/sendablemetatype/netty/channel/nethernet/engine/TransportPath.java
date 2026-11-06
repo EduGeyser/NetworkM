@@ -32,10 +32,31 @@ public record TransportPath(
 
     /** An ICE candidate type. */
     public enum CandidateType {
+        /** An address of a local interface. */
         HOST,
+        /** The public side of a NAT, as a STUN server saw it, or as a host announces it. */
         SERVER_REFLEXIVE,
+        /** An address learned from a connectivity check, never signaled. */
         PEER_REFLEXIVE,
+        /** An address on a TURN server that relays for the peer. */
         RELAY,
-        UNKNOWN
+        /** A type the engine did not report, or a name no type has. */
+        UNKNOWN;
+
+        /**
+         * Reads the type an SDP candidate line names after {@code typ} (RFC 8839 section 5.1).
+         *
+         * @param name the name, such as {@code srflx}
+         * @return the type, or {@link #UNKNOWN} for a name no type has
+         */
+        public static CandidateType fromSdpName(String name) {
+            return switch (name) {
+                case "host" -> HOST;
+                case "srflx" -> SERVER_REFLEXIVE;
+                case "prflx" -> PEER_REFLEXIVE;
+                case "relay" -> RELAY;
+                default -> UNKNOWN;
+            };
+        }
     }
 }

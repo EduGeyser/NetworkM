@@ -16,7 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.address;
 
-import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 
 import java.net.InetSocketAddress;

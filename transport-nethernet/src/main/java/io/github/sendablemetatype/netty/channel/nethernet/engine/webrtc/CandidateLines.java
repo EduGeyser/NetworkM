@@ -59,12 +59,6 @@ final class CandidateLines {
         if (fields.length <= TYPE || !"typ".equals(fields[TYP])) {
             return CandidateType.UNKNOWN;
         }
-        return switch (fields[TYPE]) {
-            case "host" -> CandidateType.HOST;
-            case "srflx" -> CandidateType.SERVER_REFLEXIVE;
-            case "prflx" -> CandidateType.PEER_REFLEXIVE;
-            case "relay" -> CandidateType.RELAY;
-            default -> CandidateType.UNKNOWN;
-        };
+        return CandidateType.fromSdpName(fields[TYPE]);
     }
 }
