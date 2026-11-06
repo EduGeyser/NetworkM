@@ -90,7 +90,8 @@ class NetherNetHttpJoinTest {
         Socket first = post(educationOffer());
         checks.awaitQueued();
 
-        assertStatus(503, response(post(educationOffer())));
+        // Another client: a second offer from the same one would be a duplicate
+        assertStatus(503, response(post("other", educationOffer())));
 
         checks.runNext();
         assertStatus(200, response(first));
@@ -162,11 +163,15 @@ class NetherNetHttpJoinTest {
 
     /** Sends an offer on a connection of its own and returns the connection, unread. */
     private Socket post(String offer) throws IOException {
+        return post("client", offer);
+    }
+
+    private Socket post(String networkId, String offer) throws IOException {
         Socket socket = new Socket();
         socket.setSoTimeout(10_000);
         socket.connect(http.boundAddress());
         byte[] body = offer.getBytes(StandardCharsets.UTF_8);
-        String head = "POST /v1/join/client HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/sdp\r\n"
+        String head = "POST /v1/join/" + networkId + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/sdp\r\n"
                 + "Content-Length: " + body.length + "\r\n\r\n";
         OutputStream out = socket.getOutputStream();
         out.write(head.getBytes(StandardCharsets.US_ASCII));
