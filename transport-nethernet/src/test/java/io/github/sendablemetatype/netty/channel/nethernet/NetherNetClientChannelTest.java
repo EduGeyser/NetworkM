@@ -698,6 +698,30 @@ class NetherNetClientChannelTest {
         }
     }
 
+    /**
+     * The engine thread found the attempt current, but the attempt is retried before the event
+     * loop takes the path in: the loop checks the attempt again, so the next one stays empty.
+     */
+    @Test
+    void aPathTheRetiredAttemptReportedReachesNothingOfTheNextAttempt() {
+        try (Harness h = new Harness()) {
+            InetSocketAddress server = new InetSocketAddress("192.0.2.10", 19132);
+            h.channel.connect(server);
+            h.pump();
+            FakePeer peer = h.start();
+
+            peer.path(new TransportPath(null, TransportPath.CandidateType.HOST,
+                    new InetSocketAddress("192.0.2.11", 50000), TransportPath.CandidateType.SERVER_REFLEXIVE));
+            h.advance(100);
+
+            assertEquals(2, h.signaling.connections.size(), "the attempt was retried");
+            assertEquals(Optional.empty(), h.channel.selectedPath());
+            assertEquals(Optional.empty(), h.channel.mediaAddress());
+            assertEquals(new SourcedAddress(server, AddressSource.SIGNALING, null), h.channel.reportedAddress());
+            assertEquals(server, h.channel.remoteAddress());
+        }
+    }
+
     @Test
     void aClientThatDialedANetworkIdKeepsItAndReportsWhereTheServerWas() {
         try (Harness h = new Harness()) {
