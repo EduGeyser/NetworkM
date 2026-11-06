@@ -22,8 +22,23 @@ import java.util.function.Consumer;
  * <p>Queued bytes are counted in Java: up on each send, down by the decreases
  * libwebrtc reports through {@code onBufferedAmountChange}. Reading libwebrtc's
  * own buffered amount would wait for the network thread on every read.
+ *
+ * <p>libwebrtc counts a message in its buffered amount as soon as it tries to
+ * send it, also when it then refuses it, and reports the refused bytes with a
+ * later decrease ({@code SctpDataChannel::SendImpl}). So a refused send stays
+ * counted until that decrease; only a send libwebrtc discarded without trying
+ * it, or one that never reached it, leaves the count with its failure.
  */
 final class WebRtcLink implements DataLink {
+
+    /**
+     * webrtc-java's failure for a send whose result libwebrtc dropped without
+     * calling it ({@code RTCDataChannelSendObserver}'s destructor): libwebrtc
+     * found no transport, or its network thread stopped, before it tried the
+     * send, so its buffered amount never counted it.
+     */
+    static final String DISCARDED = "[INVALID_STATE] Send operation was discarded before completion";
+
     private final WebRtcPeer peer;
     private final ChannelParameters parameters;
     private final RTCDataChannelObserver observer = new Observer();
@@ -74,8 +89,9 @@ final class WebRtcLink implements DataLink {
 
                 @Override
                 public void onFailure(String error) {
-                    // libwebrtc never counted a refused message in its buffered amount.
-                    queued.addAndGet(-size);
+                    if (DISCARDED.equals(error)) {
+                        queued.addAndGet(-size);
+                    }
                     settle(completion, new IOException("Native send failed: " + error));
                 }
             });
@@ -83,6 +99,7 @@ final class WebRtcLink implements DataLink {
             if (!NativeErrors.isCallFailure(e)) {
                 throw e;
             }
+            // No result follows a send that threw; libwebrtc never saw it.
             queued.addAndGet(-size);
             settle(completion, e);
         }

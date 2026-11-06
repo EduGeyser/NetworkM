@@ -297,22 +297,35 @@ class WebRtcPeerTest {
         reliable.observer.onBufferedAmountChange(50);
 
         assertEquals(0, link.queuedBytes());
+        assertEquals(1, results.size());
+        assertNull(results.getFirst());
         assertEquals(1, listener.snapshot().stream().filter(event -> event.startsWith("queue low")).count());
+    }
 
+    @Test
+    void onlySendsLibwebrtcNeverCountedLeaveTheQueueWithTheirFailure() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        List<Throwable> results = new ArrayList<>();
+
+        // libwebrtc tried this one, so it reports the bytes with its next decrease.
         link.send(ByteBuffer.allocate(200), results::add);
-        reliable.send(1).onFailure("[RESOURCE_EXHAUSTED] queue full");
+        reliable.send(0).onFailure("[RESOURCE_EXHAUSTED] queue full");
+        assertEquals(200, link.queuedBytes());
+        reliable.observer.onBufferedAmountChange(200);
+        assertEquals(0, link.queuedBytes());
+
+        link.send(ByteBuffer.allocate(50), results::add);
+        reliable.send(1).onFailure("[INVALID_STATE] Send operation was discarded before completion");
         reliable.sendFailure = new IllegalStateException("RTCDataChannel is closed");
         link.send(ByteBuffer.allocate(70), results::add);
         reliable.sendFailure = new Error("std::bad_alloc");
         link.send(ByteBuffer.allocate(30), results::add);
 
         assertEquals(0, link.queuedBytes());
-        assertEquals(4, results.size());
-        assertNull(results.get(0));
-        assertInstanceOf(IOException.class, results.get(1));
-        assertInstanceOf(IllegalStateException.class, results.get(2));
-        assertEquals(Error.class, results.get(3).getClass());
-        assertEquals(1, listener.snapshot().stream().filter(event -> event.startsWith("queue low")).count());
+        assertEquals(List.of(IOException.class, IOException.class, IllegalStateException.class, Error.class),
+                results.stream().map(Object::getClass).toList());
     }
 
     @Test
