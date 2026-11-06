@@ -62,11 +62,12 @@ public class NetherNetChannelFactory<T extends Channel> implements ChannelFactor
      * Client channels on the caller's engine, which they never close.
      *
      * @param engine the engine
-     * @param signaling the signaling to connect over; each channel closes it
+     * @param signaling creates the signaling for each channel, which owns and closes it
      * @return a ChannelFactory for NetherNetClientChannel
      */
-    public static ChannelFactory<NetherNetClientChannel> client(NetherNetEngine engine, NetherNetClientSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engine, signaling));
+    public static ChannelFactory<NetherNetClientChannel> client(NetherNetEngine engine,
+                                                                Supplier<? extends NetherNetClientSignaling> signaling) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engine, signaling.get()));
     }
 
     /**
@@ -74,11 +75,11 @@ public class NetherNetChannelFactory<T extends Channel> implements ChannelFactor
      * when the first attempt needs it and closed with the channel.
      *
      * @param engineSupplier creates one engine per channel
-     * @param signaling the signaling to connect over; each channel closes it
+     * @param signaling creates the signaling for each channel, which owns and closes it
      * @return a ChannelFactory for NetherNetClientChannel
      */
     public static ChannelFactory<NetherNetClientChannel> client(Supplier<? extends NetherNetEngine> engineSupplier,
-                                                                NetherNetClientSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engineSupplier, signaling));
+                                                                Supplier<? extends NetherNetClientSignaling> signaling) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetClientChannel(engineSupplier, signaling.get()));
     }
 }

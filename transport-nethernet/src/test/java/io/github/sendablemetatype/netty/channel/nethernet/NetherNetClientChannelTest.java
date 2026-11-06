@@ -591,6 +591,23 @@ class NetherNetClientChannelTest {
         }
     }
 
+    /** Every channel closes its signaling, so channels from one factory must not share one. */
+    @Test
+    void channelsFromOneFactoryEachGetTheirOwnSignaling() {
+        List<FakeSignaling> created = new ArrayList<>();
+        var factory = NetherNetChannelFactory.client(new FakeEngine(), () -> {
+            FakeSignaling signaling = new FakeSignaling();
+            created.add(signaling);
+            return signaling;
+        });
+
+        factory.newChannel();
+        factory.newChannel();
+
+        assertEquals(2, created.size());
+        assertNotSame(created.get(0), created.get(1));
+    }
+
     private static final class FakeSignaling implements NetherNetClientSignaling {
         private final List<CompletableFuture<List<IceServer>>> connections = new ArrayList<>();
         private final List<NotFoundHandler> notFoundHandlers = new ArrayList<>();
