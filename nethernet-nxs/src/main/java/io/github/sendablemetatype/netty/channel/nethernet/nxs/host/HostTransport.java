@@ -40,7 +40,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.Provi
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.control.AssistedJoin;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AssistedAnswer;
-import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateType;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityCheck;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostProfile;
@@ -181,10 +181,6 @@ public final class HostTransport implements ProviderTransport {
         }
     }
 
-    /** An answer candidate: an endpoint on the gameplay port and its type. */
-    private record Candidate(InetSocketAddress endpoint, CandidateType type) {
-    }
-
     /** An assisted join from delivery until its session ends. Event loop. */
     private final class Assisted {
         final AssistedJoin join;
@@ -192,7 +188,7 @@ public final class HostTransport implements ProviderTransport {
         final long deadlineNanos;
         final OwnershipGuard guard;
         final CompletableFuture<AssistedAnswer> result;
-        final CompletableFuture<Candidate> candidate = new CompletableFuture<>();
+        final CompletableFuture<HostCandidate> candidate = new CompletableFuture<>();
         final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         IceEndpoint.StunMonitor monitor;
         AddressFamily gatheringFamily;
@@ -697,7 +693,7 @@ public final class HostTransport implements ProviderTransport {
         for (AddressFamily family : families) {
             InetSocketAddress host = hosts.get(family);
             if (host != null) {
-                state.candidate.complete(new Candidate(host, CandidateType.HOST));
+                state.candidate.complete(HostCandidate.host(host));
                 return;
             }
         }
@@ -756,7 +752,7 @@ public final class HostTransport implements ProviderTransport {
                     return;
                 }
                 state.closeMonitor();
-                state.candidate.complete(new Candidate(mapped, CandidateType.SRFLX));
+                state.candidate.complete(new HostCandidate(mapped, CandidateType.SERVER_REFLEXIVE));
             }));
         }
     }
@@ -795,7 +791,7 @@ public final class HostTransport implements ProviderTransport {
                 onLoop(() -> {
                     try {
                         state.requireCurrent();
-                        AssistedAnswer answer = AssistedAnswer.build(sdp, candidate.endpoint(), candidate.type(), null);
+                        AssistedAnswer answer = AssistedAnswer.build(sdp, candidate, null);
                         state.result.complete(answer);
                         handedOn.complete(null);
                     } catch (Exception e) {

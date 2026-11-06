@@ -2,7 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity;
 
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateMethod;
-import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateType;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityCheck;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityOutcome;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
@@ -195,7 +195,7 @@ public final class MaintainedCandidatePublisher implements AutoCloseable {
                 // The gameplay port too, for a router that moved the port on the way out; provider checks withdraw
                 // it on their own where nothing forwards it
                 for (InetSocketAddress announced : withGameplayPort(endpoint)) {
-                    HostCandidate candidate = new HostCandidate(announced, CandidateType.SRFLX);
+                    HostCandidate candidate = new HostCandidate(announced, CandidateType.SERVER_REFLEXIVE);
                     reflexive.add(candidate);
                     familyProbes.add(candidate);
                 }

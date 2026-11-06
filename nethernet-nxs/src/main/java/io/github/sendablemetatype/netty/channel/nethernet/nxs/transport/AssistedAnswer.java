@@ -48,18 +48,19 @@ public record AssistedAnswer(String sdp) {
      * gathered candidates, so the answer would still name a private address and port it no longer announces.
      *
      * @param localDescription The answering peer's local description
-     * @param candidate        The endpoint the client should check, on the gameplay port
+     * @param candidate        The candidate the client should check, on the gameplay port
      * @param signer           Adds the server identity; null for a diagnostic answer, which carries none
      */
-    public static AssistedAnswer build(String localDescription, InetSocketAddress candidate, CandidateType type,
-                                       AnswerSigner signer) throws GeneralSecurityException {
+    public static AssistedAnswer build(String localDescription, HostCandidate candidate, AnswerSigner signer)
+            throws GeneralSecurityException {
+        InetSocketAddress endpoint = candidate.endpoint();
         String answer = AnswerCandidates.withConnectionAddresses(String.join("\r\n", localDescription.lines()
                 .filter(line -> !line.startsWith("a=candidate:")
                         && !line.startsWith("a=remote-candidates:")
                         && !line.equals("a=end-of-candidates"))
                 .toList())
-                + "\r\na=candidate:1 1 UDP 2130706431 " + candidate.getAddress().getHostAddress()
-                + " " + candidate.getPort() + " typ " + type.wire() + "\r\na=end-of-candidates\r\n");
+                + "\r\na=candidate:1 1 UDP 2130706431 " + endpoint.getAddress().getHostAddress()
+                + " " + endpoint.getPort() + " typ " + candidate.typeName() +"\r\na=end-of-candidates\r\n");
         return new AssistedAnswer(signer == null ? answer : signer.sign(answer));
     }
 
