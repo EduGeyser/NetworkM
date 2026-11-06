@@ -353,8 +353,9 @@ public final class NetherNetHttpSignaling implements JoinSource {
             return;
         }
         if (!limits.open()) {
-            log.debug("Refused a signaling connection from {}: the connection cap is reached",
-                    channel.remoteAddress());
+            InetSocketAddress refused = (InetSocketAddress) channel.remoteAddress();
+            log.debug("Refused a signaling connection from {}: the connection cap is reached", refused);
+            metrics(metrics -> metrics.connectionCapRefused(refused));
             channel.close();
             return;
         }
@@ -376,7 +377,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         pipeline.addLast(new HttpTlsSelector(connection, this));
         HttpServerCodec codec = new HttpServerCodec();
         pipeline.addLast(codec);
-        pipeline.addLast(new HttpRequestBudget(connection, codec));
+        pipeline.addLast(new HttpRequestBudget(this, connection, codec));
         pipeline.addLast(new HttpAccessLog(this, connection));
         if (trustedProxies.isProxy(peer)) {
             pipeline.addLast(new HttpSourceCounter(this, connection));
@@ -403,6 +404,13 @@ public final class NetherNetHttpSignaling implements JoinSource {
     /** A connection for this client was refused: its address holds its share of connections. */
     void addressRefused(InetSocketAddress client) {
         metrics(metrics -> metrics.addressRefused(client));
+    }
+
+    /** A request on this connection did not arrive whole within its deadline. */
+    void requestTimedOut(HttpConnection connection) {
+        InetSocketAddress client = connection.proxyDeclared != null ? connection.proxyDeclared
+                : (InetSocketAddress) connection.channel.remoteAddress();
+        metrics(metrics -> metrics.requestTimedOut(client));
     }
 
     void plaintextRefused(InetSocketAddress client) {
@@ -648,7 +656,9 @@ public final class NetherNetHttpSignaling implements JoinSource {
 
         /**
          * Reports what this source refuses on its own: connections whose address holds its share
-         * ({@link NetherServerMetrics#addressRefused}), plain HTTP under {@link #requiresTls}
+         * ({@link NetherServerMetrics#addressRefused}) or that find every connection taken
+         * ({@link NetherServerMetrics#connectionCapRefused}), requests that miss their deadline
+         * ({@link NetherServerMetrics#requestTimedOut}), plain HTTP under {@link #requiresTls}
          * ({@link NetherServerMetrics#plaintextRefused}), and offers it answers with a
          * {@link JoinRefusal} before or instead of the endpoint, such as a {@code 504} past the
          * negotiation deadline, or with a {@code 413} or {@code 417} before reading it whole

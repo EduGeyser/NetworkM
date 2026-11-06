@@ -46,6 +46,16 @@ class HttpSignalingMetricsTest {
         public void plaintextRefused(InetSocketAddress address) {
             events.add("plaintext " + address);
         }
+
+        @Override
+        public void connectionCapRefused(InetSocketAddress address) {
+            events.add("cap " + address);
+        }
+
+        @Override
+        public void requestTimedOut(InetSocketAddress address) {
+            events.add("timeout " + address);
+        }
     };
     private NetherNetHttpSignaling signaling;
 
@@ -131,6 +141,36 @@ class HttpSignalingMetricsTest {
 
         assertFalse(second.isOpen());
         assertEquals(List.of("address " + EmbeddedHttp.CLIENT), events);
+    }
+
+    @Test
+    void aConnectionOverTheGlobalCapIsReportedWithItsPeer() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).maxConnections(1)
+                .metrics(metrics);
+        assertTrue(connect(builder).isOpen());
+        InetSocketAddress other = new InetSocketAddress("192.0.2.77", 40000);
+        EmbeddedHttp refused = new EmbeddedHttp(signaling, other);
+        connections.add(refused);
+
+        assertFalse(refused.isOpen());
+        assertEquals(List.of("cap " + other), events);
+    }
+
+    @Test
+    void aRequestPastItsDeadlineIsReportedAndAnUnusedSecondRequestIsNot() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).metrics(metrics);
+        EmbeddedHttp slow = connect(builder);
+        slow.send("POST /v1/join/42 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nv=0");
+        EmbeddedHttp done = connect(builder);
+        done.send(get("/v1/join"));
+        assertEquals(200, done.response().status());
+
+        slow.advance(TimeUnit.SECONDS.toMillis(HttpRequestBudget.REQUEST_SECONDS));
+        done.advance(TimeUnit.SECONDS.toMillis(HttpRequestBudget.REQUEST_SECONDS));
+
+        assertFalse(slow.isOpen());
+        assertFalse(done.isOpen(), "the gap for a second request passed");
+        assertEquals(List.of("timeout " + EmbeddedHttp.CLIENT), events);
     }
 
     @Test

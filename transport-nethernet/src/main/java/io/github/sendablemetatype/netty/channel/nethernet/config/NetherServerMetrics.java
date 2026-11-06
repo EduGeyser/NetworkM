@@ -58,6 +58,27 @@ public interface NetherServerMetrics {
     default void addressRefused(InetSocketAddress address) {
     }
 
+    /**
+     * HTTP signaling holds as many connections as it may in all, so it
+     * refused one from this address, unread.
+     *
+     * @param address the connection's peer, which is the proxy for a proxied
+     *        client
+     */
+    default void connectionCapRefused(InetSocketAddress address) {
+    }
+
+    /**
+     * An HTTP signaling request did not arrive whole within its deadline
+     * (10 s), so its connection closed unanswered. A connection that just
+     * sends no second request after its status request is not reported.
+     *
+     * @param address the client a PROXY protocol header declared, else the
+     *        connection's peer
+     */
+    default void requestTimedOut(InetSocketAddress address) {
+    }
+
     /** A request arrived without TLS where it is required. */
     default void plaintextRefused(InetSocketAddress address) {
     }
