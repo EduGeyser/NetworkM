@@ -75,13 +75,12 @@ class HttpSignalingMetricsTest {
         EmbeddedHttp pending = connect(builder);
         pending.send(post("43", OFFER));
         Join join = sink.next();
-        connect(builder).send(post("43", OFFER));
         pending.advance(NetherNetHttpSignaling.DEFAULT_NEGOTIATION_TIMEOUT.toMillis());
         EmbeddedHttp refused = connect(builder);
         refused.send(post("44", OFFER));
         sink.next().reply().refuse(JoinRefusal.HOST_REFUSED).toCompletableFuture().get(1, TimeUnit.SECONDS);
 
-        assertEquals(List.of("refused 400", "refused 409", "refused 504"), events,
+        assertEquals(List.of("refused 400", "refused 504"), events,
                 "the endpoint reports the refusals it decides itself");
         assertTrue(join.reply().abandoned().toCompletableFuture().isDone());
         assertEquals(JoinRefusal.HOST_REFUSED.httpStatus(), refused.response().status());

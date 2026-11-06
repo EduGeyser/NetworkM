@@ -31,6 +31,7 @@ final class FakeJoinSource implements JoinSource {
     static final InetSocketAddress CLIENT = new InetSocketAddress("198.51.100.9", 50000);
 
     private final boolean trickles;
+    private final boolean oneJoinPerNetworkId;
     volatile JoinSink sink;
     volatile boolean closed;
     volatile List<IceServer> iceServers = List.of();
@@ -38,7 +39,18 @@ final class FakeJoinSource implements JoinSource {
 
     /** @param trickles whether replies trickle, as Xbox and LAN do, or carry one full answer, as HTTP does */
     FakeJoinSource(boolean trickles) {
+        this(trickles, false);
+    }
+
+    /** @param oneJoinPerNetworkId whether the endpoint holds each network ID for its pending join, as for HTTP */
+    FakeJoinSource(boolean trickles, boolean oneJoinPerNetworkId) {
         this.trickles = trickles;
+        this.oneJoinPerNetworkId = oneJoinPerNetworkId;
+    }
+
+    @Override
+    public boolean oneJoinPerNetworkId() {
+        return oneJoinPerNetworkId;
     }
 
     @Override
@@ -73,6 +85,14 @@ final class FakeJoinSource implements JoinSource {
     /** Delivers an offer from {@link #CLIENT}. */
     Reply offer(String connectionId, String offer) {
         return offer(connectionId, offer, new SourcedAddress(CLIENT, AddressSource.SIGNALING, null), null);
+    }
+
+    /** Delivers an offer from {@link #CLIENT} with this network ID. */
+    Reply offerFrom(String networkId, String connectionId, String offer) {
+        Reply reply = new Reply(trickles);
+        sink.join(new Join(connectionId, networkId, offer, new SourcedAddress(CLIENT, AddressSource.SIGNALING, null),
+                reply));
+        return reply;
     }
 
     Reply offer(String connectionId, String offer, SourcedAddress source, Join.Addressed addressed) {

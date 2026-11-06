@@ -64,8 +64,7 @@ public interface ReplyPath {
     /**
      * Tells the source the join's connection went active: the client got its answer and reached
      * the server. Called at most once, before {@link #finished()}; a join that fails never gets
-     * it. HTTP signaling holds the client's network ID as pending until this or
-     * {@link #finished()}.
+     * it.
      */
     default void connected() {
     }

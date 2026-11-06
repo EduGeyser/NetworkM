@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetAddress;
@@ -545,6 +546,86 @@ class NetherNetServerAdmissionTest {
         assertFalse(source.sink.admits(client));
         assertTrue(source.sink.admits(other));
         source.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
+    }
+
+    // One pending join per network ID.
+
+    /** How the first join for a network ID ends, or not yet, before a second one comes. */
+    enum FirstJoin {
+        REFUSED(true), CLIENT_LEFT(true), PENDING(false), ACTIVE(true), CLOSED(true);
+
+        final boolean frees;
+
+        FirstJoin(boolean frees) {
+            this.frees = frees;
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(FirstJoin.class)
+    void aNetworkIdStaysHeldUntilItsJoinGoesActiveOrFails(FirstJoin outcome) throws Exception {
+        useManualChecks();
+        reportRefusals();
+        harness.bind();
+        FakeJoinSource source = new FakeJoinSource(false, true);
+        harness.server.addSource(source);
+
+        FakeJoinSource.Reply first = source.offerFrom("42", "1",
+                outcome == FirstJoin.REFUSED ? OFFER : educationOffer());
+        checks.awaitQueued();
+        switch (outcome) {
+            case REFUSED -> {
+                checks.runNext();
+                first.assertRefused(JoinRefusal.IDENTITY_MISSING);
+            }
+            case CLIENT_LEFT -> {
+                first.abandoned.complete(null);
+                harness.sync();
+                assertEquals(1, first.finished.get());
+                checks.runNext(); // the withdrawn check
+            }
+            case PENDING, ACTIVE, CLOSED -> {
+                checks.runNext();
+                NetherNetChildChannel child = harness.child();
+                if (outcome == FirstJoin.ACTIVE) {
+                    harness.activate(harness.engine.lastPeer());
+                    assertTrue(child.isActive());
+                } else if (outcome == FirstJoin.CLOSED) {
+                    child.close().sync();
+                    harness.sync();
+                }
+            }
+        }
+        int peers = harness.engine.peers().size();
+        refusedStatuses.clear();
+
+        FakeJoinSource.Reply second = source.offerFrom("42", "2", educationOffer());
+        if (outcome.frees) {
+            checks.awaitQueued();
+            checks.runNext();
+            harness.child();
+            assertEquals(peers + 1, harness.engine.peers().size(), "a player can retry at once");
+        } else {
+            second.assertRefused(JoinRefusal.DUPLICATE);
+            harness.sync();
+            assertEquals(1, second.finished.get());
+            assertEquals(peers, harness.engine.peers().size(), "the duplicate gets no peer");
+            assertTrue(checks.tasks.isEmpty(), "nor an identity check");
+            assertEquals(List.of(409), refusedStatuses);
+            assertTrue(harness.server.gate().pending() > 0, "the first join keeps its place");
+        }
+    }
+
+    @Test
+    void sourcesThatTrickleTakeSeveralJoinsForOneNetworkId() throws Exception {
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+
+        source.offerFrom("42", "1", OFFER);
+        source.offerFrom("42", "2", OFFER);
+
+        harness.child();
+        harness.child();
     }
 
     private void useManualChecks() {

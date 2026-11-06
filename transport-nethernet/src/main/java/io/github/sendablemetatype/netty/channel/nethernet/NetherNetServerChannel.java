@@ -87,7 +87,9 @@ import java.util.function.Supplier;
  * endpoint closes its sources.
  *
  * <p><b>Admission.</b> Every join passes the same stage, whatever its source, on this channel's
- * event loop: the per-address throttle ({@link NetherChannelOption#NETHER_SERVER_THROTTLE}), one
+ * event loop: one pending join per network ID across the sources that ask for it
+ * ({@link JoinSource#oneJoinPerNetworkId()}, HTTP signaling), the per-address throttle
+ * ({@link NetherChannelOption#NETHER_SERVER_THROTTLE}), one
  * budget for sessions and pending handshakes shared by all sources
  * ({@link NetherChannelOption#NETHER_SERVER_MAX_SESSIONS},
  * {@link NetherChannelOption#NETHER_SERVER_MAX_PENDING_JOINS}), and the offer's identity check
@@ -129,6 +131,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final Supplier<? extends ExecutorService> checkExecutors;
     private final AdvertisedLookup names;
     private final AdmissionGate gate = new AdmissionGate();
+    private final PendingNetworkIds pendingNetworkIds = new PendingNetworkIds();
     /** Children whose termination has not completed yet. */
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
     /** Peers without a child that sources opened on the shared port, until their termination completed. */
@@ -863,11 +866,21 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /** The first step of the admission stage, on this channel's event loop. */
-    private void admit(Registration from, Join join) {
+    private void admit(Registration from, Join offered) {
         Bound settings = bound;
         if (!open || settings == null || from.removed) {
-            refuse(join, JoinRefusal.CAPACITY);
+            refuse(offered, JoinRefusal.CAPACITY);
             return;
+        }
+        Join join = offered;
+        if (from.source.oneJoinPerNetworkId()) {
+            join = pendingNetworkIds.hold(offered);
+            if (join == null) {
+                log.debug("Refused join {}: another join for network {} is pending", offered.connectionId(),
+                        offered.remoteNetworkId());
+                refuse(offered, JoinRefusal.DUPLICATE);
+                return;
+            }
         }
         NetherServerThrottle throttle = config.getThrottle();
         InetSocketAddress throttled = throttleKey(join.source());
