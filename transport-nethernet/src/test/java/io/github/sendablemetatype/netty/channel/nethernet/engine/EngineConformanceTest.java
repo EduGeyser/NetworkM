@@ -124,7 +124,8 @@ public abstract class EngineConformanceTest {
         }
 
         awaitCondition(() -> results.size() == 8, "Not every send completed");
-        assertEquals(Collections.nCopies(8, null), List.copyOf(results));
+        // A copy that keeps the nulls of successful sends; List.copyOf rejects them.
+        assertEquals(Collections.nCopies(8, null), new ArrayList<>(results));
     }
 
     @Test
