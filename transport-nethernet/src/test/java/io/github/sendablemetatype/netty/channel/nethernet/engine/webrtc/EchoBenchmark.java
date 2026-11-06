@@ -69,46 +69,50 @@ public final class EchoBenchmark {
         }
     }
 
+    /** Measures, then closes what it opened; a failed close fails the run too. */
     private static void run(Settings settings) throws Exception {
+        try (Cleanup cleanup = new Cleanup()) {
+            measure(settings, cleanup);
+        }
+    }
+
+    private static void measure(Settings settings, Cleanup cleanup) throws Exception {
         int pairCount = Arrays.stream(settings.pairs).max().orElse(1);
 
         NetherNetEngine clientEngine = WebRtcEngine.builder().factories(1).build();
+        cleanup.add("Closing the client engine", () -> await(clientEngine.close()));
         NetherNetEngine serverEngine = WebRtcEngine.builder().factories(1).build();
+        cleanup.add("Closing the server engine", () -> await(serverEngine.close()));
         List<Pair> pairs = new ArrayList<>();
-        try {
-            for (int i = 0; i < pairCount; i++) {
-                pairs.add(Pair.connect(clientEngine, serverEngine, settings.size));
-            }
-            Pair first = pairs.getFirst();
-            first.latency(settings.warmup);
-            first.window(settings.warmup, settings.window);
+        for (int i = 0; i < pairCount; i++) {
+            Pair pair = Pair.connect(clientEngine, serverEngine, settings.size);
+            cleanup.add("Closing a server peer", () -> await(pair.answerer().close()));
+            cleanup.add("Closing a client peer", () -> await(pair.offerer().close()));
+            pairs.add(pair);
+        }
+        Pair first = pairs.getFirst();
+        first.latency(settings.warmup);
+        first.window(settings.warmup, settings.window);
 
-            System.out.println("NetherNet echo through libwebrtc");
-            System.out.println("machine:  " + machine());
-            System.out.println("natives:  " + System.getProperty("echoBenchmark.natives", "?"));
-            System.out.println("delivery: client " + first.client.delivery() + ", server " + first.server.delivery());
-            System.out.println("path:     " + first.client.path);
-            System.out.println("settings: " + settings);
+        System.out.println("NetherNet echo through libwebrtc");
+        System.out.println("machine:  " + machine());
+        System.out.println("natives:  " + System.getProperty("echoBenchmark.natives", "?"));
+        System.out.println("delivery: client " + first.client.delivery() + ", server " + first.server.delivery());
+        System.out.println("path:     " + first.client.path);
+        System.out.println("settings: " + settings);
 
-            for (int round = 1; round <= settings.rounds; round++) {
-                long[] times = first.latency(settings.pings);
-                Arrays.sort(times);
-                System.out.printf(Locale.ROOT, "round %d  round trip (us): mean %.1f  p50 %.1f  p90 %.1f  p99 %.1f"
-                                + "  max %.1f%n", round, Arrays.stream(times).average().orElse(0) / 1e3,
-                        percentile(times, 50), percentile(times, 90), percentile(times, 99),
-                        times[times.length - 1] / 1e3);
-                for (int count : settings.pairs) {
-                    double perSecond = windowed(pairs.subList(0, count), settings.messages, settings.window);
-                    System.out.printf(Locale.ROOT, "round %d  echoed, %d pair%s, window %d: %.0f messages/s%n",
-                            round, count, count == 1 ? "" : "s", settings.window, perSecond);
-                }
+        for (int round = 1; round <= settings.rounds; round++) {
+            long[] times = first.latency(settings.pings);
+            Arrays.sort(times);
+            System.out.printf(Locale.ROOT, "round %d  round trip (us): mean %.1f  p50 %.1f  p90 %.1f  p99 %.1f"
+                            + "  max %.1f%n", round, Arrays.stream(times).average().orElse(0) / 1e3,
+                    percentile(times, 50), percentile(times, 90), percentile(times, 99),
+                    times[times.length - 1] / 1e3);
+            for (int count : settings.pairs) {
+                double perSecond = windowed(pairs.subList(0, count), settings.messages, settings.window);
+                System.out.printf(Locale.ROOT, "round %d  echoed, %d pair%s, window %d: %.0f messages/s%n",
+                        round, count, count == 1 ? "" : "s", settings.window, perSecond);
             }
-        } finally {
-            for (Pair pair : pairs) {
-                pair.close();
-            }
-            quietly("Closing the client engine", () -> await(clientEngine.close()));
-            quietly("Closing the server engine", () -> await(serverEngine.close()));
         }
     }
 
@@ -140,12 +144,39 @@ public final class EchoBenchmark {
         }
     }
 
-    /** Runs a cleanup step, reporting its failure without ending the cleanup. */
-    private static void quietly(String what, Step step) {
-        try {
-            step.run();
-        } catch (Exception e) {
-            System.err.println(what + " failed: " + e);
+    /**
+     * What a run has to close, newest first. Every step is tried; the first
+     * failure is thrown with the later ones suppressed, so a failed close fails
+     * the run, and with try-with-resources a failed measurement keeps them as
+     * suppressed exceptions.
+     */
+    private static final class Cleanup implements AutoCloseable {
+        private final List<String> names = new ArrayList<>();
+        private final List<Step> steps = new ArrayList<>();
+
+        void add(String name, Step step) {
+            names.add(name);
+            steps.add(step);
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOException failure = null;
+            for (int i = steps.size() - 1; i >= 0; i--) {
+                try {
+                    steps.get(i).run();
+                } catch (Exception e) {
+                    IOException failed = new IOException(names.get(i) + " failed", e);
+                    if (failure == null) {
+                        failure = failed;
+                    } else {
+                        failure.addSuppressed(failed);
+                    }
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 
@@ -300,10 +331,6 @@ public final class EchoBenchmark {
             }
         }
 
-        void close() {
-            quietly("Closing a client peer", () -> await(offerer.close()));
-            quietly("Closing a server peer", () -> await(answerer.close()));
-        }
     }
 
     /**
