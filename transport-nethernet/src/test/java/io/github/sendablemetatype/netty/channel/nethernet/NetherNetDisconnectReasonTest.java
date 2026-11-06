@@ -11,6 +11,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -71,6 +73,24 @@ class NetherNetDisconnectReasonTest {
             h.run();
             assertTrue(h.channel.isActive());
             assertEquals(List.of("active"), h.events);
+        }
+    }
+
+    @Test
+    void aHandlerThatWritesOnTheReasonDoesNotFireItAgain() {
+        try (ActiveChild h = new ActiveChild(child -> child.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+            @Override
+            public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+                if (event instanceof TransportDisconnectReason) {
+                    ctx.channel().writeAndFlush(payload(1));
+                }
+                ctx.fireUserEventTriggered(event);
+            }
+        }))) {
+            h.peer.closed(CloseCause.ICE_FAILED);
+            h.run();
+            assertEquals(List.of("active", "CONNECTION_LOST", "inactive"), h.events);
+            assertEquals(0, h.reliable().sendCount());
         }
     }
 

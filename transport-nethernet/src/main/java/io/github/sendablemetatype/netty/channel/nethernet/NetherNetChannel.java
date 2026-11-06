@@ -123,6 +123,9 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     // Why the transport ended the connection; the first ending wins. Set from
     // any thread, acted on by the event loop through the shared wakeup.
     private final AtomicReference<Ending> ending = new AtomicReference<>();
+    // Event loop only: set before the reason fires, since a handler that
+    // writes on it reenters closeIfEnded while the channel is still open.
+    private boolean closingForEnding;
     private final AtomicBoolean wakeUpScheduled = new AtomicBoolean();
     private final Runnable wakeUpTask = this::onWakeUp;
     private final Runnable applyPathTask = this::applyPath;
@@ -1003,6 +1006,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
          * otherwise never learn why the connection ended.
          */
         private void closeForEnding(Ending end) {
+            if (closingForEnding) {
+                return;
+            }
+            closingForEnding = true;
             if (channelActiveFired.get()) {
                 pipeline().fireUserEventTriggered(end.reason());
             }
