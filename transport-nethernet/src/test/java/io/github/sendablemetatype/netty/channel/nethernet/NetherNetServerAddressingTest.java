@@ -12,6 +12,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.util.address.IpRangeSet;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -21,8 +22,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.ANSWER;
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.OFFER;
@@ -89,6 +93,51 @@ class NetherNetServerAddressingTest {
         assertTrue(answer.contains("a=identity:"));
         assertTrue(answer.endsWith("a=end-of-candidates\r\n"));
         assertEquals(1, answer.split("a=end-of-candidates", -1).length - 1);
+    }
+
+    @Test
+    void advertisedNamesAreLookedUpOffTheLoopAndAnnouncedOnceTheyResolve() throws Exception {
+        CompletableFuture<List<InetSocketAddress>> lookup = new CompletableFuture<>();
+        try (EndpointHarness names = new EndpointHarness(OfferCheck::newExecutor, endpoints -> {
+            try {
+                return lookup.get(5, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new UnknownHostException("The test never answered the lookup");
+            }
+        })) {
+            names.engine.answerWith(ANSWER);
+            names.engine.gatherWith(GATHERED);
+            names.bootstrap.option(NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES, List.of(
+                    new InetSocketAddress("203.0.113.7", 0), InetSocketAddress.createUnresolved("play.example", 0)));
+            names.bind();
+            FakeJoinSource source = names.source(false);
+
+            String before = source.offer(1, OFFER).answer();
+            assertTrue(before.contains(" 203.0.113.7 5000 typ srflx"), "the literal is announced at once: " + before);
+            assertFalse(before.contains("203.0.113.8"), before);
+
+            lookup.complete(List.of(new InetSocketAddress("203.0.113.7", 0), new InetSocketAddress("203.0.113.8", 0)));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            String after;
+            long connectionId = 2;
+            do {
+                after = source.offer(connectionId++, OFFER).answer();
+            } while (!after.contains("203.0.113.8") && System.nanoTime() < deadline);
+            assertTrue(after.contains(" 203.0.113.8 5000 typ srflx"), after);
+            assertTrue(after.contains(" 203.0.113.7 5000 typ srflx"), after);
+        }
+    }
+
+    @Test
+    void anAdvertisedNameThatDoesNotResolveClosesTheEndpoint() throws Exception {
+        try (EndpointHarness names = new EndpointHarness(OfferCheck::newExecutor, endpoints -> {
+            throw new UnknownHostException("play.example");
+        })) {
+            names.bootstrap.option(NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES,
+                    List.of(InetSocketAddress.createUnresolved("play.example", 0)));
+            NetherNetServerChannel server = names.bind();
+            assertTrue(server.closeFuture().await(2, TimeUnit.SECONDS));
+        }
     }
 
     @Test

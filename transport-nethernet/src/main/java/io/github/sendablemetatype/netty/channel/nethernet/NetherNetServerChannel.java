@@ -40,6 +40,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -104,6 +105,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final DefaultNetherServerChannelConfig config;
     private final EngineRef engine;
     private final Supplier<? extends ExecutorService> checkExecutors;
+    private final AdvertisedLookup names;
     private final AdmissionGate gate = new AdmissionGate();
     /** Children whose termination has not completed yet. */
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
@@ -122,6 +124,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * session takes its own ports.
      */
     private volatile CompletionStage<IceEndpoint> iceEndpoint;
+    /** What answers announce: the literal advertised entries, then every entry once names resolved. */
+    private volatile List<InetSocketAddress> advertised = List.of();
     private volatile Bound bound;
     private volatile boolean open = true;
 
@@ -153,9 +157,25 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param checkExecutors creates the bounded executor identity checks run on, once per bind
      */
     NetherNetServerChannel(EngineRef engine, Supplier<? extends ExecutorService> checkExecutors) {
+        this(engine, checkExecutors, AdvertisedAddresses::resolve);
+    }
+
+    /**
+     * @param checkExecutors creates the bounded executor identity checks run on, once per bind
+     * @param names looks up the advertised names, off the event loop
+     */
+    NetherNetServerChannel(EngineRef engine, Supplier<? extends ExecutorService> checkExecutors,
+                           AdvertisedLookup names) {
         this.engine = engine;
         this.checkExecutors = checkExecutors;
+        this.names = names;
         this.config = new DefaultNetherServerChannelConfig(this);
+    }
+
+    /** Looks up advertised names, as {@link AdvertisedAddresses#resolve(List)} does. */
+    @FunctionalInterface
+    interface AdvertisedLookup {
+        List<InetSocketAddress> resolve(List<InetSocketAddress> endpoints) throws UnknownHostException;
     }
 
     /**
@@ -163,11 +183,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      *
      * @param answers what every join answers with
      * @param relays the PROXY protocol relays in front of the ICE port, empty for none
-     * @param advertised the advertised addresses, resolved
      * @param offerCheck checks every join's identity
      */
-    private record BindPlan(ServerJoin.Settings answers, List<String> relays, List<InetSocketAddress> advertised,
-                            OfferCheck offerCheck) {
+    private record BindPlan(ServerJoin.Settings answers, List<String> relays, OfferCheck offerCheck) {
     }
 
     /**
@@ -175,12 +193,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      *
      * @param answers what every join answers with
      * @param iceEndpoint the shared ICE port, or null when each session takes its own
-     * @param advertised the advertised addresses, resolved
      * @param offerCheck checks every join's identity
      * @param checkExecutor runs the checks, off the event loop
      */
-    private record Bound(ServerJoin.Settings answers, IceEndpoint iceEndpoint, List<InetSocketAddress> advertised,
-                         OfferCheck offerCheck, ExecutorService checkExecutor) {
+    private record Bound(ServerJoin.Settings answers, IceEndpoint iceEndpoint, OfferCheck offerCheck,
+                         ExecutorService checkExecutor) {
     }
 
     // ---- Sources ----
@@ -303,9 +320,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if (relayed && !shared) {
             throw new IllegalStateException("PROXY protocol relays for media need the shared ICE port");
         }
-        // Names are looked up once, here; literals return at once.
-        List<InetSocketAddress> advertised = AdvertisedAddresses.resolve(config.getAdvertisedAddresses());
-        if (relayed && advertised.isEmpty()) {
+        List<InetSocketAddress> configured = config.getAdvertisedAddresses();
+        // Literals count against the limit now; this looks nothing up.
+        List<InetSocketAddress> literals = AdvertisedAddresses.resolve(
+                configured.stream().filter(endpoint -> !endpoint.isUnresolved()).toList());
+        if (relayed && configured.isEmpty()) {
             log.warn("PROXY protocol relays front the ICE port, but no advertised addresses name them: answers "
                     + "name this host, and players can only connect if something in front of signaling rewrites them");
         }
@@ -323,6 +342,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             local = new InetSocketAddress(host, icePort);
         }
         this.localAddress = local;
+        this.advertised = literals;
+        if (configured.stream().anyMatch(InetSocketAddress::isUnresolved)) {
+            lookUpAdvertisedNames(configured);
+        }
 
         OfferCheck offerCheck = config.getOfferCheck();
         // Off the event loop, and off the bounded check executor, whose slots belong to joins: the
@@ -330,8 +353,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
         ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(), icePort,
                 relayed);
-        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), advertised,
-                offerCheck);
+        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), offerCheck);
 
         CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
                 : opening.toCompletableFuture();
@@ -376,6 +398,43 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
+    /**
+     * Looks the advertised names up once, on a thread of its own, since DNS can take seconds; the
+     * event loop does not wait for it. Joins until then announce the literal entries only. A name
+     * that does not resolve closes the endpoint, as it failed the bind before.
+     */
+    private void lookUpAdvertisedNames(List<InetSocketAddress> configured) {
+        Thread.ofVirtual().name("nethernet-advertised-names").start(() -> {
+            List<InetSocketAddress> resolved = null;
+            Exception failure = null;
+            try {
+                resolved = names.resolve(configured);
+            } catch (UnknownHostException | IllegalArgumentException e) {
+                failure = e;
+            }
+            List<InetSocketAddress> found = resolved;
+            Exception failed = failure;
+            try {
+                eventLoop().execute(() -> advertisedNamesResolved(found, failed));
+            } catch (RejectedExecutionException gone) {
+                // Nothing left to announce them to.
+            }
+        });
+    }
+
+    private void advertisedNamesResolved(List<InetSocketAddress> resolved, Exception failure) {
+        if (!open) {
+            return;
+        }
+        if (failure != null) {
+            log.error("The NetherNet endpoint at {} could not resolve its advertised addresses, closing it: {}",
+                    localAddress, failure.getMessage());
+            close();
+            return;
+        }
+        advertised = resolved;
+    }
+
     /** The shared ICE port opened, or failed to, after bind returned. Event loop. */
     private void opened(BindPlan plan, IceEndpoint endpoint, Throwable failure) {
         if (!open) {
@@ -406,7 +465,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
         // NXS stateless joins are no join source: they arrive at the shared port, as checks it holds
         // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
-        this.bound = new Bound(plan.answers(), endpoint, plan.advertised(), plan.offerCheck(), checkExecutors.get());
+        this.bound = new Bound(plan.answers(), endpoint, plan.offerCheck(), checkExecutors.get());
         log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
                 endpoint != null ? "shared ICE port" : "ICE ports per session",
                 plan.answers().identity().fingerprint());
@@ -737,8 +796,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         boolean relayed = settings.answers().relayed();
         RemoteCandidateIntake intake = relayed ? RemoteCandidateIntake.relayed() : RemoteCandidateIntake.server();
         AdmissionGate.Reservation reservation = admission.reservation;
-        ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake, announcement(join, settings),
-                reservation::handshakeDone);
+        ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake,
+                announcement(join, settings, advertised), reservation::handshakeDone);
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);
@@ -804,7 +863,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * What a join's answer announces: the advertised addresses (as relays behind PROXY protocol
      * relays), or else the address the player typed, when the source knows it.
      */
-    private static CandidateAnnouncement announcement(Join join, Bound settings) {
+    private static CandidateAnnouncement announcement(Join join, Bound settings, List<InetSocketAddress> advertised) {
         int icePort = settings.answers().icePort();
         Optional<InetSocketAddress> typed = Optional.empty();
         if (join.addressed() instanceof Join.Addressed addressed) {
@@ -812,7 +871,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                     addressed.localPort() == icePort);
         }
         // STUN discovery (ruling G-6, item 1) would add its fresh mappings here.
-        return CandidateAnnouncement.of(settings.advertised(), settings.answers().relayed(), List.of(), typed);
+        return CandidateAnnouncement.of(advertised, settings.answers().relayed(), List.of(), typed);
     }
 
     private void serverMetrics(Consumer<NetherServerMetrics> event) {

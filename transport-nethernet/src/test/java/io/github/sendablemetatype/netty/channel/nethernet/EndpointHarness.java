@@ -5,6 +5,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParamete
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
@@ -50,9 +51,13 @@ final class EndpointHarness implements AutoCloseable {
     }
 
     EndpointHarness(Supplier<? extends ExecutorService> checkExecutors) {
+        this(checkExecutors, AdvertisedAddresses::resolve);
+    }
+
+    EndpointHarness(Supplier<? extends ExecutorService> checkExecutors, NetherNetServerChannel.AdvertisedLookup names) {
         bootstrap = new ServerBootstrap()
                 .group(group)
-                .channelFactory(() -> new NetherNetServerChannel(EngineRef.shared(engine), checkExecutors))
+                .channelFactory(() -> new NetherNetServerChannel(EngineRef.shared(engine), checkExecutors, names))
                 .option(NetherChannelOption.NETHER_SERVER_IDENTITY, IDENTITY)
                 .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, OfferFixtures.retailCheck())
                 .childHandler(new ChannelInitializer<Channel>() {
