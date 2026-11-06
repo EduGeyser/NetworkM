@@ -153,6 +153,26 @@ class ProviderOutcomesTest {
     }
 
     @Test
+    void shutdownDeliversOutcomesNotCollectedYet(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var transport = new FakeTransport();
+            var client = h.client(h.configuration().gameOutcomes(true).build(), path, transport, () -> null,
+                    () -> new Health(true, 10, SOFTWARE, h.connected(0)));
+            h.await(client.start());
+            for (int i = 0; i < 150; i++) {
+                transport.outcomes.add(open(i, h.scheduler.millis()));
+            }
+            for (int i = 0; i < 50; i++) {
+                assertTrue(client.reportGameOutcome(ticket(1000 + i), GameOutcome.JOINED, null));
+            }
+            // Nothing was collected before the stop, and one collection takes at most a batch
+            h.stop(client);
+            assertEquals(200, h.stub.events.size());
+            assertEquals(0, savedOutcomes(path));
+        }
+    }
+
+    @Test
     void gameOutcomesAreReportedOnlyWhenDeclaredAndOnlyAsCodes(@TempDir Path path) throws Exception {
         try (var h = new ClientHarness()) {
             var undeclared = h.client(path.resolve("off"), new FakeTransport());

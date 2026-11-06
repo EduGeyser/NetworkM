@@ -77,7 +77,7 @@ final class OutcomeQueue {
      * Collects new outcomes into the saved state, then sends a batch when one is due.
      *
      * @param immediately Send what is pending without waiting, as drain and shutdown do
-     * @return Whether outcomes are still pending
+     * @return Whether outcomes may still be waiting: saved ones, or more than this collection had room for
      */
     CompletableFuture<Boolean> flush(boolean immediately) {
         return Async.attempt(() -> {
@@ -99,6 +99,8 @@ final class OutcomeQueue {
                 }
                 game.drainTo(fresh, room - fresh.size());
             }
+            // The endpoint's queue cannot be asked, so a full collection means more may wait there
+            boolean filled = room > 0 && fresh.size() == room;
             if (!fresh.isEmpty()) {
                 // Saved in the round that collects them; only the send waits for the batch
                 pending.addAll(fresh);
@@ -144,7 +146,7 @@ final class OutcomeQueue {
                         dueNanos = 0;
                         failures = 0;
                         runtime.log.recovered(ProviderLog.Operation.EVENTS);
-                        return !remaining.isEmpty();
+                        return !remaining.isEmpty() || filled || !game.isEmpty();
                     });
         });
     }
