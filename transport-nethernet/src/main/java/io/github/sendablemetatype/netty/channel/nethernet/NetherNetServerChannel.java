@@ -114,9 +114,9 @@ import java.util.function.Supplier;
  *
  * <p><b>ICE.</b> By default every peer gathers its host candidates on one UDP port at the address
  * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
- * opens the port after bind returned, and the sources start once it is open, which
- * {@link #ready()} reports; a port that fails to open then closes the endpoint, with the error
- * logged. With
+ * sets the port up after bind returned, and the sources start once it is set up, which
+ * {@link #ready()} reports (with what that guarantees); a port that cannot be set up then closes
+ * the endpoint, with the error logged. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
  * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead. On the shared
  * port, {@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS} keeps STUN bindings alive from it and
@@ -617,10 +617,16 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     // ---- Bind and close ----
 
     /**
-     * Completes once the endpoint takes joins: it is bound, its shared ICE port is open, and its
-     * sources have started. The bind future completes before that, as soon as the port was found
-     * free: the engine opens the port afterwards, on its own threads. With ports per session there
-     * is no port to open, and this completes with the bind.
+     * Completes once the endpoint takes joins: it is bound, the engine has set up its shared ICE
+     * port, and its sources have started. The bind future completes before that, once the bind
+     * found the port free; the engine sets the port up afterwards, on its own threads. With ports
+     * per session there is no port to set up, and this completes with the bind.
+     *
+     * <p>For the port this guarantees only that it was free when the bind and then the engine
+     * probed it, and that the engine's endpoint for it exists. It does not hold the port: the
+     * WebRTC engine binds the UDP socket on each local address when the first peer gathers there.
+     * A process that takes the port in between costs the joins that gather while it holds it their
+     * host candidates on that address, and nothing here reports it.
      *
      * <p>Fails with the reason the endpoint did not get there: the bind's failure, the reason the
      * ICE port did not open (such as a {@link java.net.BindException} when another process took

@@ -130,12 +130,16 @@ close it. Removing the source closes its peers.
 **ICE port.** By default every peer gathers its host candidates on one UDP port,
 the address and port the endpoint binds (`NETHER_SERVER_SHARED_ICE_PORT`, true).
 Port 0 binds a free port, found when the endpoint binds. A taken port fails the
-bind. The engine opens the port after bind returned; a port that fails to open
-then closes the endpoint. Between bind and the port opening, joins are refused
-with `CAPACITY`. `ready()` completes once the port is open and the sources have
-started, and fails with the reason otherwise: the bind's failure, why the port
-did not open (a `BindException` when another process took it after the bind
-found it free), or a `ClosedChannelException` when the endpoint closed first.
+bind. The engine sets the port up after bind returned; a port it cannot set up
+then closes the endpoint. Until then, joins are refused with `CAPACITY`.
+`ready()` completes once the engine has set up the port and the
+sources have started, and fails with the reason otherwise: the bind's failure,
+why the port could not be set up (a `BindException` when another process took
+it after the bind found it free), or a `ClosedChannelException` when the
+endpoint closed first. It does not mean the port is held: the WebRTC engine
+binds the UDP socket on each local address when the first peer gathers there, so
+a process that takes the port in between costs the joins that gather while it
+holds it their host candidates on that address, unreported.
 Set
 `NETHER_SERVER_SHARED_ICE_PORT` to false to give each session ports of its own
 from `NETHER_CANDIDATE_POLICY`'s port window, the way BDS allocates them
