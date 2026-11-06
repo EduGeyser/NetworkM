@@ -1,6 +1,13 @@
 package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,10 +30,12 @@ enum RoutineNativeLine {
      * libwebrtc sends an SCTP ABORT with a user-initiated cause whenever its
      * side closes, so an ordinary client quit arrives as this abort (captured
      * from Education 26.33, 2026-11-06). Aborts of another kind or with
-     * another first cause keep their level.
+     * another first cause keep their level. The match is anchored at the start
+     * of the message: libwebrtc copies a peer's error cause text into the
+     * message, so an unanchored match would let a peer demote any abort.
      */
     PEER_CLOSED("dcsctp_transport.cc",
-            Pattern.compile("->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort", Pattern.LITERAL),
+            Pattern.compile("^DcSctpTransport\\d*->OnAborted\\(error=PEER_REPORTED, message=User-Initiated Abort[,)]"),
             false),
     /**
      * {@code p2p/base/stun_port.cc:490}, WARNING, for example
@@ -36,7 +45,8 @@ enum RoutineNativeLine {
      * when the name has no IPv6 address, as Xbox's STUN host most likely has
      * none (observed on an Xbox join on a dual-stack host, 2026-11-06); the
      * IPv4 network still gathers its candidate. A failure on an IPv4 network
-     * keeps its level.
+     * keeps its level, and so does one on an IPv6 network when the host has no
+     * IPv4 network, since then nothing else gathers.
      */
     STUN_LOOKUP_FAILED_ON_IPV6("stun_port.cc",
             Pattern.compile(": StunPort: stun host lookup received error ", Pattern.LITERAL),
@@ -45,7 +55,7 @@ enum RoutineNativeLine {
      * {@code p2p/base/turn_port.cc:943}, WARNING, for example
      * {@code Port[...:Net[eth0:2a01:4f8:c17:x:x:x:x:x/64:Unknown:id=2]]: TURN host lookup received error <code>}.
      * The same family-specific lookup as {@link #STUN_LOOKUP_FAILED_ON_IPV6},
-     * for the TURN host. A failure on an IPv4 network keeps its level.
+     * for the TURN host, with the same rules for IPv4 and IPv6-only hosts.
      */
     TURN_LOOKUP_FAILED_ON_IPV6("turn_port.cc",
             Pattern.compile(": TURN host lookup received error ", Pattern.LITERAL),
@@ -81,6 +91,11 @@ enum RoutineNativeLine {
      */
     private static final Pattern NETWORK = Pattern.compile("Net\\[[^:\\]]*:([^/\\]]+)/\\d+:");
     private static final List<RoutineNativeLine> ALL = List.of(values());
+    /** How long a check for an IPv4 network stays good; interfaces rarely change. */
+    private static final long IPV4_CHECK_NANOS = TimeUnit.MINUTES.toNanos(1);
+    private static volatile long ipv4CheckedAt;
+    private static volatile boolean hasIpv4Network;
+    private static volatile boolean ipv4Checked;
 
     private final String file;
     private final Pattern message;
@@ -99,6 +114,16 @@ enum RoutineNativeLine {
      * @return whether it reports a routine event
      */
     static boolean matches(String line) {
+        return matches(line, RoutineNativeLine::hostHasIpv4Network);
+    }
+
+    /**
+     * @param line           the line, with the source prefix
+     * @param hasIpv4Network whether the host has a usable IPv4 network, asked
+     *                       only for a lookup that failed on an IPv6 network
+     * @return whether it reports a routine event
+     */
+    static boolean matches(String line, BooleanSupplier hasIpv4Network) {
         Matcher source = SOURCE.matcher(line);
         if (!source.find()) {
             return false;
@@ -107,7 +132,7 @@ enum RoutineNativeLine {
         String text = line.substring(source.end());
         for (RoutineNativeLine routine : ALL) {
             if (routine.file.equals(file) && routine.message.matcher(text).find()
-                    && (!routine.ipv6NetworkOnly || onIpv6Network(text))) {
+                    && (!routine.ipv6NetworkOnly || (onIpv6Network(text) && hasIpv4Network.getAsBoolean()))) {
                 return true;
             }
         }
@@ -121,5 +146,39 @@ enum RoutineNativeLine {
         }
         String prefix = network.group(1);
         return prefix.indexOf(':') >= 0 && prefix.indexOf('.') < 0;
+    }
+
+    /**
+     * Whether an interface that is up has a non-loopback, non-link-local IPv4
+     * address, checked at most once a minute. On failure the answer is no, so
+     * the line keeps its level.
+     */
+    private static boolean hostHasIpv4Network() {
+        long now = System.nanoTime();
+        if (ipv4Checked && now - ipv4CheckedAt < IPV4_CHECK_NANOS) {
+            return hasIpv4Network;
+        }
+        boolean found = false;
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (!found && interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface network = interfaces.nextElement();
+                if (!network.isUp() || network.isLoopback()) {
+                    continue;
+                }
+                Enumeration<InetAddress> addresses = network.getInetAddresses();
+                while (!found && addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    found = address instanceof Inet4Address && !address.isLoopbackAddress()
+                            && !address.isLinkLocalAddress();
+                }
+            }
+        } catch (SocketException | RuntimeException e) {
+            found = false;
+        }
+        hasIpv4Network = found;
+        ipv4CheckedAt = now;
+        ipv4Checked = true;
+        return found;
     }
 }
