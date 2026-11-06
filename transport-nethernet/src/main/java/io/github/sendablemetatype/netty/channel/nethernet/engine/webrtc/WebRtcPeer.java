@@ -483,12 +483,13 @@ final class WebRtcPeer implements Peer {
 
     /**
      * Whether a closed channel's error is only the refusal of a send made while the remote peer
-     * closed it in an orderly way. libwebrtc keeps the result of the channel's last send as its
-     * error, and refuses a send while the channel is closing with a bare {@code INVALID_STATE}
-     * ({@code SctpDataChannel::SendImpl}); the end of the closing procedure leaves that error in
-     * place ({@code OnClosingProcedureComplete}). An abrupt close sets its own error and refuses
-     * no send after it. The one close that sets {@code INVALID_STATE} itself, a failed open
-     * handshake message, carries a message ({@code SendControlMessage}).
+     * closed it in an orderly way. libwebrtc keeps the result of the channel's last send attempt
+     * as its error. While the channel is closing it refuses a send with a bare
+     * {@code INVALID_STATE} ({@code SctpDataChannel::SendImpl}), which the end of the closing
+     * procedure leaves in place ({@code OnClosingProcedureComplete}). Once the channel closed it
+     * refuses sends without touching the error ({@code SendAsync}), so an abrupt close keeps its
+     * own. The one close that sets {@code INVALID_STATE} itself, a failed open handshake message,
+     * carries a message ({@code SendControlMessage}).
      */
     private static boolean isRefusedSend(NativeLink.LinkError error) {
         return error.type() == RTCErrorType.INVALID_STATE

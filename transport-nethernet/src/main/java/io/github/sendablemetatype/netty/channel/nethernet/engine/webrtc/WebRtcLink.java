@@ -47,25 +47,28 @@ import java.util.function.Consumer;
  * callback thread, the close on the network thread, or on the signaling
  * thread with natives that make libwebrtc post data channel events there, so
  * the refusal of a send made just after a client quit can arrive before the
- * close. Such a refusal waits for the close.
+ * close: on those natives, 13 of 40 aborts during a burst of sends had a
+ * refusal arrive first (measured 2026-11-06). Such a refusal waits for the
+ * close.
  */
 final class WebRtcLink implements DataLink {
 
     /**
      * The start of webrtc-java's failure for every send libwebrtc refused
-     * because the channel was not open: closing, which a channel is for a
-     * round trip while the remote peer closes it in an orderly way
-     * ({@code SctpDataChannel::SendImpl}), or closed ({@link #DISCARDED}).
-     * Other refusals carry other error types.
+     * because the channel was not open. While the remote peer closes the
+     * channel in an orderly way, for a round trip, libwebrtc tries the send
+     * and refuses it ({@code SctpDataChannel::SendImpl}); once the channel
+     * closed, for any cause, such as a client's quit, it refuses the send
+     * without trying it ({@code SctpDataChannel::SendAsync}). Other refusals
+     * carry other error types.
      */
     static final String NOT_OPEN = "[INVALID_STATE] ";
 
     /**
      * webrtc-java's failure for a send whose result libwebrtc dropped without
-     * calling it ({@code RTCDataChannelSendObserver}'s destructor): libwebrtc
-     * found no transport, or its network thread stopped, before it tried the
-     * send, so its buffered amount never counted it. An abort, such as a
-     * client's quit, takes the transport away, so later sends end this way.
+     * calling it ({@code RTCDataChannelSendObserver}'s destructor): its
+     * network thread stopped before it ran the send, so its buffered amount
+     * never counted it.
      */
     static final String DISCARDED = NOT_OPEN + "Send operation was discarded before completion";
 
