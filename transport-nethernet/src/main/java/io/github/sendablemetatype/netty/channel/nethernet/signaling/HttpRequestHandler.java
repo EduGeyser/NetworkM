@@ -199,7 +199,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         long remainingNanos = receivedNanos + signaling.negotiationTimeout().toNanos()
                 - ctx.executor().ticker().nanoTime();
         if (remainingNanos <= 0) {
-            // Started anyway, an endpoint answering at once would beat the expiry task
+            // Too late to start: an endpoint answering at once would beat the expiry task
             NetherNetHttpSignaling.log.debug("Offer from network {} at {} waited past its negotiation deadline",
                     networkId, source);
             respond(HttpResponseStatus.valueOf(JoinRefusal.NO_ANSWER_IN_TIME.httpStatus()), false);
