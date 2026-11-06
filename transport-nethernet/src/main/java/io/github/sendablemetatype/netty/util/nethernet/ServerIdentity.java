@@ -28,7 +28,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -36,9 +35,11 @@ import java.nio.file.attribute.AclEntry;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.GeneralSecurityException;
 import java.security.InvalidKeyException;
 import java.security.KeyPair;
@@ -270,27 +271,36 @@ public final class ServerIdentity {
         if (posix) {
             return Files.createFile(temporary, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
         }
-        Files.createFile(temporary);
-        AclFileAttributeView acl = Files.getFileAttributeView(temporary, AclFileAttributeView.class);
-        if (acl != null) {
-            try {
-                acl.setAcl(List.of(AclEntry.newBuilder()
-                        .setType(AclEntryType.ALLOW)
-                        .setPrincipal(Files.getOwner(temporary))
-                        .setPermissions(EnumSet.allOf(AclEntryPermission.class))
-                        .build()));
-            } catch (IOException | RuntimeException e) {
-                Files.deleteIfExists(temporary);
-                throw e;
-            }
+        if (!Files.getFileStore(directory).supportsFileAttributeView(AclFileAttributeView.class)) {
+            return Files.createFile(temporary);
         }
-        return temporary;
+        // Set at creation, not after: a handle another account opened in between would keep its
+        // access after the ACL is tightened. An ACL given at creation also inherits nothing from
+        // the directory (checked on Windows 11).
+        UserPrincipal owner = directory.getFileSystem().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        List<AclEntry> ownerOnly = List.of(AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                .build());
+        return Files.createFile(temporary, new FileAttribute<List<AclEntry>>() {
+            @Override
+            public String name() {
+                return "acl:acl";
+            }
+
+            @Override
+            public List<AclEntry> value() {
+                return ownerOnly;
+            }
+        });
     }
 
     /**
      * Links the written key into place, which fails if a file appeared at the path meanwhile, so
-     * a key is never replaced. A file system without hard links falls back to a move, which can
-     * miss a file created in the same instant.
+     * a key is never replaced. Without hard links there is no way to publish a complete file
+     * without that risk (a move may replace a file created in the same instant), so creation fails.
      *
      * @return whether this process created the file, false when another one won
      */
@@ -300,13 +310,9 @@ public final class ServerIdentity {
             return true;
         } catch (FileAlreadyExistsException race) {
             return false;
-        } catch (UnsupportedOperationException | FileSystemException noHardLinks) {
-            try {
-                Files.move(temporary, path);
-                return true;
-            } catch (FileAlreadyExistsException race) {
-                return false;
-            }
+        } catch (UnsupportedOperationException noHardLinks) {
+            throw new IOException("Cannot create " + path + " safely: its file system has no hard links. "
+                    + "Create the key elsewhere and point to it, or use an ephemeral identity", noHardLinks);
         }
     }
 
