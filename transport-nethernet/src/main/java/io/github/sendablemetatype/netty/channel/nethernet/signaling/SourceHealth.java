@@ -9,7 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
- * The health of a source that listens on a local port and has nothing to reconnect: HTTP and LAN.
+ * The health of a source that listens on a local port and has nothing to reconnect: LAN.
  * It is connected while it listens. Listeners run on the thread that changed the state.
  */
 final class SourceHealth {

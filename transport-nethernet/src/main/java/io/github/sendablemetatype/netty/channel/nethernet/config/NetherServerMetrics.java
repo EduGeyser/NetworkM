@@ -51,9 +51,10 @@ public interface NetherServerMetrics {
     }
 
     /**
-     * The server's throttle turned a join from the address away. Built-in HTTP
-     * signaling also reports the join to {@link #joinRefused} with the status
-     * the peer got, so this breaks those down rather than adding to them.
+     * The server's throttle turned a join from the address away. The endpoint
+     * also reports the join to {@link #joinRefused} with the status of the
+     * refusal, whatever its source, so this breaks those down rather than
+     * adding to them.
      */
     default void joinThrottled(InetSocketAddress address) {
     }
