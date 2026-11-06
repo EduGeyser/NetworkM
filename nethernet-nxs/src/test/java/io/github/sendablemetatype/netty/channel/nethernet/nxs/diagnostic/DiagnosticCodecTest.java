@@ -330,8 +330,7 @@ class DiagnosticCodecTest {
                         new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey(key.keyId(), key.secret())));
         var gate =
                 new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger(
-                        io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger.Limits.defaults(),
-                        validator);
+                        io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger.Limits.defaults());
         for (var entry : FIXTURE.getAsJsonArray("vectors")) {
             JsonObject v = entry.getAsJsonObject();
             Claims c = GSON.fromJson(v.get("claims"), Claims.class);
@@ -367,7 +366,9 @@ class DiagnosticCodecTest {
             assertEquals("0", admitted.networkId());
             assertEquals(c.attemptIdHex(), admitted.identityBindingHex());
             admitted.loginBinding().release();
-            assertNull(gate.reserve(request, now, System.nanoTime()));
+            var replayed = validator.validate(request, now);
+            assertNull(gate.reserve(replayed, request.address(), replayed.expiresAt(), now, System.nanoTime()),
+                    "a diagnostic ticket is never a player");
             assertEquals(0, gate.stats().sessions());
         }
         validator.clear();

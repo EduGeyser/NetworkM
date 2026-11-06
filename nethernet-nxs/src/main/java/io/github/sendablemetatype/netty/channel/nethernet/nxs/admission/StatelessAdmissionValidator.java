@@ -28,7 +28,7 @@ import java.util.function.LongSupplier;
  * NXS1 token validation using locally installed keys and the incoming ICE username. Holds no per-join state:
  * everything a join needs comes out of its token.
  */
-public final class StatelessAdmissionValidator implements AdmissionValidator {
+public final class StatelessAdmissionValidator {
     /** The secret of one installed epoch, kept until no admitted login refers to it. */
     private static final class Material {
         final byte[] encryption, secret;
@@ -260,7 +260,12 @@ public final class StatelessAdmissionValidator implements AdmissionValidator {
         publish();
     }
 
-    @Override
+    /**
+     * Opens the ticket a connectivity check names with the installed key, and checks its expiry. Uses no network.
+     *
+     * @return The admission the ticket grants, a player's or a diagnostic's ({@link VerifiedAdmission#diagnostic()}),
+     *         or null to reject it
+     */
     public synchronized VerifiedAdmission validate(AdmissionRequest request, long nowMillis) {
         if (request == null) {
             return null;

@@ -23,7 +23,9 @@ import java.util.*;
 
 /**
  * What NXS alone keeps about the tickets it admits: the records of used tickets, which source tuple each holds, and
- * how its login stands. A ticket reserves one source tuple; the same ticket from another tuple, or another ticket on
+ * how its login stands. The ledger checks no token: the host validates each one first and hands the ledger player
+ * admissions, and diagnostic attempts as {@linkplain #recordDiagnostic records} of their own. A ticket reserves one
+ * source tuple; the same ticket from another tuple, or another ticket on
  * an occupied tuple, is a replay. A used-ticket record stays until the ticket expires, and when the records are full
  * new admissions are refused rather than old records evicted. A reservation ends only by {@link #finish}, once the
  * peer's resources are gone.
@@ -40,8 +42,15 @@ import java.util.*;
  * child's login binding (ruling C-4); a session whose login is refused, revoked, or still undecided at the ticket's
  * deadline is handed back by {@link #sweep} for closing, even when its data channels are open. The sweep reads the
  * verifier's own phase, so a login accepted at any moment is never taken for a lapsed one.
+ *
+ * <p>A diagnostic attempt is recorded by its attempt ID, which the provider fixes when it authorizes the attempt, so
+ * a second permit for one attempt is a replay as much as the same permit twice (diagnostic-v1). At most
+ * {@value #MAX_DIAGNOSTIC_RECORDS} attempts are remembered at once, each until its permit expires.
  */
 public final class TicketLedger {
+    /** The most diagnostic attempts remembered at once; a check past it is refused, as upstream bounds them. */
+    public static final int MAX_DIAGNOSTIC_RECORDS = 16;
+
     /**
      * The ledger's bounds.
      *
@@ -105,56 +114,62 @@ public final class TicketLedger {
         }
     }
 
-    /** Counts for monitoring: what the ledger holds now, and what it refused or accepted so far. */
-    public record Stats(int sessions, int claims, long invalid, long replayRejected, long capacityRejected,
-                        long accepted) {
+    /** One diagnostic attempt's record. Its fields belong to the ledger. */
+    public static final class DiagnosticRecord {
+        private final String attemptId;
+        private final long expiresAt;
+        private boolean finished;
+
+        private DiagnosticRecord(String attemptId, long expiresAt) {
+            this.attemptId = attemptId;
+            this.expiresAt = expiresAt;
+        }
+
+        /** The attempt's ID, 32 lowercase hex digits. */
+        public String attemptId() {
+            return attemptId;
+        }
+
+        @Override
+        public String toString() {
+            return "DiagnosticRecord[attemptId=" + attemptId + "]";
+        }
+    }
+
+    /**
+     * Counts for monitoring: what the ledger holds now, and what it refused or accepted so far.
+     *
+     * @param diagnostics The diagnostic attempts remembered now
+     */
+    public record Stats(int sessions, int claims, int diagnostics, long invalid, long replayRejected,
+                        long capacityRejected, long accepted) {
     }
 
     private final Limits limits;
-    private final AdmissionValidator validator;
     private final Map<TicketId, Reservation> claims = new HashMap<>();
+    private final Map<String, DiagnosticRecord> attempts = new HashMap<>();
     private final Map<InetSocketAddress, Reservation> tuples = new HashMap<>();
     private int sessions;
     private boolean draining, closed;
     private long invalid, replayRejected, capacityRejected, accepted;
 
-    /**
-     * @param validator Checks each request before the ledger reserves anything for it
-     */
-    public TicketLedger(Limits limits, AdmissionValidator validator) {
+    public TicketLedger(Limits limits) {
         this.limits = Objects.requireNonNull(limits);
-        this.validator = Objects.requireNonNull(validator);
     }
 
     /**
-     * Reserves the ticket after token validation. Native STUN verification must still succeed.
+     * Reserves a player's admission: a stateless ticket the host validated, or an assisted join the provider pushed
+     * over its WebSocket. Releases the admission's login binding when it refuses.
      *
-     * @return The reservation, or null when the ticket is invalid, replayed or the records are full
-     */
-    public synchronized Reservation reserve(AdmissionRequest request, long nowMillis, long nowNanos) {
-        if (closed) {
-            return null;
-        }
-        VerifiedAdmission verified = validator.validate(request, nowMillis);
-        if (verified == null) {
-            invalid++;
-            return null;
-        }
-        return reserveAuthenticated(verified, request.address(), verified.expiresAt(), nowMillis, nowNanos);
-    }
-
-    /**
-     * Reserves a join authenticated some other way, such as an assisted join over the provider's WebSocket. Releases
-     * the admission's login binding when it refuses.
-     *
-     * @param address        The source tuple the ticket holds; null for an assisted join, which only knows the
-     *                       candidates the client claims, so it is kept by its ticket alone (area 9, finding F4)
+     * @param address        The source tuple the ticket holds: the check's for a stateless ticket; null for an
+     *                       assisted join, which only knows the candidates the client claims, so it is kept by its
+     *                       ticket alone (area 9, finding F4)
      * @param tokenExpiresAt When the admission's token expires if that is later than the admission itself, as for an
      *                       assisted join whose ufrag is a token that outlives the join; 0 when unknown. The record
      *                       stays until both passed.
      */
-    public synchronized Reservation reserveAuthenticated(AdmissionContext admission, InetSocketAddress address,
-                                                         long tokenExpiresAt, long nowMillis, long nowNanos) {
+    public synchronized Reservation reserve(AdmissionContext admission, InetSocketAddress address,
+                                            long tokenExpiresAt, long nowMillis, long nowNanos) {
         if (closed || admission.networkId().matches("0+") || admission.expiresAt() <= nowMillis) {
             invalid++;
             admission.loginBinding().release();
@@ -211,6 +226,52 @@ public final class TicketLedger {
         return reservation.verifier;
     }
 
+    /**
+     * Records a diagnostic attempt before a peer is created for it.
+     *
+     * @param attemptIdHex The attempt's ID
+     * @param expiresAt    When its permit expires, epoch milliseconds; the record stays until then
+     * @return The record, or null when the attempt was recorded before, {@value #MAX_DIAGNOSTIC_RECORDS} are held,
+     *         or the ledger is closed
+     */
+    public synchronized DiagnosticRecord recordDiagnostic(String attemptIdHex, long expiresAt, long nowMillis) {
+        pruneDiagnostics(nowMillis);
+        if (closed) {
+            return null;
+        }
+        if (attempts.containsKey(attemptIdHex)) {
+            replayRejected++;
+            return null;
+        }
+        if (attempts.size() >= MAX_DIAGNOSTIC_RECORDS) {
+            capacityRejected++;
+            return null;
+        }
+        DiagnosticRecord record = new DiagnosticRecord(attemptIdHex, expiresAt);
+        attempts.put(attemptIdHex, record);
+        return record;
+    }
+
+    /**
+     * The attempt's check ended.
+     *
+     * @param consumed Whether a peer was created for it. An attempt that got none may run again with the same
+     *                 permit, so a check refused for want of room does not use the attempt up.
+     */
+    public synchronized void finishDiagnostic(DiagnosticRecord record, boolean consumed) {
+        if (attempts.get(record.attemptId) != record || record.finished) {
+            return;
+        }
+        record.finished = true;
+        if (!consumed) {
+            attempts.remove(record.attemptId);
+        }
+    }
+
+    private void pruneDiagnostics(long nowMillis) {
+        attempts.values().removeIf(record -> record.finished && record.expiresAt <= nowMillis);
+    }
+
     /** Counts a request the endpoint rejected before it reached the ledger, so {@link #stats} include it. */
     public synchronized void invalidNativeRequest() {
         invalid++;
@@ -263,6 +324,7 @@ public final class TicketLedger {
             }
         }
         claims.values().removeIf(reservation -> reservation.closed && reservation.recordUntil <= nowMillis);
+        pruneDiagnostics(nowMillis);
         return timedOut;
     }
 
@@ -327,6 +389,7 @@ public final class TicketLedger {
 
     /** The current counts. */
     public synchronized Stats stats() {
-        return new Stats(sessions, claims.size(), invalid, replayRejected, capacityRejected, accepted);
+        return new Stats(sessions, claims.size(), attempts.size(), invalid, replayRejected, capacityRejected,
+                accepted);
     }
 }
