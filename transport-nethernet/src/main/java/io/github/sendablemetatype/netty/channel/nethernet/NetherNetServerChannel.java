@@ -302,6 +302,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             if (relayed) {
                 iceEndpoint.proxyRelays(proxies.proxyProtocol().entries());
             }
+            // NXS stateless joins are no join source: they arrive here, as checks the port holds
+            // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
             local = new InetSocketAddress(host, port);
         }
 
