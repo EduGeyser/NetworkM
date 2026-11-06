@@ -28,17 +28,17 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.ChannelPromise;
 import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
@@ -513,15 +513,25 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
 
     /**
      * What the server did on a TLS connection, which tells a refused handshake from a failed one.
-     * First in the pipeline, so it sees the server's bytes, a reset and the end of the connection
-     * before the TLS handler fails the handshake.
+     * First in the pipeline, so it sees the server's bytes, its close and a reset before the TLS
+     * handler fails the handshake.
+     * <p>
+     * Only what comes from the server counts. The channel going inactive does not: this side
+     * closes it too, also past every handler (a loop that shuts down closes its channels through
+     * {@code unsafe()}), and so does the transport when it reads the server's close, unless the
+     * connection allows half closure. Allowing it turns the server's close into an input shutdown
+     * event, after which this handler closes the connection.
      */
-    private static final class ServerSide extends ChannelDuplexHandler {
+    private static final class ServerSide extends ChannelInboundHandlerAdapter {
         /** Whether the server sent any byte. */
         boolean spoke;
         /** Whether the server ended the connection: closed it, or reset it. */
         boolean ended;
-        private boolean closing;
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext ctx) {
+            ctx.channel().config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true);
+        }
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -530,26 +540,23 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
 
         @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object event) throws Exception {
+            if (event instanceof ChannelInputShutdownEvent) {
+                // Nothing more can arrive; ends the connection as if half closure were off
+                ended = true;
+                ctx.close();
+                return;
+            }
+            super.userEventTriggered(ctx, event);
+        }
+
+        @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            // One here is a failed read: the server reset the connection
             if (cause instanceof IOException) {
                 ended = true;
             }
             ctx.fireExceptionCaught(cause);
-        }
-
-        @Override
-        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            // A close this side asked for passed here on its way out; the server's close did not
-            if (!closing) {
-                ended = true;
-            }
-            super.channelInactive(ctx);
-        }
-
-        @Override
-        public void close(ChannelHandlerContext ctx, ChannelPromise promise) throws Exception {
-            closing = true;
-            super.close(ctx, promise);
         }
     }
 

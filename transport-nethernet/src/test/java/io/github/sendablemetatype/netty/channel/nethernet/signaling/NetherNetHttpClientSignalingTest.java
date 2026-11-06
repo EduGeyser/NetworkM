@@ -15,24 +15,35 @@ import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.ssl.SslContext;
 import io.netty.pkitesting.X509Bundle;
+import io.netty.util.concurrent.EventExecutor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ConnectException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -163,6 +174,43 @@ class NetherNetHttpClientSignalingTest {
 
         assertEquals(Scheme.HTTP, probe.scheme());
         assertEquals(STATUS.toJson(), probe.status().toJson());
+    }
+
+    @ParameterizedTest(name = "reset {0}")
+    @ValueSource(booleans = false)
+    void serverEndingTheHandshakeUnansweredIsATlsRefusal(boolean reset) throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))) {
+            Thread.ofVirtual().start(() -> {
+                try {
+                    try (Socket tls = listener.accept()) {
+                        // All of the ClientHello: unread bytes would turn the close into a reset
+                        InputStream in = tls.getInputStream();
+                        byte[] header = in.readNBytes(5);
+                        in.readNBytes((header[3] & 0xff) << 8 | header[4] & 0xff);
+                        if (reset) {
+                            tls.setSoLinger(true, 0);
+                        }
+                    }
+                    try (Socket plain = listener.accept()) {
+                        BufferedReader head = new BufferedReader(
+                                new InputStreamReader(plain.getInputStream(), StandardCharsets.US_ASCII));
+                        while (!head.readLine().isEmpty()) {
+                            // The request head, up to its blank line
+                        }
+                        plain.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                                .getBytes(StandardCharsets.US_ASCII));
+                    }
+                } catch (IOException e) {
+                    // The client went away; the probe's result says why
+                }
+            });
+            address = new InetSocketAddress("127.0.0.1", listener.getLocalPort());
+
+            Probe probe = probe(trusting());
+
+            assertEquals(Scheme.HTTP, probe.scheme());
+            assertNull(probe.status());
+        }
     }
 
     @Test
@@ -336,6 +384,50 @@ class NetherNetHttpClientSignalingTest {
             assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
                     + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
             assertTrue(System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(11));
+        }
+    }
+
+    @Test
+    void loopShuttingDownUnderAnHttpsRequestIsNoTlsRefusal() throws Exception {
+        List<EventExecutor> picked = new CopyOnWriteArrayList<>();
+        EventLoopGroup loops = new MultiThreadIoEventLoopGroup(3, (Executor) null, executors -> {
+            AtomicInteger next = new AtomicInteger();
+            return () -> {
+                EventExecutor loop = executors[next.getAndIncrement() % executors.length];
+                picked.add(loop);
+                return loop;
+            };
+        }, NioIoHandler.newFactory());
+        BlockingQueue<Integer> firstBytes = new LinkedBlockingQueue<>();
+        List<Socket> accepted = new CopyOnWriteArrayList<>();
+        // Takes connections and reads their first byte; never answers and never closes
+        try (ServerSocket silent = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))) {
+            Thread.ofVirtual().start(() -> {
+                try {
+                    while (true) {
+                        Socket socket = silent.accept();
+                        accepted.add(socket);
+                        firstBytes.add(socket.getInputStream().read());
+                    }
+                } catch (IOException closed) {
+                    // The test is over
+                }
+            });
+            address = new InetSocketAddress("127.0.0.1", silent.getLocalPort());
+            CompletableFuture<Probe> probe = NetherNetHttpClientSignaling.probe(address, trusting(), loops, null);
+            assertEquals(0x16, firstBytes.poll(5, TimeUnit.SECONDS), "a TLS handshake record");
+
+            // Closes the HTTPS connection without passing its pipeline
+            picked.getLast().shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
+
+            assertNull(firstBytes.poll(1, TimeUnit.SECONDS), "no plain HTTP request after a close of our own");
+            ExecutionException failure = assertThrows(ExecutionException.class, () -> probe.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause().getMessage().contains("over HTTPS"), failure.getCause().getMessage());
+        } finally {
+            for (Socket socket : accepted) {
+                socket.close();
+            }
+            loops.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
         }
     }
 
