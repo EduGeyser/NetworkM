@@ -752,6 +752,24 @@ class RakSessionCodecTests {
     }
 
     @Test
+    void anUnreliableDatagramTakingATrackedNumberDoesNotAcknowledgeTheReliableOne() throws Exception {
+        try (Session s = new Session(false, 60000)) {
+            ByteBuf reliable = s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            // A full wrap of datagram numbers before the reliable datagram was resent
+            setField(s.codec, "datagramWriteIndex", original.sequence + (1L << 24));
+            s.write(100, RakPriority.IMMEDIATE, RakReliability.UNRELIABLE);
+            Sent reused = s.readData().get(0);
+            assertEquals(original.sequence, reused.sequence);
+            s.ack(reused.sequence, false);
+            assertEquals(1, reliable.refCnt(), "The ACK names the unreliable datagram that used the number last");
+            s.transport.close();
+            assertEquals(0, reliable.refCnt(), "Closing must release the reliable datagram");
+            s.transport.checkException();
+        }
+    }
+
+    @Test
     void acknowledgementsSlowerThanSixteenTimeoutsStillCount() {
         try (Session s = new Session(false, 60000)) {
             sampleRoundTrip(s, 1); // A timeout of 36 ms
