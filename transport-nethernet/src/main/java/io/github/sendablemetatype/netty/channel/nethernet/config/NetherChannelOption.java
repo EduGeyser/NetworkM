@@ -16,6 +16,17 @@ import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
 
+/**
+ * The NetherNet channel options. Each channel config takes the ones that act on its channel and
+ * refuses every other with an {@link IllegalArgumentException}, as it refuses a value out of an
+ * option's range: options named {@code NETHER_SERVER_*} go on the server channel
+ * ({@code ServerBootstrap.option}), {@code NETHER_CLIENT_*} on a client channel. The connection
+ * options ({@link #NETHER_MAX_REASSEMBLED_BYTES}, {@link #NETHER_SEND_PAUSE_BYTES},
+ * {@link #NETHER_MAX_QUEUED_BYTES}, {@link #NETHER_METRICS}) go on a client channel or on a server's
+ * children ({@code ServerBootstrap.childOption}); {@link #NETHER_ICE_SERVERS} and
+ * {@link #NETHER_CANDIDATE_POLICY} on a client channel or the server channel, whose children's
+ * peers use them.
+ */
 public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
@@ -38,7 +49,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * How long a server channel waits for an offer's identity check, in milliseconds, 10,000 by
-     * default. A join whose check takes longer is refused with
+     * default, at least 1. A join whose check takes longer is refused with
      * {@link JoinRefusal#NO_ANSWER_IN_TIME}, and a check that finishes later admits nothing.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS =
@@ -54,7 +65,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * The most connections a server channel holds at once, over all join sources, from admission
-     * until each connection's teardown completed. Unlimited by default.
+     * until each connection's teardown completed. Unlimited by default; at least 1.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_MAX_SESSIONS =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_MAX_SESSIONS");
@@ -62,7 +73,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
     /**
      * The most joins a server channel holds at once that have not gone active, over all join
      * sources: those waiting for their identity check, negotiating, or still tearing down their
-     * peer. 256 by default.
+     * peer. 256 by default, at least 1.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_MAX_PENDING_JOINS =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_MAX_PENDING_JOINS");
@@ -79,7 +90,8 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      * Addresses a server channel's answers announce, as {@link AdvertisedAddresses#parse} reads
      * them: IP literals or unresolved names, port 0 for the media port. Names are looked up once,
      * off the event loop, when the channel binds; until they resolve, answers announce the
-     * literals only, and a name that does not resolve closes the channel. Gathered ones narrow the
+     * literals only, and a name that does not resolve closes the channel. At most
+     * {@link AdvertisedAddresses#MAX_ENDPOINTS}. Gathered ones narrow the
      * host candidates to them, others are announced as the public side of a NAT. Empty by
      * default: answers carry what ICE gathered and the address the player typed.
      */
@@ -110,7 +122,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * How long a mapping {@link #NETHER_SERVER_STUN_SERVERS} found is still announced after its
-     * last answer, as long as the server reports no other. 5 minutes by default.
+     * last answer, as long as the server reports no other. 5 minutes by default, longer than zero.
      */
     public static final ChannelOption<Duration> NETHER_SERVER_STUN_MAX_AGE =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_STUN_MAX_AGE");
@@ -158,8 +170,8 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
             valueOf(NetherChannelOption.class, "NETHER_CANDIDATE_POLICY");
 
     /**
-     * The largest message accepted from the remote peer, 16 MiB by default. A
-     * larger one ends the connection with
+     * The largest message accepted from the remote peer, 16 MiB by default, at
+     * least 1 byte. A larger one ends the connection with
      * {@link TransportDisconnectReason#SPLIT_QUEUE_TOO_LONG}. The inbound queue
      * holds up to twice this many bytes of whole messages that wait for the
      * application.
@@ -169,7 +181,8 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * How many bytes may wait in a data channel's engine queue before the
-     * channel stops handing segments to the engine, 2 MiB by default. Segments
+     * channel stops handing segments to the engine, 2 MiB by default, at least
+     * 1. Segments
      * then wait in Java and the channel turns unwritable until the engine queue
      * drained to a quarter of this. A change applies from the next pause.
      */
@@ -178,7 +191,7 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * How many bytes may wait in Java while the engine queue is full, 64 MiB by
-     * default. Past it the connection ends with
+     * default, at least 1. Past it the connection ends with
      * {@link TransportDisconnectReason#QUEUE_TOO_LONG}.
      */
     public static final ChannelOption<Integer> NETHER_MAX_QUEUED_BYTES =
@@ -193,15 +206,16 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
             valueOf(NetherChannelOption.class, "NETHER_SERVER_METRICS");
 
     /**
-     * The timeout in milliseconds for completing the WebRTC handshake on the client before retrying.
-     * Over signaling that waits for its server's answers itself (HTTP), each attempt also gets that
-     * wait until the answer arrived.
+     * How long one client attempt may take to open the data channels, in milliseconds: 3,000 by
+     * default, at least 1. Over signaling that waits for its server's answers itself (HTTP), the
+     * attempt also gets that wait until the answer arrived.
      */
     public static final ChannelOption<Integer> NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS");
 
     /**
-     * The maximum number of handshake retries before giving up on connecting.
+     * How many times a client retries the handshake before giving up on connecting: 3 by default,
+     * at least 0.
      */
     public static final ChannelOption<Integer> NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS");
@@ -214,8 +228,9 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
     public static final ChannelOption<ClientIdentity> NETHER_CLIENT_IDENTITY =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_IDENTITY");
 
-     /**
-     * The timeout in seconds for completing the WebRTC handshake on the server side before automatically closing the connection.
+    /**
+     * How long a server's child may take from its admission to going active, in seconds: 30 by
+     * default, at least 1. A child that is not active by then is closed.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_RTC_HANDSHAKE_TIMEOUT_SECONDS");

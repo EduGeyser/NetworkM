@@ -1,73 +1,56 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Rule;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Setting;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelOption;
 
-import java.util.Map;
+import java.util.List;
 
-public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig  {
-    private volatile int clientHandshakeTimeoutMs = 3000;
-    private volatile int maxHandshakeAttempts = 3;
-    private volatile ClientIdentity identity;
+/**
+ * The config of a NetherNet client channel: the connection's options, plus how its peer gathers
+ * candidates, how the handshake is attempted, and the identity it presents.
+ */
+public class DefaultNetherClientChannelConfig extends DefaultNetherChannelConfig {
+    public static final int DEFAULT_HANDSHAKE_TIMEOUT_MILLIS = 3000;
+    public static final int DEFAULT_MAX_HANDSHAKE_ATTEMPTS = 3;
+
+    private final Setting<List<IceServer>> iceServers = options.add(NetherChannelOption.NETHER_ICE_SERVERS,
+            List.of(), Rule.list());
+    private final Setting<CandidatePolicy> candidatePolicy = options.add(NetherChannelOption.NETHER_CANDIDATE_POLICY,
+            CandidatePolicy.DEFAULT, Rule.present());
+    private final Setting<Integer> handshakeTimeoutMillis = options.add(
+            NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, DEFAULT_HANDSHAKE_TIMEOUT_MILLIS, Rule.atLeast(1));
+    private final Setting<Integer> maxHandshakeAttempts = options.add(
+            NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, DEFAULT_MAX_HANDSHAKE_ATTEMPTS, Rule.atLeast(0));
+    private final Setting<ClientIdentity> identity = options.add(NetherChannelOption.NETHER_CLIENT_IDENTITY,
+            null, Rule.orNone());
 
     public DefaultNetherClientChannelConfig(Channel channel) {
         super(channel);
     }
 
-    @Override
-    public Map<ChannelOption<?>, Object> getOptions() {
-        return this.getOptions(
-                super.getOptions(),
-                NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS,
-                NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS,
-                NetherChannelOption.NETHER_CLIENT_IDENTITY
-        );
+    public List<IceServer> getIceServers() {
+        return iceServers.get();
     }
 
-    @SuppressWarnings("unchecked")
-    @Override
-    public <T> T getOption(ChannelOption<T> option) {
-        if (option == NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS) {
-            return (T) Integer.valueOf(this.clientHandshakeTimeoutMs);
-        } else if (option == NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS) {
-            return (T) Integer.valueOf(this.maxHandshakeAttempts);
-        } else if (option == NetherChannelOption.NETHER_CLIENT_IDENTITY) {
-            return (T) this.identity;
-        }
-
-        return super.getOption(option);
+    public CandidatePolicy getCandidatePolicy() {
+        return candidatePolicy.get();
     }
 
-    @Override
-    public <T> boolean setOption(ChannelOption<T> option, T value) {
-        this.validate(option, value);
-
-        if (option == NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS) {
-            this.setClientHandshakeTimeoutMs((Integer) value);
-            return true;
-        } else if (option == NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS) {
-            this.setMaxHandshakeAttempts((Integer) value);
-            return true;
-        } else if (option == NetherChannelOption.NETHER_CLIENT_IDENTITY) {
-            this.identity = (ClientIdentity) value;
-            return true;
-        } else {
-            return super.setOption(option, value);
-        }
+    public int getHandshakeTimeoutMillis() {
+        return handshakeTimeoutMillis.get();
     }
 
-    void setClientHandshakeTimeoutMs(int clientHandshakeTimeoutMs) {
-        if (clientHandshakeTimeoutMs <= 0) {
-            throw new IllegalArgumentException("clientHandshakeTimeoutMs must be positive");
-        }
-        this.clientHandshakeTimeoutMs = clientHandshakeTimeoutMs;
+    /** @return how many times the handshake is retried */
+    public int getMaxHandshakeAttempts() {
+        return maxHandshakeAttempts.get();
     }
 
-    void setMaxHandshakeAttempts(int maxHandshakeAttempts) {
-        if (maxHandshakeAttempts < 0) {
-            throw new IllegalArgumentException("maxHandshakeAttempts must not be negative");
-        }
-        this.maxHandshakeAttempts = maxHandshakeAttempts;
+    /** @return the identity the offer presents, or null for none */
+    public ClientIdentity getIdentity() {
+        return identity.get();
     }
 }

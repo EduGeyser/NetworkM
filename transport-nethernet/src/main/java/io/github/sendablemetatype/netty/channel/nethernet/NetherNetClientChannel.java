@@ -2,7 +2,6 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherClientChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
-import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
@@ -50,6 +49,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     private final EngineRef engine;
     private final NetherNetClientSignaling signaling;
+    private final DefaultNetherClientChannelConfig clientConfig;
     private final Object attemptLock = new Object();
 
     private volatile long connectionId; // Session ID (Long)
@@ -110,7 +110,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
         this.engine = engine;
         this.signaling = signaling;
         this.connectionId = this.cycleConnectionId();
-        this.config = new DefaultNetherClientChannelConfig(this);
+        this.clientConfig = new DefaultNetherClientChannelConfig(this);
+        this.config = clientConfig;
     }
 
     public void setTargetNetworkId(String id) {
@@ -279,7 +280,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     }
 
     private long handshakeTimeoutMillis() {
-        return config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
+        return clientConfig.getHandshakeTimeoutMillis();
     }
 
     /**
@@ -305,7 +306,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         if (handshakeComplete) return;
 
         // Counts retries: the option's value plus the first attempt are made.
-        int maxRetries = this.config().getOption(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS);
+        int maxRetries = clientConfig.getMaxHandshakeAttempts();
         if (retryCount >= maxRetries) {
             if (connectPromise != null && !connectPromise.isDone()) {
                 connectPromise.tryFailure(new ConnectException("Connection timed out after " + retryCount + " retries"));
@@ -342,7 +343,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     private void startPeer(List<IceServer> iceServers, int gen) {
         NetherNetEngine current = engine.get();
         PeerConfig peerConfig = new PeerConfig(PeerConfig.Role.OFFERER,
-                iceServers(config.getIceServers(), iceServers), config.getCandidatePolicy(), null, null, null);
+                iceServers(clientConfig.getIceServers(), iceServers), clientConfig.getCandidatePolicy(), null, null, null);
         Peer created = current.createPeer(peerConfig, new Events(gen));
         attachPeer(created);
         bindReliable(created.openChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL)));
@@ -392,7 +393,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     /** The offer with the configured identity's assertion, or as it is without one. */
     private String signed(String offer) throws JoseException {
-        ClientIdentity identity = config().getOption(NetherChannelOption.NETHER_CLIENT_IDENTITY);
+        ClientIdentity identity = clientConfig.getIdentity();
         return identity == null ? offer : identity.withAssertion(offer);
     }
 

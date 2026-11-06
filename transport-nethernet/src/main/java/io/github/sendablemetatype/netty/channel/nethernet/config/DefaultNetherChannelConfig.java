@@ -1,30 +1,37 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChannel;
-import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy;
-import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Rule;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Setting;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.DefaultChannelConfig;
 
-import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * The config of one NetherNet connection, a server's child or (through
+ * {@link DefaultNetherClientChannelConfig}) a client: how messages are reassembled, paced and
+ * counted. It takes these options and Netty's own; any other option is refused with an
+ * {@link IllegalArgumentException} naming it, and a value out of an option's range with one
+ * naming the range.
+ */
 public class DefaultNetherChannelConfig extends DefaultChannelConfig {
     public static final int DEFAULT_MAX_REASSEMBLED_BYTES = 16 * 1024 * 1024;
     public static final int DEFAULT_SEND_PAUSE_BYTES = 2 * 1024 * 1024;
     public static final int DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 
-    private final Map<ChannelOption<?>, Object> options = new ConcurrentHashMap<>();
+    /** Every NetherNet option this config handles; subclasses declare theirs here too. */
+    final NetherOptions options = new NetherOptions();
 
-    private volatile List<IceServer> iceServers = List.of();
-    private volatile CandidatePolicy candidatePolicy = CandidatePolicy.DEFAULT;
-    private volatile int maxReassembledBytes = DEFAULT_MAX_REASSEMBLED_BYTES;
-    private volatile int sendPauseBytes = DEFAULT_SEND_PAUSE_BYTES;
-    private volatile int maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES;
-    private volatile NetherChannelMetrics metrics;
+    private final Setting<Integer> maxReassembledBytes = options.add(NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES,
+            DEFAULT_MAX_REASSEMBLED_BYTES, Rule.atLeast(1));
+    private final Setting<Integer> sendPauseBytes = options.add(NetherChannelOption.NETHER_SEND_PAUSE_BYTES,
+            DEFAULT_SEND_PAUSE_BYTES, Rule.atLeast(1));
+    private final Setting<Integer> maxQueuedBytes = options.add(NetherChannelOption.NETHER_MAX_QUEUED_BYTES,
+            DEFAULT_MAX_QUEUED_BYTES, Rule.atLeast(1));
+    private final Setting<NetherChannelMetrics> metrics = options.add(NetherChannelOption.NETHER_METRICS,
+            null, Rule.orNone());
 
     public DefaultNetherChannelConfig(Channel channel) {
         super(channel);
@@ -39,88 +46,48 @@ public class DefaultNetherChannelConfig extends DefaultChannelConfig {
 
     @Override
     public Map<ChannelOption<?>, Object> getOptions() {
-        return this.getOptions(
-                super.getOptions(),
-                NetherChannelOption.NETHER_ICE_SERVERS,
-                NetherChannelOption.NETHER_CANDIDATE_POLICY,
-                NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES,
-                NetherChannelOption.NETHER_SEND_PAUSE_BYTES,
-                NetherChannelOption.NETHER_MAX_QUEUED_BYTES,
-                NetherChannelOption.NETHER_METRICS
-        );
+        return getOptions(super.getOptions(), options.options());
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public <T> T getOption(ChannelOption<T> option) {
-        if (option == NetherChannelOption.NETHER_ICE_SERVERS) {
-            return (T) this.iceServers;
-        } else if (option == NetherChannelOption.NETHER_CANDIDATE_POLICY) {
-            return (T) this.candidatePolicy;
-        } else if (option == NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES) {
-            return (T) Integer.valueOf(this.maxReassembledBytes);
-        } else if (option == NetherChannelOption.NETHER_SEND_PAUSE_BYTES) {
-            return (T) Integer.valueOf(this.sendPauseBytes);
-        } else if (option == NetherChannelOption.NETHER_MAX_QUEUED_BYTES) {
-            return (T) Integer.valueOf(this.maxQueuedBytes);
-        } else if (option == NetherChannelOption.NETHER_METRICS) {
-            return (T) this.metrics;
-        } else if (options.containsKey(option)) {
-            return (T) options.get(option);
-        }
-
-        return super.getOption(option);
+        return options.handles(option) ? options.get(option) : super.getOption(option);
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Sets a NetherNet option this channel takes, or one of Netty's.
+     *
+     * @return true, since every other option is refused
+     * @throws IllegalArgumentException if this channel does not take the option, or the value is
+     *                                  out of its range
+     * @throws NullPointerException     if the value is null and the option has no "none"
+     */
     @Override
     public <T> boolean setOption(ChannelOption<T> option, T value) {
-        if (option == NetherChannelOption.NETHER_ICE_SERVERS) {
-            this.iceServers = List.copyOf((List<IceServer>) value);
-        } else if (option == NetherChannelOption.NETHER_CANDIDATE_POLICY) {
-            this.candidatePolicy = Objects.requireNonNull((CandidatePolicy) value, "candidatePolicy");
-        } else if (option == NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES) {
-            this.maxReassembledBytes = positive("maxReassembledBytes", (Integer) value);
-        } else if (option == NetherChannelOption.NETHER_SEND_PAUSE_BYTES) {
-            this.sendPauseBytes = positive("sendPauseBytes", (Integer) value);
-        } else if (option == NetherChannelOption.NETHER_MAX_QUEUED_BYTES) {
-            this.maxQueuedBytes = positive("maxQueuedBytes", (Integer) value);
-        } else if (option == NetherChannelOption.NETHER_METRICS) {
-            this.metrics = (NetherChannelMetrics) value;
-        } else if (!super.setOption(option, value)) {
-            options.put(option, value);
+        if (options.handles(option)) {
+            options.set(option, value);
+            return true;
         }
-        return true;
-    }
-
-    private static int positive(String name, Integer value) {
-        if (value == null || value < 1) {
-            throw new IllegalArgumentException(name + " must be positive");
+        if (super.setOption(option, value)) {
+            return true;
         }
-        return value;
-    }
-
-    public List<IceServer> getIceServers() {
-        return iceServers;
-    }
-
-    public CandidatePolicy getCandidatePolicy() {
-        return candidatePolicy;
+        throw NetherOptions.unknown(channel, option);
     }
 
     public int getMaxReassembledBytes() {
-        return maxReassembledBytes;
+        return maxReassembledBytes.get();
     }
 
     public int getSendPauseBytes() {
-        return sendPauseBytes;
+        return sendPauseBytes.get();
     }
 
     public int getMaxQueuedBytes() {
-        return maxQueuedBytes;
+        return maxQueuedBytes.get();
     }
 
+    /** @return the per-connection metrics, or null for none */
     public NetherChannelMetrics getMetrics() {
-        return metrics;
+        return metrics.get();
     }
 }
