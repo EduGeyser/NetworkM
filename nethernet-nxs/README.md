@@ -22,27 +22,39 @@ its fixtures define them. The Java API is NetworkM's own.
   Everything runs on one lifecycle thread per host without blocking it; the
   registration is saved in a `ProviderStateStore` directory. The client talks to
   the NetherNet endpoint through the `transport.ProviderTransport` interface.
+- **Host side** (`host`): `NxsHost.open` adds NXS to a bound
+  `NetherNetServerChannel` as one of its join sources, and its `HostTransport`
+  is the `ProviderTransport` the client drives. It takes the checks the shared
+  ICE port holds for unknown ufrags, validates each NXS1 token once and turns a
+  player's into an authenticated join, which passes the endpoint's throttle and
+  capacity budget like every other join. It serves assisted joins, publishes the
+  host profile (configured, local, or STUN-maintained candidates) and reports
+  ticket outcomes. Every NXS child carries a login binding; the application
+  decides it with `TransportIdentityBinding.verifyLogin` before the ticket's
+  deadline, or the child is closed.
 - **Stateless admission** (`admission`): `StatelessAdmissionCodec` reads and
   issues the NXS1 token a player carries in its ICE username,
   `StatelessAdmissionValidator` checks it against the installed admission keys
-  with no per-join state, and `AdmissionGate` bounds reservations and keeps the
-  records of used tickets against replay.
+  with no per-join state, and `TicketLedger` keeps the records of used tickets
+  and diagnostic attempts against replay. Capacity is the endpoint's.
 - **Connectivity** (`connectivity`): `EndpointConnectivityController` keeps STUN
   bindings alive from the gameplay port to learn its public mapping, and
   `MaintainedCandidatePublisher` decides which candidates the host profile
   publishes.
-- **Diagnostics** (`diagnostic`): `DiagnosticAdmissionCodec` for the diagnostic
-  extension of the admission envelope (network ID 0), and the PING/PONG exchange
-  on an admitted connection.
-
-## What is not built yet
-
-The host side on the endpoint's shared ICE port: no class in NetworkM implements
-`ProviderTransport` or the connectivity `StunMonitor` against
-`NetherNetServerChannel` yet, and nothing checks NXS1 tokens on the shared ICE
-port before a peer exists, although the engine already passes such checks on
-(`IceEndpoint.onHeldCheck`). Until that lands, the module cannot serve NXS players
-on a real endpoint; its tests run it against fakes.
+- **Diagnostics** (`diagnostic`, `host`): connectivity checks with network ID 0
+  (diagnostic-v1). The host answers a check's PING on a peer of its own from the
+  shared port (`SharedIcePort.openPeer`): no child channel and no session, one of
+  the endpoint's pending handshakes while the peer lives, at most four checks at
+  once, each closed at most a second after its PONG. Direct checks arrive as held
+  checks, assisted ones over the provider's WebSocket, and only under the policy
+  the last successful heartbeat installed. `HostTransport.pollDiagnosticResults`
+  reports how each ended. `DiagnosticProbe` is the prober's side, for a provider
+  that runs its checks in Java.
+- **Settings** (`provider`): `ProviderRuntimeConfiguration` maps a host's NXS
+  settings to the client and host configuration. A secret is the value itself or
+  `file:<path>`; a value without the prefix that names an existing file or
+  directory, or starts with a Windows drive, is refused rather than sent as the
+  secret.
 
 ## Tests
 
@@ -50,6 +62,10 @@ on a real endpoint; its tests run it against fakes.
 against this module's output (`NodeConformanceTest`). The test fails without
 Node.js. `-PnxsNode=<path>` selects the binary; otherwise `node` on the path is
 used.
+
+With `-PwebrtcNativePlatform=<platform>` the tests also run stateless joins and
+connectivity checks on real libwebrtc over this machine's network addresses
+(libwebrtc does not gather on loopback).
 
 ## Specification
 
