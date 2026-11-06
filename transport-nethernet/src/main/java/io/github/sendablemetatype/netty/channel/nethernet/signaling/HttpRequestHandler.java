@@ -112,7 +112,8 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             return;
         }
         if (signaling.requiresTls() && !connection.tls) {
-            signaling.plaintextRefused(ctx.channel().remoteAddress());
+            signaling.plaintextRefused(signaling.sourceOf(connection, peer(),
+                    request.headers().getAll(FORWARDED_FOR)).address());
             FullHttpResponse response = response(HttpResponseStatus.UPGRADE_REQUIRED, null, "");
             response.headers().set(HttpHeaderNames.UPGRADE, "TLS/1.2, HTTP/1.1");
             write(response, false);
@@ -220,6 +221,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             sink.join(join);
         } catch (RuntimeException e) {
             NetherNetHttpSignaling.log.warn("The endpoint failed to take a join", e);
+            signaling.joinRefused(JoinRefusal.INTERNAL);
             exchange.refuse(JoinRefusal.INTERNAL);
         }
     }
@@ -278,8 +280,9 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         return (InetSocketAddress) ctx.channel().remoteAddress();
     }
 
-    /** Refuses an offer this source turned away itself, before it reached the endpoint. */
+    /** Refuses an offer this source turned away itself, before or instead of the endpoint. */
     private void refuseOffer(JoinRefusal refusal) {
+        signaling.joinRefused(refusal);
         respond(HttpResponseStatus.valueOf(refusal.httpStatus()), false);
     }
 
