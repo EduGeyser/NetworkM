@@ -15,17 +15,28 @@
  */
 
 plugins {
+    base
+    `jacoco-report-aggregation`
     alias(libs.plugins.nmcp.aggregation)
     `maven-publish`
 }
 
-repositories {
-    mavenCentral()
+allprojects {
+    repositories {
+        mavenCentral()
+        // Local webrtc-java builds under test; last and filtered, so a stale local artifact never shadows Central.
+        mavenLocal {
+            content {
+                includeGroupAndSubgroups("io.github.sendablemetatype")
+            }
+        }
+    }
 }
 
 val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
         ?: rootProject.property("version") as String
 val networkGroup = providers.gradleProperty("networkGroup").getOrElse("io.github.sendablemetatype.netty")
+val jacocoVersion = libs.versions.jacoco.get()
 val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(27)
 val networkRepository = providers.gradleProperty("networkRepository")
         .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
@@ -36,19 +47,10 @@ subprojects {
     apply(plugin = "com.gradleup.nmcp")
     apply(plugin = "maven-publish")
     apply(plugin = "signing")
+    apply(plugin = "jacoco")
 
     group = networkGroup
     version = networkVersion
-
-    repositories {
-        mavenCentral()
-        // Local webrtc-java builds under test; last and filtered, so a stale local artifact never shadows Central.
-        mavenLocal {
-            content {
-                includeGroupAndSubgroups("io.github.sendablemetatype")
-            }
-        }
-    }
 
     configure<JavaPluginExtension> {
         toolchain {
@@ -59,6 +61,10 @@ subprojects {
     }
 
     val javaToolchains = extensions.getByType<JavaToolchainService>()
+
+    configure<JacocoPluginExtension> {
+        toolVersion = jacocoVersion
+    }
 
     configure<PublishingExtension> {
         publications {
@@ -143,7 +149,13 @@ subprojects {
             minHeapSize = "512m"
             maxHeapSize = "1024m"
             jvmArgs = listOf("-XX:MaxMetaspaceSize=512m")
+            // Track every buffer, so a leak logs where the buffer was allocated and last touched
+            systemProperty("io.netty.leakDetection.level", "paranoid")
             useJUnitPlatform()
+        }
+        // The report covers this task alone, so it never pulls another test task into a build.
+        named<Test>("test") {
+            finalizedBy(named("jacocoTestReport"))
         }
     }
 }
@@ -166,13 +178,31 @@ allprojects {
     }
 }
 
+val publishedModules = listOf(":transport-common", ":transport-raknet", ":transport-nethernet", ":nethernet-nxs")
+
 dependencies {
-    nmcpAggregation(project(":transport-common"))
-    nmcpAggregation(project(":transport-raknet"))
-    nmcpAggregation(project(":transport-nethernet"))
-    nmcpAggregation(project(":nethernet-nxs"))
+    publishedModules.forEach {
+        nmcpAggregation(project(it))
+        jacocoAggregation(project(it))
+    }
 }
 
+jacoco {
+    toolVersion = jacocoVersion
+}
+
+// Coverage of every module's `test` task in one report; it depends on those tasks only.
+reporting {
+    reports {
+        register<JacocoCoverageReport>("testCodeCoverageReport") {
+            testSuiteName.set("test")
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.named("testCodeCoverageReport"))
+}
 
 nmcpAggregation {
     centralPortal {

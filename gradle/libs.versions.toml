@@ -8,6 +8,8 @@ jose4j = "0.9.7"
 bouncycastle = "1.86"
 slf4j = "2.0.20"
 xmlutil = "1.0.2.1"
+# Read by the jacoco extensions in the root build
+jacoco = "0.8.16"
 
 [libraries]
 expiringmap = { group = "net.jodah", name = "expiringmap", version = "0.5.11" }
