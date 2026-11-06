@@ -177,7 +177,7 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @ParameterizedTest(name = "reset {0}")
-    @ValueSource(booleans = false)
+    @ValueSource(booleans = {false, true})
     void serverEndingTheHandshakeUnansweredIsATlsRefusal(boolean reset) throws Exception {
         try (ServerSocket listener = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))) {
             Thread.ofVirtual().start(() -> {

@@ -484,8 +484,12 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
             }
             FullHttpRequest request = unsent.getAndSet(null);
             if (request != null) {
+                SslHandler tls = channel.pipeline().get(SslHandler.class);
                 channel.writeAndFlush(request).addListener(written -> {
-                    if (!written.isSuccess()) {
+                    // A request queued behind the handshake fails as soon as the connection starts
+                    // closing, ahead of the handshake; only the handshake listener can tell
+                    // whether that was the server refusing TLS
+                    if (!written.isSuccess() && (tls == null || tls.handshakeFuture().isDone())) {
                         result.completeExceptionally(written.cause());
                     }
                 });
