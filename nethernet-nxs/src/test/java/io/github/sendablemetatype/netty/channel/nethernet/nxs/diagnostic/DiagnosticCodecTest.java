@@ -5,8 +5,6 @@ import com.google.gson.*;
 import org.junit.jupiter.api.Test;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.*;
 import static io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec.*;
@@ -334,7 +332,6 @@ class DiagnosticCodecTest {
                 new io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionGate(
                         io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionGate.Limits.defaults(),
                         validator);
-        JsonArray fresh = new JsonArray();
         for (var entry : FIXTURE.getAsJsonArray("vectors")) {
             JsonObject v = entry.getAsJsonObject();
             Claims c = GSON.fromJson(v.get("claims"), Claims.class);
@@ -372,14 +369,7 @@ class DiagnosticCodecTest {
             admitted.loginBinding().release();
             assertNull(gate.reserve(request, now, System.nanoTime()));
             assertEquals(0, gate.stats().sessions());
-            JsonObject result = new JsonObject();
-            result.addProperty("name", value(v, "name"));
-            result.addProperty("localUfrag", credentials.localUfrag());
-            result.addProperty("icePwd", credentials.icePwd());
-            fresh.add(result);
         }
-        Files.createDirectories(Path.of("build"));
-        Files.writeString(Path.of("build/diagnostic-java-admissions.json"), fresh.toString());
         validator.clear();
     }
 
