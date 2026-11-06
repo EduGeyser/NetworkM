@@ -91,6 +91,15 @@ What follows from this:
   outright invalid certificate, older builds fell back to RakNet (Owner
   observation; the exact versions and the newest builds' behavior are not
   verified).
+- **Education 26.33 needs no RakNet.** Joining a MESS-listed server, Education
+  26.33 tries HTTPS first and accepts a Let's Encrypt certificate for the
+  server's IP address. When the server refuses the TLS connection, it goes on
+  with plain HTTP on the same port and joins with no trust prompt. Both joins
+  worked against a server with RakNet off and ICE on one shared UDP port
+  (Verified by the owner, 2026-11-06). It does not pin the server's identity
+  key over plain HTTP, and it checks an HTTPS certificate against the resolved
+  IP even when given a domain, a retail 26.30 bug it inherited; newer bases
+  check the domain (Owner).
 - Android builds, seen through MCPELauncher, ignore candidates bundled into an
   SDP answer delivered over WebSocket signaling and only use separate
   `CANDIDATEADD` signals. HTTP answers are not affected, since there the
