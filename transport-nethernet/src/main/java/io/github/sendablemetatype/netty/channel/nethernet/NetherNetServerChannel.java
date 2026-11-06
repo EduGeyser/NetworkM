@@ -1296,7 +1296,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, localAddress, negotiation, tracker, intake,
-                relayed ? settings.iceEndpoint() : null);
+                relayed ? settings.iceEndpoint() : null, join.addressed());
         child.setMaxOutboundMessageSize(admission.maxMessageSize);
         child.attr(NetherNetChildChannel.CONNECTION_ID).set(negotiation.id());
         Join.Authenticated authenticated = join.authenticated();

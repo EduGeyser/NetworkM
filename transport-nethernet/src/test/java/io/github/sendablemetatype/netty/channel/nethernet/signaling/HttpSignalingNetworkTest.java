@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import static io.github.sendablemetatype.netty.channel.nethernet.signaling.SocketHttp.get;
 import static io.github.sendablemetatype.netty.channel.nethernet.signaling.SocketHttp.post;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -117,6 +118,16 @@ class HttpSignalingNetworkTest {
         assertEquals(200, exchange(tls(null), get("/v1/join", "Connection: close\r\n")).status());
         assertEquals(200, exchange(plain(), get("/v1/join", "Connection: close\r\n")).status(),
                 "plain HTTP stays reachable for clients whose TLS attempt was refused");
+    }
+
+    @Test
+    void eachJoinSaysWhetherItsConnectionSpokeTls() throws Exception {
+        start(NetherNetHttpSignaling.builder(worker).tls(name -> serverContext));
+
+        SocketHttp.write(tls(null), post("1", OFFER));
+        assertTrue(sink.next().addressed().tls());
+        SocketHttp.write(plain(), post("2", OFFER));
+        assertFalse(sink.next().addressed().tls());
     }
 
     @Test

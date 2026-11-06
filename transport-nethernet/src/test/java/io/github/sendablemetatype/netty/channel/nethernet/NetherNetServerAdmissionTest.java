@@ -334,7 +334,7 @@ class NetherNetServerAdmissionTest {
         SourcedAddress client = new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.SIGNALING, null);
         ClientInfo info = new ClientInfo("1.26.62", 2225, 8);
 
-        source.offer("1", educationOffer(), client, new Join.Addressed("play.example.com:19132", 19132, false, info))
+        source.offer("1", educationOffer(), client, new Join.Addressed("play.example.com:19132", 19132, false, false, info))
                 .assertRefused(JoinRefusal.HOST_REFUSED);
         source.offer("2", OFFER).assertRefused(JoinRefusal.IDENTITY_MISSING);
 

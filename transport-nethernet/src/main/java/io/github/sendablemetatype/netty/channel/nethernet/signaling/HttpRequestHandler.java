@@ -193,7 +193,8 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         SourcedAddress source = signaling.sourceOf(connection, peer, request.headers().getAll(FORWARDED_FOR));
         int localPort = ctx.channel().localAddress() instanceof InetSocketAddress local ? local.getPort() : 0;
         Join.Addressed addressed = new Join.Addressed(request.headers().get(HttpHeaderNames.HOST), localPort,
-                signaling.trustedProxies().isProxy(peer), ClientInfo.fromQuery(parameters(request.uri())).orElse(null));
+                signaling.trustedProxies().isProxy(peer), connection.tls,
+                ClientInfo.fromQuery(parameters(request.uri())).orElse(null));
         // From the end of the request, also for one that waited behind a status request (E-4)
         long remainingNanos = receivedNanos + signaling.negotiationTimeout().toNanos()
                 - ctx.executor().ticker().nanoTime();

@@ -16,6 +16,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.netty.channel.Channel;
@@ -65,18 +66,22 @@ public class NetherNetChildChannel extends NetherNetChannel {
     private volatile boolean reliableOpen;
 
     private final Addressing addressing;
+    private final Join.Addressed addressed;
     private boolean addressActivated;
 
     /**
      * @param tracker the join's address tracker, seeded with where signaling met the client
      * @param intake the join's candidate intake, which knows the client's TURN relays
      * @param relays the shared ICE endpoint when PROXY protocol relays front it, else null
+     * @param addressed what the client reached, from the join, or null when its source does not see it
      */
     NetherNetChildChannel(Channel parent, InetSocketAddress local, Negotiation negotiation,
-                          RemoteAddressTracker tracker, RemoteCandidateIntake intake, IceEndpoint relays) {
+                          RemoteAddressTracker tracker, RemoteCandidateIntake intake, IceEndpoint relays,
+                          Join.Addressed addressed) {
         super(parent, tracker.reported().address(), local);
         this.negotiation = Objects.requireNonNull(negotiation, "negotiation");
         this.addressing = new Addressing(tracker, intake, relays);
+        this.addressed = addressed;
         this.config = new DefaultNetherChannelConfig(this);
     }
 
@@ -126,6 +131,19 @@ public class NetherNetChildChannel extends NetherNetChannel {
     @Override
     public SourcedAddress signaledAddress() {
         return addressing.tracker.signaled();
+    }
+
+    /**
+     * What the client reached, as the request of a join over HTTP signaling showed it: its
+     * {@code Host}, the local port, whether a trusted proxy sent it, and whether its connection
+     * spoke TLS ({@link Join.Addressed#tls()}), which tells a join signaled over HTTPS from one over
+     * plain HTTP.
+     *
+     * @return the join's {@link Join#addressed()}; empty for sources that do not see it (Xbox RPC,
+     *         LAN, NXS)
+     */
+    public Optional<Join.Addressed> addressed() {
+        return Optional.ofNullable(addressed);
     }
 
     /**

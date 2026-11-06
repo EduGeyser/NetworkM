@@ -4,6 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMe
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
@@ -23,6 +24,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
@@ -43,6 +45,7 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -305,6 +308,18 @@ class NetherNetServerChannelTest {
         harness.activate(peer);
         assertTrue(child.isActive());
         assertEquals(1, reply.connected.get(), "the source learns the join went active");
+    }
+
+    @Test
+    void theChildCarriesWhatAnHttpClientReachedAndOthersCarryNothing() throws Exception {
+        harness.bind();
+        FakeJoinSource source = harness.source(false);
+        Join.Addressed overHttps = new Join.Addressed("play.example.com:19132", 19132, false, true, null);
+
+        source.offer("1", OFFER, new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.SIGNALING, null), overHttps);
+        assertEquals(Optional.of(overHttps), harness.child().addressed());
+        source.offer("2", OFFER);
+        assertEquals(Optional.empty(), harness.child().addressed());
     }
 
     @Test
