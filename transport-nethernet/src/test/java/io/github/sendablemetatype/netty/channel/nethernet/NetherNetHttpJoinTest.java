@@ -131,7 +131,7 @@ class NetherNetHttpJoinTest {
     }
 
     @Test
-    void removingTheHttpSourceDuringACheckEndsTheRequestAndCancelsTheJoin() throws Exception {
+    void removingTheHttpSourceDuringACheckRefusesTheJoinWith503() throws Exception {
         start(true);
         bind();
         Socket client = post(educationOffer());
@@ -139,14 +139,14 @@ class NetherNetHttpJoinTest {
 
         assertTrue(harness.server.removeSource(http));
 
-        assertEquals("", response(client), "the connection closes unanswered");
+        assertStatus(503, response(client));
         awaitTrue(check::isCancelled, "the check is withdrawn");
         awaitTrue(() -> harness.server.gate().pending() == 0, "the budget is given back");
         assertTrue(harness.engine.peers().isEmpty());
     }
 
     @Test
-    void closingTheEndpointDuringACheckEndsTheRequestAndStopsTheChecks() throws Exception {
+    void closingTheEndpointDuringACheckRefusesTheJoinWith503AndStopsTheChecks() throws Exception {
         start(true);
         bind();
         Socket client = post(educationOffer());
@@ -154,7 +154,7 @@ class NetherNetHttpJoinTest {
 
         harness.server.close().sync();
 
-        assertEquals("", response(client), "the connection closes unanswered");
+        assertStatus(503, response(client));
         assertTrue(checks.isShutdown());
         awaitTrue(() -> harness.server.gate().pending() == 0, "the budget is given back");
         assertTrue(harness.engine.peers().isEmpty());

@@ -56,6 +56,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -110,6 +111,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final AdmissionGate gate = new AdmissionGate();
     /** Children whose termination has not completed yet. */
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
+    /** Joins in the admission stage, which closing the endpoint or removing their source ends. */
+    private final Set<Admission> admitting = ConcurrentHashMap.newKeySet();
 
     private final Object sourcesLock = new Object();
     // Guarded by sourcesLock.
@@ -203,8 +206,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /**
-     * Stops and closes a source. Its players stay connected; joins it delivered that are still
-     * being admitted are refused.
+     * Stops and closes a source. Its players stay connected; joins it delivered that have no child
+     * yet are refused at once and give back their share of the budget.
      *
      * @param source the source
      * @return whether the endpoint had it
@@ -218,6 +221,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             return false;
         }
         registration.removed = true;
+        // Before the source closes, so the refusals can still reach their clients.
+        withdrawAdmissions(registration);
         closeQuietly(source);
         return true;
     }
@@ -357,6 +362,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
         for (Registration registration : closing) {
             registration.removed = true;
+        }
+        // Before the sources close, so the refusals can still reach their clients. Without this,
+        // a check the executor drops below would keep its share and throttle entry for good.
+        List.copyOf(admitting).forEach(Admission::withdraw);
+        for (Registration registration : closing) {
             closeQuietly(registration.source);
         }
 
@@ -453,7 +463,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /**
      * One join from the moment it holds its share of the budget until it becomes a child or is
-     * refused. Event loop only, apart from what the check's own thread completes.
+     * refused. Its steps run on the event loop. It ends exactly once, whoever ends it: its check,
+     * its deadline, its client leaving, or {@link #withdraw} when the endpoint closes or its source
+     * is removed, which can happen on any thread.
      */
     private final class Admission {
         private final Registration from;
@@ -463,13 +475,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         private final AdmissionGate.Reservation reservation;
         private final NetherServerThrottle throttle;
         private final InetSocketAddress throttled;
+        private final AtomicBoolean settled = new AtomicBoolean();
         private int maxMessageSize;
-        private CompletableFuture<OfferCheckResult> check;
-        private ScheduledFuture<?> deadline;
+        private volatile CompletableFuture<OfferCheckResult> check;
+        private volatile ScheduledFuture<?> deadline;
         /** When the check started and how long it may take, on the event loop's clock. */
         private long startedNanos;
         private long timeoutNanos;
-        private boolean settled;
 
         private Admission(Registration from, Join join, Bound settings, AdmissionGate.Reservation reservation,
                           NetherServerThrottle throttle, InetSocketAddress throttled) {
@@ -490,22 +502,36 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 fail(JoinRefusal.INTERNAL);
                 return;
             }
+            admitting.add(this);
+            if (from.removed) {
+                // Removed on another thread after this join got in, too late to find it in admitting.
+                withdraw();
+                return;
+            }
             join.reply().abandoned().whenComplete((ignored, failure) -> onLoop(this::abandoned));
             timeoutNanos = TimeUnit.MILLISECONDS.toNanos(config.getOfferCheckTimeoutMillis());
             startedNanos = eventLoop().ticker().nanoTime();
-            check = settings.offerCheck().checkAsync(join.offer(), settings.checkExecutor());
+            CompletableFuture<OfferCheckResult> started = settings.offerCheck().checkAsync(join.offer(),
+                    settings.checkExecutor());
+            check = started;
             // A check that finishes after this admits nothing: its stage is already complete.
-            deadline = eventLoop().schedule(() -> {
-                check.completeExceptionally(new TimeoutException());
+            ScheduledFuture<?> timer = eventLoop().schedule(() -> {
+                started.completeExceptionally(new TimeoutException());
             }, timeoutNanos, TimeUnit.NANOSECONDS);
-            check.whenComplete((result, failure) -> onLoop(() -> checked(result, failure)));
+            deadline = timer;
+            if (settled.get()) {
+                // Withdrawn on another thread while the check was being set up.
+                started.cancel(true);
+                timer.cancel(false);
+                return;
+            }
+            started.whenComplete((result, failure) -> onLoop(() -> checked(result, failure)));
         }
 
         private void checked(OfferCheckResult result, Throwable failure) {
-            if (settled) {
+            if (settled.get()) {
                 return;
             }
-            deadline.cancel(false);
             // The deadline only fires once this loop gets to it: a loop that ran late can see a
             // result that came in past the deadline before the deadline fired.
             if (failure == null && eventLoop().ticker().nanoTime() - startedNanos >= timeoutNanos) {
@@ -536,26 +562,58 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 fail(JoinRefusal.CAPACITY);
                 return;
             }
-            settled = true;
-            createChild(this, result);
+            if (settle()) {
+                createChild(this, result);
+            }
         }
 
         /** The client left before the check finished: nothing to answer, nothing to create. */
         private void abandoned() {
-            if (settled) {
-                return;
+            if (settle()) {
+                cancelCheck();
+                release();
+                join.reply().finished();
             }
-            settled = true;
-            check.cancel(true);
-            deadline.cancel(false);
-            release();
-            join.reply().finished();
+        }
+
+        /**
+         * Ends a join that has no child yet because the endpoint closed or its source was removed:
+         * withdraws its check, gives back what it holds and refuses it. Any thread.
+         */
+        void withdraw() {
+            if (settle()) {
+                cancelCheck();
+                release();
+                refuse(join, JoinRefusal.CAPACITY);
+            }
+        }
+
+        /** Withdraws the check: a queued one never runs, a running one is interrupted. */
+        private void cancelCheck() {
+            CompletableFuture<OfferCheckResult> pending = check;
+            if (pending != null) {
+                pending.cancel(true);
+            }
         }
 
         private void fail(JoinRefusal refusal) {
-            settled = true;
-            release();
-            refuse(join, refusal);
+            if (settle()) {
+                release();
+                refuse(join, refusal);
+            }
+        }
+
+        /** Ends the admission stage. True for the one caller that ended it, who settles the join. */
+        private boolean settle() {
+            if (!settled.compareAndSet(false, true)) {
+                return false;
+            }
+            admitting.remove(this);
+            ScheduledFuture<?> timer = deadline;
+            if (timer != null) {
+                timer.cancel(false);
+            }
+            return true;
         }
 
         /** Gives back everything the join holds. Any thread, once the child's termination completed. */
@@ -570,11 +628,19 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             try {
                 eventLoop().execute(task);
             } catch (RejectedExecutionException closing) {
-                if (!settled) {
-                    settled = true;
+                if (settle()) {
                     release();
                     join.reply().finished();
                 }
+            }
+        }
+    }
+
+    /** Ends the admission of every join from this source that has no child yet. Any thread. */
+    private void withdrawAdmissions(Registration from) {
+        for (Admission admission : admitting) {
+            if (admission.from == from) {
+                admission.withdraw();
             }
         }
     }
@@ -589,13 +655,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     // ---- Children ----
 
-    /** Creates the child for an admitted join and exposes it. Event loop. */
+    /** Creates the child for a join whose admission ended in its favor, and exposes it. Event loop. */
     private void createChild(Admission admission, OfferCheckResult offerCheck) {
         Join join = admission.join;
         Bound settings = admission.settings;
         NetherNetEngine current = engine.current();
         if (current == null) {
-            admission.fail(JoinRefusal.CAPACITY);
+            admission.release();
+            refuse(join, JoinRefusal.CAPACITY);
             return;
         }
         boolean relayed = settings.answers().relayed();

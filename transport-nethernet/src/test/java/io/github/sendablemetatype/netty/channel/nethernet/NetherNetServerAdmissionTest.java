@@ -251,6 +251,50 @@ class NetherNetServerAdmissionTest {
         assertEquals(0, harness.server.gate().sessions());
     }
 
+    @Test
+    void closingTheEndpointRefusesJoinsStillBeingCheckedAndGivesBackWhatTheyHold() throws Exception {
+        useManualChecks();
+        RecordingThrottle throttle = new RecordingThrottle();
+        throttle.allow = true;
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_THROTTLE, throttle);
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        Future<?> queued = checks.awaitQueued();
+        AdmissionGate gate = harness.server.gate();
+
+        harness.server.close().sync();
+
+        reply.assertRefused(JoinRefusal.CAPACITY);
+        assertEquals(1, reply.finished.get());
+        assertTrue(queued.isCancelled(), "the check is withdrawn");
+        assertEquals(List.of(FakeJoinSource.CLIENT), throttle.closed, "a throttle another endpoint reuses keeps no count");
+        assertEquals(0, gate.pending());
+        assertEquals(0, gate.sessions());
+    }
+
+    @Test
+    void removingASourceRefusesItsJoinsStillBeingCheckedAtOnce() throws Exception {
+        useManualChecks();
+        RecordingThrottle throttle = new RecordingThrottle();
+        throttle.allow = true;
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_THROTTLE, throttle);
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        FakeJoinSource.Reply reply = source.offer(1, OFFER);
+        Future<?> queued = checks.awaitQueued();
+
+        assertTrue(harness.server.removeSource(source));
+
+        reply.assertRefused(JoinRefusal.CAPACITY);
+        assertTrue(queued.isCancelled());
+        assertEquals(List.of(FakeJoinSource.CLIENT), throttle.closed);
+        assertEquals(0, harness.server.gate().pending());
+        checks.runNext();
+        harness.sync();
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(1, reply.finished.get());
+    }
+
     // The shared budget.
 
     @Test
