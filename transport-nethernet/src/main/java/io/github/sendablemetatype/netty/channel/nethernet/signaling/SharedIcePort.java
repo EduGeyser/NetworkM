@@ -1,17 +1,23 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 
 /**
  * The endpoint's shared ICE port as a {@link JoinSource} may use it: it can take the connectivity checks that no
- * peer holds yet, which NXS stateless admission turns into joins (ruling A-1: a hook on the shared ICE socket), and
- * keep STUN bindings alive from the port. The endpoint keeps the port itself; a source never closes it.
+ * peer holds yet, which NXS stateless admission turns into joins (ruling A-1: a hook on the shared ICE socket), keep
+ * STUN bindings alive from the port, and open peers that carry no player. The endpoint keeps the port itself; a
+ * source never closes it.
  */
 public interface SharedIcePort {
 
@@ -50,6 +56,22 @@ public interface SharedIcePort {
      * @return completes with the monitor, or exceptionally if the port cannot send to the server
      */
     CompletionStage<IceEndpoint.StunMonitor> monitorStun(InetSocketAddress server);
+
+    /**
+     * Creates an answering peer on the port that carries no player, such as an NXS connectivity check's: the endpoint
+     * creates no child channel for it, counts no session and fires no admission event. From now until its close stage
+     * completed it holds one of the endpoint's pending handshakes, the budget it shares with every join, so the source
+     * must bound how long the peer lives and close it. The peer has no STUN or TURN servers and gathers under the
+     * endpoint's candidate policy. A peer whose local ufrag is a held check's takes that check, as a join's peer does.
+     * The endpoint closes the peer when it closes or removes the source.
+     *
+     * @param credentials the peer's local ICE credentials
+     * @param identity    the DTLS identity the peer presents
+     * @param listener    receives the peer's events on engine threads
+     * @return the peer, owned by the source; empty when no pending handshake is free or the endpoint or the source
+     *         is closed
+     */
+    Optional<Peer> openPeer(IceCredentials credentials, DtlsIdentity identity, PeerListener listener);
 
     /** A source's hold on the shared port's held checks. */
     interface HeldChecks extends AutoCloseable {

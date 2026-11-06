@@ -349,6 +349,22 @@ public abstract class EngineConformanceTest {
     }
 
     @Test
+    void anOffererOnAnEndpointConnectsFromItsPort() throws Exception {
+        assumeTrue(realNetwork(), "Needs real sockets");
+        // A prober checks from a fixed port of its own, as NXS diagnostics need
+        IceEndpoint endpoint = await(engine.openEndpoint(new EndpointConfig(freeUdpPort(), List.of())));
+        Pair pair = connect(true, new PeerConfig(Role.OFFERER, List.of(), CandidatePolicy.DEFAULT, endpoint, null,
+                null), answererConfig());
+
+        await(pair.client.gatheringComplete);
+        for (String candidate : pair.client.localCandidates) {
+            assertEquals(endpoint.port(), port(candidate), candidate);
+        }
+        awaitCondition(() -> pair.client.lastPath != null && pair.client.lastPath.local() != null, "No path");
+        assertEquals(endpoint.port(), pair.client.lastPath.local().getPort());
+    }
+
+    @Test
     void aHeldCheckIsTakenByThePeerCreatedForIt() throws Exception {
         assumeTrue(realNetwork(), "Needs real sockets");
         IceEndpoint endpoint = await(engine.openEndpoint(new EndpointConfig(freeUdpPort(), List.of())));
@@ -400,9 +416,13 @@ public abstract class EngineConformanceTest {
     // Helpers
 
     private Pair connect(boolean trickle, PeerConfig serverConfig) throws Exception {
+        return connect(trickle, config(Role.OFFERER), serverConfig);
+    }
+
+    private Pair connect(boolean trickle, PeerConfig clientConfig, PeerConfig serverConfig) throws Exception {
         Side client = new Side("client");
         Side server = new Side("server");
-        client.peer = engine.createPeer(config(Role.OFFERER), client);
+        client.peer = engine.createPeer(clientConfig, client);
         server.peer = engine.createPeer(serverConfig, server);
         client.links.put(RELIABLE, client.peer.openChannel(ChannelParameters.reliable(RELIABLE)));
         client.links.put(UNRELIABLE, client.peer.openChannel(ChannelParameters.unreliable(UNRELIABLE)));

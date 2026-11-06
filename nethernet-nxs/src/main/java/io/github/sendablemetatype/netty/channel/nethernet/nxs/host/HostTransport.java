@@ -34,11 +34,14 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.Stateles
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionValidator;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketId;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketLedger;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.VerifiedAdmission;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.EndpointConnectivityController;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.EndpointSelection;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.MaintainedCandidatePublisher;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.connectivity.ProviderEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.control.AssistedJoin;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticHostPolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AssistedAnswer;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.ConnectivityCheck;
@@ -75,8 +78,10 @@ import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -105,6 +110,10 @@ import java.util.function.LongSupplier;
  * <li><b>Assisted joins.</b> A join the provider pushes is delivered the same way, with the provider's offer and
  * credentials; its answer goes back through the provider's control socket, cut to one candidate on the gameplay port
  * as upstream builds it, with {@code m=} and {@code c=} naming that candidate.</li>
+ * <li><b>Diagnostics.</b> A ticket with network ID 0 is a connectivity check, never a player: it goes to the
+ * {@link DiagnosticHost} before any player reservation, which answers its PING on a peer of its own from the shared
+ * port, with no child (diagnostic-v1). The provider client installs the policy that admits checks after each
+ * successful heartbeat; {@link #pollDiagnosticResults} reports how they ended.</li>
  * <li><b>Profile.</b> It publishes the shared port's candidates (configured, local, or maintained with STUN through
  * the provider's servers), the fingerprint of the one DTLS certificate every NXS peer presents, and the admission
  * parameters.</li>
@@ -128,6 +137,8 @@ public final class HostTransport implements ProviderTransport {
     static final Duration MAINTENANCE = Duration.ofMillis(100);
     static final Duration REFRESH = Duration.ofSeconds(1);
     static final Duration STUN_MAX_AGE = Duration.ofMinutes(5);
+    /** The longest a heartbeat's diagnostic policy lasts, as the provider client installs it. */
+    static final Duration MAX_DIAGNOSTIC_POLICY = Duration.ofMinutes(5);
 
     /** How the host finds the candidates it publishes. */
     enum Publication {
@@ -143,7 +154,9 @@ public final class HostTransport implements ProviderTransport {
      * What the host configured.
      *
      * @param advertised       The configured endpoints, empty to derive them
-     * @param localDevelopment Whether loopback endpoints may be published, for a provider on this machine
+     * @param localDevelopment Whether the provider runs on this machine: loopback endpoints may then be published, and
+     *                         private and loopback endpoints count as {@linkplain #reachable reachable} for assisted
+     *                         answers and connectivity checks
      * @param stunWarming      Whether maintained publication keeps STUN mappings warm in the background
      */
     record Settings(Publication publication, List<InetSocketAddress> advertised, boolean localDevelopment,
@@ -181,10 +194,6 @@ public final class HostTransport implements ProviderTransport {
         }
     }
 
-    /** An answer candidate: an endpoint on the gameplay port and its type. */
-    private record Candidate(InetSocketAddress endpoint, CandidateType type) {
-    }
-
     /** An assisted join from delivery until its session ends. Event loop. */
     private final class Assisted {
         final AssistedJoin join;
@@ -192,12 +201,9 @@ public final class HostTransport implements ProviderTransport {
         final long deadlineNanos;
         final OwnershipGuard guard;
         final CompletableFuture<AssistedAnswer> result;
-        final CompletableFuture<Candidate> candidate = new CompletableFuture<>();
         final CompletableFuture<Void> abandoned = new CompletableFuture<>();
-        IceEndpoint.StunMonitor monitor;
-        AddressFamily gatheringFamily;
-        long gatheringDeadline;
-        boolean reading, done;
+        CompletableFuture<HostCandidate> candidate;
+        boolean done;
 
         Assisted(AssistedJoin join, Session session, long deadlineNanos, OwnershipGuard guard,
                  CompletableFuture<AssistedAnswer> result) {
@@ -220,10 +226,25 @@ public final class HostTransport implements ProviderTransport {
         /** Stops gathering and fails what has not completed. Event loop. */
         void end(Throwable failure) {
             done = true;
-            closeMonitor();
-            candidate.completeExceptionally(failure);
+            if (candidate != null) {
+                candidate.completeExceptionally(failure);
+            }
             result.completeExceptionally(failure);
             abandoned.complete(null);
+        }
+    }
+
+    /** The search for the STUN mapping an assisted answer names. Event loop. */
+    private static final class Gathering {
+        final CompletableFuture<HostCandidate> candidate = new CompletableFuture<>();
+        final AddressFamily family;
+        final long deadlineNanos;
+        IceEndpoint.StunMonitor monitor;
+        boolean reading;
+
+        Gathering(AddressFamily family, long deadlineNanos) {
+            this.family = family;
+            this.deadlineNanos = deadlineNanos;
         }
 
         void closeMonitor() {
@@ -267,6 +288,10 @@ public final class HostTransport implements ProviderTransport {
     private final Map<TicketLedger.Reservation, Session> sessions = new HashMap<>();
     /** Live assisted joins by their local ufrag, whose checks their own peer takes. */
     private final Map<String, Assisted> assisted = new HashMap<>();
+    /** Answer candidates still being found. */
+    private final Set<Gathering> gatherings = new HashSet<>();
+    /** Connectivity checks, from the start on; read by {@link #pollDiagnosticResults} on any thread. */
+    private volatile DiagnosticHost diagnostics;
     private final List<ScheduledFuture<?>> tasks = new ArrayList<>();
     private JoinSink sink;
     private SharedIcePort port;
@@ -292,7 +317,7 @@ public final class HostTransport implements ProviderTransport {
         this.incarnation = HexFormat.of().formatHex(nonce);
         this.validator = new StatelessAdmissionValidator(StatelessAdmissionValidator.audience(incarnation),
                 MAX_TICKET_MILLIS);
-        this.ledger = new TicketLedger(settings.limits(), validator);
+        this.ledger = new TicketLedger(settings.limits());
     }
 
     /** The join source to add to the endpoint, which starts it once its shared ICE port is open. */
@@ -335,6 +360,9 @@ public final class HostTransport implements ProviderTransport {
             this.sink = sink;
             this.port = sink.sharedIcePort().orElseThrow(() -> new IllegalStateException(
                     "NXS needs the endpoint's shared ICE port: the provider publishes one port for every player"));
+            this.diagnostics = new DiagnosticHost(port, certificate.dtls(), fingerprint, ledger, loop,
+                    new DiagnosticAdmissionCodec.Clock(millis, nanos),
+                    (family, deadline) -> answerCandidate(List.of(family), deadline), this::reachable);
             this.heldChecks = port.claimHeldChecks(this::held);
             // Mirrors the installed keys now and after every change; none installed passes no check on.
             validator.mirrorKeys(heldChecks::admit);
@@ -465,7 +493,7 @@ public final class HostTransport implements ProviderTransport {
             check.reject();
             return;
         }
-        if (assisted.containsKey(check.localUfrag())) {
+        if (assisted.containsKey(check.localUfrag()) || diagnostics.awaits(check.localUfrag())) {
             // The assisted join's own peer takes it once its port is ready
             return;
         }
@@ -477,8 +505,23 @@ public final class HostTransport implements ProviderTransport {
             check.reject();
             return;
         }
-        // Validates the token, then records it; a diagnostic ticket never takes a player reservation
-        TicketLedger.Reservation reservation = ledger.reserve(request, millis.getAsLong(), nanos.getAsLong());
+        long now = millis.getAsLong();
+        VerifiedAdmission verified = validator.validate(request, now);
+        if (verified == null) {
+            ledger.invalidNativeRequest();
+            check.reject();
+            return;
+        }
+        if (verified.diagnostic()) {
+            // Only the authenticated token says what a check is for, so network ID 0 never reaches a player
+            // reservation or the endpoint
+            if (!diagnostics.admit(check, verified)) {
+                check.reject();
+            }
+            return;
+        }
+        TicketLedger.Reservation reservation = ledger.reserve(verified, request.address(), verified.expiresAt(), now,
+                nanos.getAsLong());
         AdmissionContext admission = reservation == null ? null : ledger.admission(reservation);
         if (admission == null) {
             check.reject();
@@ -625,7 +668,14 @@ public final class HostTransport implements ProviderTransport {
         guard.requireCurrent();
         requireAssistable(join);
         if (join.diagnostic()) {
-            throw new UnsupportedOperationException("This host does not serve diagnostic checks");
+            diagnostics.assist(join, deadlineNanos, guard).whenComplete((answer, failure) -> {
+                if (failure != null) {
+                    result.completeExceptionally(failure);
+                } else {
+                    result.complete(answer);
+                }
+            });
+            return;
         }
         long remaining = deadlineNanos - nanos.getAsLong();
         if (remaining <= 0) {
@@ -645,21 +695,31 @@ public final class HostTransport implements ProviderTransport {
         });
         // A provider may hand over a ufrag the stateless path admits, valid for longer than the join
         long tokenExpiresAt = validator.expiry(join.localUfrag(), admission.remoteUfrag());
-        TicketLedger.Reservation reservation = ledger.reserveAuthenticated(admission, null, tokenExpiresAt,
-                millis.getAsLong(), nanos.getAsLong());
+        TicketLedger.Reservation reservation = ledger.reserve(admission, null, tokenExpiresAt, millis.getAsLong(),
+                nanos.getAsLong());
         if (reservation == null) {
             throw new IllegalStateException("The assisted join was refused: replayed, or no room for its record");
         }
         Session session = new Session(reservation, admission, Kind.ASSISTED);
         Assisted state = new Assisted(join, session, deadlineNanos, guard, result);
-        assisted.put(join.localUfrag(), state);
+        Set<AddressFamily> families = new LinkedHashSet<>();
+        admission.offer().candidates().forEach(candidate -> families.add(AddressFamily.of(candidate.getAddress())));
         try {
-            answerCandidate(state, admission.offer());
+            state.candidate = answerCandidate(families, nanos.getAsLong() + Math.min(GATHERING.toNanos(), remaining));
         } catch (RuntimeException e) {
-            assisted.remove(join.localUfrag());
             ledger.finish(reservation);
             throw e;
         }
+        assisted.put(join.localUfrag(), state);
+        state.candidate.whenComplete((candidate, failure) -> {
+            if (failure != null) {
+                onLoop(() -> {
+                    if (!state.done) {
+                        state.end(failure);
+                    }
+                });
+            }
+        });
         loop.schedule(() -> {
             if (!state.done && !result.isDone()) {
                 state.end(new IllegalStateException("Assisted join deadline passed"));
@@ -683,94 +743,105 @@ public final class HostTransport implements ProviderTransport {
     }
 
     /**
-     * Picks the one candidate the answer names: a public host candidate of a family the client offered, else a fresh
-     * STUN mapping of the gameplay port through the provider's server for that family. Event loop.
+     * Finds the one candidate an assisted answer names, for an assisted join or check: a {@linkplain #reachable
+     * reachable} host candidate of the first family the client offered that has one, else a fresh STUN mapping of the
+     * gameplay port through the provider's server for such a family. Completing the stage from outside stops the
+     * search. Event loop.
+     *
+     * @throws IllegalStateException If no family has a host candidate or a server
      */
-    private void answerCandidate(Assisted state, AssistedJoin.Offer offer) {
-        Set<AddressFamily> families = new LinkedHashSet<>();
-        offer.candidates().forEach(candidate -> families.add(AddressFamily.of(candidate.getAddress())));
-        Map<AddressFamily, InetSocketAddress> hosts = new EnumMap<>(AddressFamily.class);
+    private CompletableFuture<HostCandidate> answerCandidate(Collection<AddressFamily> families, long deadlineNanos) {
+        Map<AddressFamily, HostCandidate> hosts = new EnumMap<>(AddressFamily.class);
         if (publication != null) {
-            for (HostCandidate candidate : publication.probeCandidates()) {
-                if (candidate.type() == CandidateType.HOST
-                        && EndpointAddress.scope(candidate.endpoint().getAddress()) == EndpointAddress.Scope.PUBLIC) {
-                    hosts.putIfAbsent(candidate.family(), candidate.endpoint());
+            // With assistance on, the offered candidates hold every probe target too, failed ones included
+            for (HostCandidate candidate : publication.candidates()) {
+                if (candidate.type() == CandidateType.HOST && reachable(candidate.endpoint().getAddress())) {
+                    hosts.putIfAbsent(candidate.family(), candidate);
                 }
             }
         }
         for (AddressFamily family : families) {
-            InetSocketAddress host = hosts.get(family);
+            HostCandidate host = hosts.get(family);
             if (host != null) {
-                state.candidate.complete(new Candidate(host, CandidateType.HOST));
-                return;
+                return CompletableFuture.completedFuture(host);
             }
         }
         MaintainedCandidatePublisher current = publisher;
         Map<AddressFamily, InetSocketAddress> servers = current == null ? Map.of() : current.assistedStunServers();
         AddressFamily family = families.stream().filter(servers::containsKey).findFirst()
                 .orElseThrow(() -> new IllegalStateException("No eligible assisted discovery endpoint"));
-        state.gatheringFamily = family;
-        state.gatheringDeadline = nanos.getAsLong()
-                + Math.min(GATHERING.toNanos(), state.deadlineNanos - nanos.getAsLong());
+        Gathering gathering = new Gathering(family, deadlineNanos);
+        gatherings.add(gathering);
+        gathering.candidate.whenComplete((candidate, failure) -> onLoop(() -> {
+            gatherings.remove(gathering);
+            gathering.closeMonitor();
+        }));
         port.monitorStun(servers.get(family)).whenComplete((monitor, failure) -> onLoop(() -> {
             if (failure != null) {
-                state.end(failure);
-            } else if (state.done || closing) {
+                gathering.candidate.completeExceptionally(failure);
+            } else if (gathering.candidate.isDone() || closing) {
                 monitor.close();
             } else {
-                state.monitor = monitor;
+                gathering.monitor = monitor;
             }
         }, monitor == null ? () -> { } : monitor::close));
+        return gathering.candidate;
     }
 
-    /** Reads the per-join monitors and fails the ones out of time. Event loop, from maintenance. */
-    private void gatherAssisted() {
+    /**
+     * Whether a client elsewhere reaches this address, for an assisted answer to name it or a diagnostic to use it: a
+     * public one, as the specification asks of production hosts; a loopback one while the port is bound to loopback;
+     * and a private or loopback one in local development, whose provider runs on this machine and whose clients on
+     * the same network.
+     */
+    private boolean reachable(InetAddress address) {
+        return switch (EndpointAddress.scope(address)) {
+            case PUBLIC -> true;
+            case PRIVATE -> settings.localDevelopment();
+            case LOOPBACK -> settings.localDevelopment() || port.localAddress().getAddress().isLoopbackAddress();
+            case UNUSABLE -> false;
+        };
+    }
+
+    /** Reads the answer candidates' monitors and fails the searches out of time. Event loop, from maintenance. */
+    private void gather() {
         long now = nanos.getAsLong();
-        for (Assisted state : List.copyOf(assisted.values())) {
-            if (state.done || state.candidate.isDone() || state.monitor == null) {
-                if (!state.done && !state.candidate.isDone() && now - state.gatheringDeadline >= 0
-                        && state.gatheringFamily != null) {
-                    state.end(new IllegalStateException("No STUN mapping for the assisted join in time"));
-                }
+        for (Gathering gathering : List.copyOf(gatherings)) {
+            if (gathering.candidate.isDone()) {
                 continue;
             }
-            if (now - state.gatheringDeadline >= 0) {
-                state.end(new IllegalStateException("No STUN mapping for the assisted join in time"));
+            if (now - gathering.deadlineNanos >= 0) {
+                gathering.candidate.completeExceptionally(
+                        new IllegalStateException("No STUN mapping for the assisted answer in time"));
                 continue;
             }
-            if (state.reading) {
+            if (gathering.monitor == null || gathering.reading) {
                 continue;
             }
-            state.reading = true;
-            state.monitor.read().whenComplete((reading, failure) -> onLoop(() -> {
-                state.reading = false;
-                if (state.done || state.candidate.isDone()) {
+            gathering.reading = true;
+            gathering.monitor.read().whenComplete((reading, failure) -> onLoop(() -> {
+                gathering.reading = false;
+                if (gathering.candidate.isDone()) {
                     return;
                 }
                 if (failure != null) {
-                    state.end(failure);
+                    gathering.candidate.completeExceptionally(failure);
                     return;
                 }
                 if (reading.state() != IceEndpoint.StunReading.State.SUCCEEDED || reading.mapped() == null) {
                     return;
                 }
                 InetSocketAddress mapped = reading.mapped();
-                if (!answerEndpoint(mapped, state.gatheringFamily)) {
-                    state.end(new IllegalStateException("The STUN mapping is no endpoint players can reach"));
+                if (mapped.isUnresolved() || mapped.getPort() < 1
+                        || AddressFamily.of(mapped.getAddress()) != gathering.family
+                        || !reachable(mapped.getAddress())) {
+                    gathering.candidate.completeExceptionally(
+                            new IllegalStateException("The STUN mapping is no endpoint players can reach"));
                     return;
                 }
-                state.closeMonitor();
-                state.candidate.complete(new Candidate(mapped, CandidateType.SERVER_REFLEXIVE));
+                gathering.candidate.complete(new HostCandidate(mapped, CandidateType.SERVER_REFLEXIVE));
             }));
         }
-    }
-
-    /** A public endpoint of the family; a loopback one only while the port is bound to loopback, for tests. */
-    private boolean answerEndpoint(InetSocketAddress endpoint, AddressFamily family) {
-        return !endpoint.isUnresolved() && endpoint.getPort() >= 1
-                && AddressFamily.of(endpoint.getAddress()) == family
-                && (EndpointAddress.scope(endpoint.getAddress()) == EndpointAddress.Scope.PUBLIC
-                || port.localAddress().getAddress().isLoopbackAddress() && endpoint.getAddress().isLoopbackAddress());
     }
 
     /**
@@ -799,7 +870,7 @@ public final class HostTransport implements ProviderTransport {
                 onLoop(() -> {
                     try {
                         state.requireCurrent();
-                        AssistedAnswer answer = AssistedAnswer.build(sdp, candidate.endpoint(), candidate.type(), null);
+                        AssistedAnswer answer = AssistedAnswer.build(sdp, candidate, null);
                         state.result.complete(answer);
                         handedOn.complete(null);
                     } catch (Exception e) {
@@ -838,7 +909,6 @@ public final class HostTransport implements ProviderTransport {
                 if (!state.result.isDone()) {
                     state.end(new IllegalStateException("The assisted join ended before its answer"));
                 }
-                state.closeMonitor();
                 if (state.session.child == null) {
                     assisted.remove(state.join.localUfrag());
                     withoutChild(state.session);
@@ -880,7 +950,8 @@ public final class HostTransport implements ProviderTransport {
                 session.child.close();
             }
         }
-        gatherAssisted();
+        gather();
+        diagnostics.tick();
     }
 
     private void activated(Session session, SourcedAddress reported) {
@@ -939,6 +1010,108 @@ public final class HostTransport implements ProviderTransport {
                 return CompletableFuture.failedFuture(invalid);
             }
         }
+    }
+
+    // ---- Diagnostics ----
+
+    @Override
+    public boolean supportsDiagnosticAdmission() {
+        return true;
+    }
+
+    /**
+     * Installs the policy after checking that it describes this host as it stands: its incarnation, its current
+     * candidate revision, and only endpoints it publishes, probe targets or the families assisted checks serve. The
+     * policy is cut to the heartbeat's deadline, which installing never extends, and replaces the earlier one.
+     */
+    @Override
+    public CompletionStage<Void> configureDiagnostics(DiagnosticHostPolicy policy, long deadlineNanos) {
+        Objects.requireNonNull(policy, "policy");
+        long remaining = deadlineNanos - nanos.getAsLong();
+        if (remaining <= 0 || remaining > MAX_DIAGNOSTIC_POLICY.toNanos()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Diagnostic deadline"));
+        }
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        onLoop(() -> {
+            try {
+                installDiagnostics(policy, deadlineNanos);
+                result.complete(null);
+            } catch (IOException | RuntimeException e) {
+                result.completeExceptionally(e);
+            }
+        }, () -> result.completeExceptionally(new IllegalStateException("The NetherNet endpoint is closed")));
+        return result;
+    }
+
+    private void installDiagnostics(DiagnosticHostPolicy policy, long deadlineNanos) throws IOException {
+        DiagnosticHost current = diagnostics;
+        if (closing || draining || current == null) {
+            throw new IllegalStateException("The NXS host transport is not serving");
+        }
+        long now = millis.getAsLong();
+        if (now >= policy.expiresAt() || policy.endpointExpiries().values().stream().anyMatch(expiry -> now >= expiry)) {
+            throw new IllegalArgumentException("Expired diagnostic policy");
+        }
+        List<HostCandidate> probes;
+        Set<AddressFamily> families;
+        if (publisher == null) {
+            probes = fixedCandidates();
+            families = Set.of();
+        } else if (withdrawn || publication == null) {
+            probes = List.of();
+            families = Set.of();
+        } else {
+            publication.guard().requireCurrent();
+            probes = publication.probeCandidates();
+            families = settings.assistedJoins() ? publication.assistedFamilies() : Set.of();
+        }
+        long revision = candidateRevision;
+        boolean described = incarnation.equals(policy.context().incarnation())
+                && policy.endpoints().stream().allMatch(endpoint -> endpoint.candidateRevision() == revision
+                && (endpoint.assisted() ? families.contains(AddressFamily.of(endpoint.family()))
+                : probes.stream().anyMatch(candidate -> names(candidate, endpoint))));
+        if (!described) {
+            throw new IllegalArgumentException("The diagnostic policy describes another state of this host");
+        }
+        long expiry = Math.min(policy.expiresAt(), now + TimeUnit.NANOSECONDS.toMillis(deadlineNanos
+                - nanos.getAsLong()));
+        Map<DiagnosticHostPolicy.Endpoint, Long> expiries = new HashMap<>();
+        policy.endpointExpiries().forEach((endpoint, limit) -> expiries.put(endpoint, Math.min(limit, expiry)));
+        current.install(new DiagnosticHostPolicy(policy.context(), policy.keys(), policy.endpoints(), expiry, expiries),
+                deadlineNanos);
+    }
+
+    private static boolean names(HostCandidate candidate, DiagnosticHostPolicy.Endpoint endpoint) {
+        int family = candidate.family().number();
+        return family == endpoint.family() && candidate.endpoint().getPort() == endpoint.port()
+                && DiagnosticAdmissionCodec.address(family, candidate.endpoint().getAddress().getHostAddress())
+                .equals(endpoint.addressHex());
+    }
+
+    /** Withdraws the policy and ends every check; the replay history stays. Player admission is untouched. */
+    @Override
+    public CompletionStage<Void> disableDiagnostics() {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        onLoop(() -> {
+            DiagnosticHost current = diagnostics;
+            if (current != null) {
+                current.disable();
+            }
+            result.complete(null);
+        }, () -> result.complete(null));
+        return result;
+    }
+
+    /**
+     * Takes up to {@code maximum} results of the checks this host admitted, oldest first. The host holds at most
+     * {@value DiagnosticHost#MAX_RESULTS}; while that many wait, newer results are dropped. Any thread.
+     */
+    public List<DiagnosticResult> pollDiagnosticResults(int maximum) {
+        if (maximum < 0) {
+            throw new IllegalArgumentException("Negative result count");
+        }
+        DiagnosticHost current = diagnostics;
+        return current == null ? List.of() : current.poll(maximum);
     }
 
     // ---- Profile ----
@@ -1192,6 +1365,9 @@ public final class HostTransport implements ProviderTransport {
                 state.end(new IllegalStateException("The NXS host transport closed"));
             }
         }
+        for (Gathering gathering : List.copyOf(gatherings)) {
+            gathering.candidate.completeExceptionally(new IllegalStateException("The NXS host transport closed"));
+        }
         for (TicketLedger.Reservation reservation : ledger.close()) {
             Session session = sessions.get(reservation);
             if (session != null) {
@@ -1202,7 +1378,9 @@ public final class HostTransport implements ProviderTransport {
         }
         started.completeExceptionally(new IllegalStateException("The NXS host transport is closed"));
         health(SignalingState.CLOSED, null);
-        closed.complete(null);
+        // The checks' peers belong to this transport, so it is closed once they are gone
+        (diagnostics == null ? CompletableFuture.<Void>completedFuture(null) : diagnostics.close())
+                .whenComplete((ignored, failure) -> closed.complete(null));
     }
 
     private void onLoop(Runnable task) {

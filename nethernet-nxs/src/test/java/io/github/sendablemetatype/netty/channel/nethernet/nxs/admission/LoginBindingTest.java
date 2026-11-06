@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -51,8 +52,8 @@ class LoginBindingTest extends AdmissionFixture {
     @Test
     void anAcceptedLoginIsNeverTakenForALapsedOne() {
         // Accepting the login erases the binding, which the sweep must not read as revoked
-        var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
-        var r = gate.reserve(request(), now, 0);
+        var gate = new TicketLedger(TicketLedger.Limits.defaults());
+        var r = reserve(gate, request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
         assertEquals(TransportIdentityBinding.Result.ACCEPTED, gate.verifier(r).acceptForwardedIdentity());
@@ -115,8 +116,8 @@ class LoginBindingTest extends AdmissionFixture {
     @Test
     void connectedWithoutLoginTimesOutButDecidedSessionsContinue() throws Exception {
         for (int mode = 0; mode < 3; mode++) {
-            var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
-            var r = gate.reserve(request(), now, 0);
+            var gate = new TicketLedger(TicketLedger.Limits.defaults());
+            var r = reserve(gate, request(), now, 0);
             assertTrue(gate.ready(r));
             gate.connected(r);
             if (mode == 1) {
@@ -133,8 +134,8 @@ class LoginBindingTest extends AdmissionFixture {
 
     @Test
     void aRefusedLoginClosesAtOnce() throws Exception {
-        var gate = new TicketLedger(TicketLedger.Limits.defaults(), validator());
-        var r = gate.reserve(request(), now, 0);
+        var gate = new TicketLedger(TicketLedger.Limits.defaults());
+        var r = reserve(gate, request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
         gate.verifier(r).verify(otherKey());
@@ -145,19 +146,20 @@ class LoginBindingTest extends AdmissionFixture {
     void reserveRejectionAndTeardownReleaseTheirOwnBinding() {
         var v = validator();
         var issued = new ArrayList<VerifiedAdmission>();
-        var gate = new TicketLedger(TicketLedger.Limits.defaults(), (request, time) -> {
-            var a = v.validate(request, time);
+        var gate = new TicketLedger(TicketLedger.Limits.defaults());
+        Supplier<TicketLedger.Reservation> reserve = () -> {
+            var a = v.validate(request(), now);
             issued.add(a);
-            return a;
-        });
-        var accepted = gate.reserve(request(), now, 0);
-        assertNull(gate.reserve(request(), now, 0));
+            return gate.reserve(a, request().address(), a.expiresAt(), now, 0);
+        };
+        var accepted = reserve.get();
+        assertNull(reserve.get());
         assertFalse(issued.get(1).loginBinding().usable(), "a replayed ticket's binding is released at once");
         assertTrue(issued.get(0).loginBinding().usable());
         gate.finish(accepted);
         assertFalse(issued.get(0).loginBinding().usable());
         gate.drain();
-        assertNull(gate.reserve(request(), now, 0));
+        assertNull(reserve.get());
         assertFalse(issued.get(2).loginBinding().usable());
     }
 }

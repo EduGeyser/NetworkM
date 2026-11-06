@@ -19,8 +19,8 @@ class AssistedAnswerTest {
                 + "a=candidate:2 1 udp 1686052607 203.0.113.9 61000 typ srflx raddr 192.168.1.20 rport 50000\r\n"
                 + "a=end-of-candidates\r\n";
 
-        String answer = AssistedAnswer.build(local, new InetSocketAddress("93.184.216.40", 40404), CandidateType.SERVER_REFLEXIVE,
-                null).sdp();
+        String answer = AssistedAnswer.build(local, new HostCandidate(new InetSocketAddress("93.184.216.40", 40404),
+                CandidateType.SERVER_REFLEXIVE), null).sdp();
 
         assertTrue(answer.contains("\r\nm=application 40404 UDP/DTLS/SCTP webrtc-datachannel\r\n"), answer);
         assertTrue(answer.contains("\r\nc=IN IP4 93.184.216.40\r\n"), answer);

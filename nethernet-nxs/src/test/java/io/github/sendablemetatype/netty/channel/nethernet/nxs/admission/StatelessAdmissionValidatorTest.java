@@ -50,6 +50,16 @@ class AdmissionFixture {
         return new AdmissionRequest(local, remote, new InetSocketAddress("127.0.0.1", 23450));
     }
 
+    /** Validates the check's ticket, then reserves it, as the host does for a player's check. */
+    TicketLedger.Reservation reserve(TicketLedger ledger, AdmissionRequest request, long nowMillis, long nowNanos) {
+        VerifiedAdmission verified = validator().validate(request, nowMillis);
+        if (verified == null) {
+            ledger.invalidNativeRequest();
+            return null;
+        }
+        return ledger.reserve(verified, request.address(), verified.expiresAt(), nowMillis, nowNanos);
+    }
+
     static byte[] binding(String username, String password) {
         try {
             byte[] u = username.getBytes(StandardCharsets.US_ASCII);

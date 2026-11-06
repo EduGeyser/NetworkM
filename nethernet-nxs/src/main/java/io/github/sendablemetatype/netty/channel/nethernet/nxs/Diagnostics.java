@@ -20,6 +20,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.C
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticHostPolicy;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.AddressFamily;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostProfileSnapshot;
 

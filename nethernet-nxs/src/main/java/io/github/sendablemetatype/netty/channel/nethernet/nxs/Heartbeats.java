@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderClient.*;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.*;
 
 import java.io.IOException;

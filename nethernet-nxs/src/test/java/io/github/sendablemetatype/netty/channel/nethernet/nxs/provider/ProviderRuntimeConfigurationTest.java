@@ -150,10 +150,14 @@ class ProviderRuntimeConfigurationTest {
                 runtime(dir, settings(PROVIDER, "file:token", List.of(), null)).clientConfiguration().authorizationToken());
         assertEquals("file-secret", runtime(dir, settings(PROVIDER, "file:" + dir.resolve("token"), List.of(), null))
                 .clientConfiguration().authorizationToken());
-        // Without the prefix a value is the token itself, even one that looks like a path
+        // Without the prefix a value is the token itself, even one that starts like a path
         assertEquals("/token-that-starts-with-a-slash", runtime(dir,
                 settings(PROVIDER, "/token-that-starts-with-a-slash", List.of(), null))
                 .clientConfiguration().authorizationToken());
+        // unless it names a file, which is then not sent as the token
+        IOException path = assertThrows(IOException.class, () -> runtime(dir, settings(PROVIDER, "token", List.of(),
+                null)));
+        assertTrue(path.getMessage().contains("file:<path>"), path.getMessage());
         for (String value : List.of("file:missing", "file:", "bad secret")) {
             IOException failure = assertThrows(IOException.class,
                     () -> runtime(dir, settings(PROVIDER, value, List.of(), null)));

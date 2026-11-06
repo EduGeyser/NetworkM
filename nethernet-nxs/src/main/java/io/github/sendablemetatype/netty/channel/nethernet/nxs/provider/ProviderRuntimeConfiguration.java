@@ -437,8 +437,8 @@ public final class ProviderRuntimeConfiguration {
         }
         try {
             value = Objects.requireNonNull(SecretValue.resolve(value, directory)).trim();
-        } catch (IOException unreadable) {
-            throw new IOException("nxs.token file must be readable and contain at most 16384 bytes");
+        } catch (IOException refused) {
+            throw new IOException("nxs.token " + refused.getMessage());
         }
         if (value.isBlank() || value.length() > 16384 || value.chars().anyMatch(c -> c <= 32 || c == 127)) {
             throw new IOException("nxs.token must contain one non-empty bearer token");

@@ -13,7 +13,7 @@ class TicketLedgerTest extends AdmissionFixture {
     final InetSocketAddress other = new InetSocketAddress("127.0.0.1", 23451);
 
     TicketLedger gate() {
-        return new TicketLedger(new TicketLedger.Limits(2, 1000), validator());
+        return new TicketLedger(new TicketLedger.Limits(2, 1000));
     }
 
     AdmissionRequest elsewhere() {
@@ -44,9 +44,9 @@ class TicketLedgerTest extends AdmissionFixture {
     void holdsOneReservationPerSourceTuple() throws Exception {
         // Another ticket from the same address must not take a second slot
         var gate = gate();
-        assertNotNull(gate.reserve(request(), now, 0));
+        assertNotNull(reserve(gate, request(), now, 0));
 
-        assertNull(gate.reserve(request(anotherToken(), remote), now, 0));
+        assertNull(reserve(gate, request(anotherToken(), remote), now, 0));
         assertEquals(1, gate.stats().replayRejected());
         assertEquals(1, gate.stats().sessions());
     }
@@ -54,21 +54,21 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void refusesWhenTheClaimsItRemembersAreFull() throws Exception {
         // Sessions are free, but every token it has seen is still remembered
-        var gate = new TicketLedger(new TicketLedger.Limits(2, 1000), validator());
-        var first = gate.reserve(request(), now, 0);
+        var gate = new TicketLedger(new TicketLedger.Limits(2, 1000));
+        var first = reserve(gate, request(), now, 0);
         assertNotNull(first);
         assertTrue(gate.ready(first));
         gate.finish(first);
 
-        assertNotNull(gate.reserve(request(anotherToken(), remote), now, 0));
-        assertNull(gate.reserve(new AdmissionRequest(anotherToken(), remote, other), now, 0));
+        assertNotNull(reserve(gate, request(anotherToken(), remote), now, 0));
+        assertNull(reserve(gate, new AdmissionRequest(anotherToken(), remote, other), now, 0));
         assertEquals(1, gate.stats().capacityRejected());
     }
 
     @Test
     void tellsTheCallerWhatItReservedWithoutPrintingIt() {
         var gate = gate();
-        var reservation = gate.reserve(request(), now, 12345);
+        var reservation = reserve(gate, request(), now, 12345);
 
         assertEquals(validator().validate(request(), now).ticketId(), reservation.ticketId());
         assertEquals(new InetSocketAddress("127.0.0.1", 23450), reservation.tuple());
@@ -80,7 +80,7 @@ class TicketLedgerTest extends AdmissionFixture {
     void letsAReservationBecomeReadyOnlyOnce() {
         // A used token must not allocate a second peer
         var gate = gate();
-        var reservation = gate.reserve(request(), now, 0);
+        var reservation = reserve(gate, request(), now, 0);
 
         assertTrue(gate.ready(reservation));
         assertFalse(gate.ready(reservation));
@@ -90,7 +90,7 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void refusesToReadyAReservationThatTimedOut() {
         var gate = gate();
-        var reservation = gate.reserve(request(), now, 0);
+        var reservation = reserve(gate, request(), now, 0);
 
         assertEquals(List.of(reservation), gate.sweep(now, 2_000_000_000L));
         assertFalse(gate.ready(reservation), "a handshake that ran out of time cannot finish later");
@@ -100,7 +100,7 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void finishesAReservationOnlyOnce() {
         var gate = gate();
-        var reservation = gate.reserve(request(), now, 0);
+        var reservation = reserve(gate, request(), now, 0);
 
         assertTrue(gate.finish(reservation));
         assertFalse(gate.finish(reservation), "a second teardown must not free capacity twice");
@@ -112,7 +112,7 @@ class TicketLedgerTest extends AdmissionFixture {
     void invalidTokensNeverReserveCapacity() {
         var gate = gate();
         for (int i = 0; i < 1000; i++) {
-            assertNull(gate.reserve(request("invalidToken", remote), now, 0));
+            assertNull(reserve(gate, request("invalidToken", remote), now, 0));
         }
         assertEquals(0, gate.stats().sessions());
         assertEquals(0, gate.stats().claims());
@@ -126,7 +126,7 @@ class TicketLedgerTest extends AdmissionFixture {
         try {
             List<Callable<TicketLedger.Reservation>> calls = new ArrayList<>();
             for (int i = 0; i < 64; i++) {
-                calls.add(() -> gate.reserve(request(), now, 0));
+                calls.add(() -> reserve(gate, request(), now, 0));
             }
             int reserved = 0;
             for (var result : executor.invokeAll(calls)) {
@@ -139,20 +139,20 @@ class TicketLedgerTest extends AdmissionFixture {
             executor.shutdown();
         }
         assertEquals(1, gate.stats().sessions());
-        assertNull(gate.reserve(elsewhere(), now, 0));
+        assertNull(reserve(gate, elsewhere(), now, 0));
     }
 
     @Test
     void nativeVerificationFailureDoesNotConsumeToken() {
         var gate = gate();
-        var forged = gate.reserve(request(), now, 0);
+        var forged = reserve(gate, request(), now, 0);
         assertNotNull(forged);
         assertEquals(0, gate.stats().accepted());
         gate.invalidNativeRequest();
         assertTrue(gate.finish(forged));
         assertEquals(0, gate.stats().claims());
         assertEquals(0, gate.stats().sessions());
-        var legitimate = gate.reserve(elsewhere(), now, 1);
+        var legitimate = reserve(gate, elsewhere(), now, 1);
         assertNotNull(legitimate);
         assertTrue(gate.ready(legitimate));
         assertFalse(gate.ready(legitimate));
@@ -162,17 +162,17 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void acceptedTokensCannotAllocateAgainAndActiveSessionsOutliveTokenExpiry() {
         var gate = gate();
-        var r = gate.reserve(request(), now, 0);
+        var r = reserve(gate, request(), now, 0);
         assertTrue(gate.ready(r));
         gate.connected(r);
         gate.verifier(r).acceptForwardedIdentity();
-        assertNull(gate.reserve(elsewhere(), now, 0));
+        assertNull(reserve(gate, elsewhere(), now, 0));
         assertEquals(1, gate.stats().replayRejected());
         assertTrue(gate.sweep(now + 120_000, 120_000_000_000L).isEmpty());
         assertNotNull(gate.admission(r));
         assertTrue(gate.finish(r));
         assertNull(gate.admission(r));
-        assertNull(gate.reserve(request(), now, 0));
+        assertNull(reserve(gate, request(), now, 0));
         assertEquals(1, gate.stats().claims());
         gate.sweep(now + 120_000, 120_000_000_000L);
         assertEquals(0, gate.stats().claims());
@@ -181,7 +181,7 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void timeoutAndShutdownKeepCapacityUntilNativeTeardownCompletes() {
         var gate = gate();
-        var r = gate.reserve(request(), now, 0);
+        var r = reserve(gate, request(), now, 0);
         assertTrue(gate.ready(r));
         assertEquals(List.of(r), gate.sweep(now + 1000, 1_000_000_000L));
         assertTrue(gate.sweep(now + 2000, 2_000_000_000L).isEmpty());
@@ -190,12 +190,12 @@ class TicketLedgerTest extends AdmissionFixture {
         assertTrue(gate.finish(r));
         assertEquals(0, gate.stats().sessions());
         gate = gate();
-        r = gate.reserve(request(), now, 0);
+        r = reserve(gate, request(), now, 0);
         assertEquals(List.of(r), gate.close());
         assertFalse(gate.ready(r));
         assertNull(gate.admission(r));
         assertEquals(1, gate.stats().sessions());
-        assertNull(gate.reserve(request(), now, 0));
+        assertNull(reserve(gate, request(), now, 0));
         assertTrue(gate.finish(r));
         assertEquals(0, gate.stats().sessions());
         assertEquals(0, gate.stats().claims());
@@ -204,10 +204,10 @@ class TicketLedgerTest extends AdmissionFixture {
     @Test
     void closingHandsBackForClosingOnlyTheSessionsWhoseLoginWasNotAccepted() throws Exception {
         var gate = gate();
-        var player = gate.reserve(request(), now, 0);
+        var player = reserve(gate, request(), now, 0);
         assertTrue(gate.ready(player));
         gate.verifier(player).acceptForwardedIdentity();
-        var undecided = gate.reserve(new AdmissionRequest(anotherToken(), remote, other), now, 0);
+        var undecided = reserve(gate, new AdmissionRequest(anotherToken(), remote, other), now, 0);
         assertTrue(gate.ready(undecided));
 
         assertEquals(List.of(undecided), gate.close());
@@ -220,7 +220,7 @@ class TicketLedgerTest extends AdmissionFixture {
         assertTrue(gate.isServing());
         gate.drain();
         assertFalse(gate.isServing());
-        assertNull(gate.reserve(request(), now, 0));
+        assertNull(reserve(gate, request(), now, 0));
         assertEquals(0, gate.stats().claims());
         assertEquals(1, gate.stats().capacityRejected());
     }
@@ -230,12 +230,53 @@ class TicketLedgerTest extends AdmissionFixture {
         // An assisted join knows only the candidates the client claims, which must not block a tuple
         var gate = gate();
         var assisted = validator().validate(request(), now);
-        assertNotNull(gate.reserveAuthenticated(assisted, null, 0, now, 0));
-        assertNull(gate.reserveAuthenticated(validator().validate(request(), now), null, 0, now, 0),
+        assertNotNull(gate.reserve(assisted, null, 0, now, 0));
+        assertNull(gate.reserve(validator().validate(request(), now), null, 0, now, 0),
                 "the same ticket twice is a replay");
 
-        assertNotNull(gate.reserve(request(anotherToken(), remote), now, 0),
+        assertNotNull(reserve(gate, request(anotherToken(), remote), now, 0),
                 "a stateless ticket from the claimed address still gets in");
         assertEquals(2, gate.stats().sessions());
+    }
+
+    @Test
+    void aDiagnosticAttemptRunsOnceUntilItsPermitExpires() {
+        var gate = gate();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        var record = gate.recordDiagnostic(attempt, now + 30_000, now);
+        assertNotNull(record);
+        assertNull(gate.recordDiagnostic(attempt, now + 30_000, now), "a second permit for the attempt is a replay");
+        gate.finishDiagnostic(record, true);
+        assertNull(gate.recordDiagnostic(attempt, now + 30_000, now + 29_999), "its peer used the attempt up");
+        assertEquals(List.of(), gate.sweep(now + 30_000, 0));
+        assertEquals(0, gate.stats().diagnostics(), "the record goes with the permit");
+        assertEquals(0, gate.stats().sessions(), "a diagnostic is no player");
+        assertNotNull(gate.recordDiagnostic(attempt, now + 60_000, now + 30_000));
+    }
+
+    @Test
+    void aDiagnosticAttemptThatGotNoPeerCanRunAgain() {
+        var gate = gate();
+        String attempt = "fedcba9876543210fedcba9876543210";
+        var refused = gate.recordDiagnostic(attempt, now + 30_000, now);
+        gate.finishDiagnostic(refused, false);
+        var record = gate.recordDiagnostic(attempt, now + 30_000, now);
+        assertNotNull(record);
+        gate.finishDiagnostic(refused, false);
+        assertNull(gate.recordDiagnostic(attempt, now + 30_000, now), "an old record cannot release a newer one");
+    }
+
+    @Test
+    void diagnosticRecordsAreBoundedAndEndWithTheLedger() {
+        var gate = gate();
+        for (int i = 0; i < TicketLedger.MAX_DIAGNOSTIC_RECORDS; i++) {
+            assertNotNull(gate.recordDiagnostic("%032x".formatted(i), now + 30_000, now));
+        }
+        assertNull(gate.recordDiagnostic("%032x".formatted(99), now + 30_000, now), "the history is full");
+        assertEquals(1, gate.stats().capacityRejected());
+
+        var other = gate();
+        other.close();
+        assertNull(other.recordDiagnostic("%032x".formatted(1), now + 30_000, now));
     }
 }
