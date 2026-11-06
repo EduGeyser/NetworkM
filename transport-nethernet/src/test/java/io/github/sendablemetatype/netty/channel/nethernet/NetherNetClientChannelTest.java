@@ -1,6 +1,8 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherNetAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
@@ -10,6 +12,11 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
+import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
@@ -26,6 +33,8 @@ import java.net.SocketAddress;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
+import java.security.KeyPair;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -72,6 +81,93 @@ class NetherNetClientChannelTest {
             assertEquals(List.of(new FakePeer.RemoteCandidate("candidate:remote", "0")), peer.remoteCandidates());
             assertEquals(List.of(ANSWER), peer.remoteAnswers());
             assertEquals(256 * 262143, h.channel.maxMessageSize());
+        }
+    }
+
+    @Test
+    void signalingThatDoesNotTrickleGetsTheGatheredOfferAndNoCandidates() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            peer.localCandidate("candidate:1", "0");
+            h.pump();
+            assertTrue(h.signaling.sent.isEmpty(), "the offer waits for gathering");
+
+            String gathered = OFFER + "a=candidate:1\r\na=end-of-candidates\r\n";
+            peer.gatheringComplete(gathered);
+            h.pump();
+            assertEquals(List.of("CONNECTREQUEST " + h.connectionId() + " " + gathered), h.signaling.sent);
+        }
+    }
+
+    @Test
+    void anAttemptMakesRoomForTheSignalingsAnswerWaitUntilTheAnswerArrives() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            h.signaling.answerTimeout = Duration.ofMillis(1000);
+            h.connect();
+            h.advance(1099);
+            assertEquals(1, h.signaling.connections.size(), "no retry while the signaling connects");
+
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            peer.gatheringComplete(OFFER);
+            h.pump();
+            h.advance(1099);
+            assertEquals(1, h.signaling.connections.size(), "no retry while the answer can still arrive");
+
+            h.signaling.signalHandlers.getLast().onSignal(
+                    NetherNetConstants.buildSignalConnectResponse(h.connectionId(), ANSWER));
+            h.pump();
+            h.advance(99);
+            assertEquals(1, h.signaling.connections.size());
+            h.advance(1);
+            assertEquals(2, h.signaling.connections.size(), "once answered, the handshake timeout applies");
+        }
+    }
+
+    @Test
+    void aSignalingFailureEndsTheConnectWithItsReasonAndFailure() {
+        try (Harness h = new Harness()) {
+            List<NetherConnectionFailure> failures = new ArrayList<>();
+            h.channel.config().setOption(NetherChannelOption.NETHER_METRICS, new NetherChannelMetrics() {
+                @Override
+                public void connectionFailed(NetherConnectionFailure reason) {
+                    failures.add(reason);
+                }
+            });
+            ChannelFuture connect = h.connect();
+            h.start().completeOffer(OFFER);
+            h.pump();
+
+            h.signaling.signalHandlers.getLast().onFailure(h.connectionId(),
+                    new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR, 16, "HTTP 401"));
+            h.pump();
+
+            ConnectException failure = assertInstanceOf(ConnectException.class, connect.cause());
+            assertTrue(failure.getMessage().endsWith(": HTTP 401"), failure.getMessage());
+            assertEquals(List.of(NetherConnectionFailure.CONNECT_ERROR), failures);
+            assertFalse(h.channel.isOpen());
+            h.advance(1000);
+            assertEquals(1, h.signaling.connections.size(), "no retry after the server refused");
+        }
+    }
+
+    @Test
+    void theOfferCarriesTheClientIdentityAsAProvenKey() throws Exception {
+        try (Harness h = new Harness()) {
+            KeyPair key = OfferFixtures.CLIENT_KEY;
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_IDENTITY, ClientIdentity.of(key,
+                    OfferFixtures.educationToken(OfferFixtures.educationClaims(key.getPublic()), key), ""));
+            h.connect();
+            h.start().completeOffer(OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            h.pump();
+
+            String offer = h.signaling.sent.getFirst().split(" ", 3)[2];
+            OfferCheckResult result = new OfferCheck(List.of()).check(offer);
+            assertEquals(OfferCheckResult.Level.KEY_PROVEN, result.level());
         }
     }
 
@@ -503,6 +599,8 @@ class NetherNetClientChannelTest {
         private RuntimeException connectFailure;
         private RuntimeException removeFailure;
         private int closes;
+        private boolean trickles = true;
+        private Duration answerTimeout = Duration.ZERO;
 
         @Override
         public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
@@ -525,6 +623,8 @@ class NetherNetClientChannelTest {
                 throw failure;
             }
         }
+        @Override public boolean trickles() { return trickles; }
+        @Override public Duration answerTimeout() { return answerTimeout; }
         @Override public String getLocalNetworkId() { return "local"; }
         @Override public void close() { closes++; }
     }

@@ -18,8 +18,6 @@ package io.github.sendablemetatype.netty.util.nethernet;
 
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.jose4j.jws.AlgorithmIdentifiers;
-import org.jose4j.jws.JsonWebSignature;
 import org.jose4j.jwt.JwtClaims;
 import org.jose4j.lang.JoseException;
 
@@ -41,13 +39,10 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.security.GeneralSecurityException;
-import java.security.InvalidKeyException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.PrivateKey;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
-import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -67,28 +62,19 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 public final class ServerIdentity {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(ServerIdentity.class);
-    private static final String ALG = AlgorithmIdentifiers.ECDSA_USING_P384_CURVE_AND_SHA384;
     private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rw-------");
 
-    private final PrivateKey privateKey;
+    private final AssertionSigner signer;
     private final ECPublicKey publicKey;
     private final String domain;
     private final String token;
 
     private ServerIdentity(KeyPair pair, String domain) throws GeneralSecurityException {
         this.domain = Objects.requireNonNull(domain, "domain");
-        this.privateKey = pair.getPrivate();
-        this.publicKey = IdentityPublicKey.fromCanonical(IdentityPublicKey.canonical(pair.getPublic()));
+        this.signer = new AssertionSigner(pair, "server identity");
+        this.publicKey = signer.publicKey();
         try {
             this.token = buildToken();
-            // A private key that does not belong to the public key would sign answers no client
-            // accepts, and players would only see "not invited"; fail at startup instead.
-            JsonWebSignature check = new JsonWebSignature();
-            check.setCompactSerialization(token);
-            check.setKey(publicKey);
-            if (!check.verifySignature()) {
-                throw new InvalidKeyException("The server identity's private and public keys do not match");
-            }
         } catch (JoseException e) {
             throw new GeneralSecurityException("Cannot sign the server identity token", e);
         }
@@ -191,29 +177,7 @@ public final class ServerIdentity {
      * @throws IllegalArgumentException if the answer has no well-formed fingerprint line
      */
     public String augmentAnswer(String answerSdp) throws JoseException {
-        String line = "a=identity:" + identityValue(answerSdp);
-        String eol = answerSdp.contains("\r\n") ? "\r\n" : "\n";
-        String[] lines = answerSdp.split("\r\n|\n", -1);
-        List<String> out = new ArrayList<>(lines.length + 1);
-        boolean inserted = false;
-        for (String current : lines) {
-            if (!inserted && current.startsWith("m=")) {
-                out.add(line);
-                inserted = true;
-            }
-            out.add(current);
-        }
-        if (!inserted) {
-            out.add(line);
-        }
-        return String.join(eol, out);
-    }
-
-    /** The base64 envelope for one answer: the token and a detached signature over its fingerprints. */
-    String identityValue(String answerSdp) throws JoseException {
-        String[] signed = sign(OfferAssertion.answerFingerprintJson(answerSdp)).split("\\.");
-        Identity.Assertion assertion = new Identity.Assertion(token, signed[0] + ".." + signed[2]);
-        return new Identity(new Identity.Idp(domain, "default"), assertion).toBase64();
+        return signer.withAssertion(answerSdp, token, domain);
     }
 
     /**
@@ -228,15 +192,7 @@ public final class ServerIdentity {
         if (!domain.isBlank()) {
             claims.setIssuer(domain);
         }
-        return sign(claims.toJson());
-    }
-
-    private String sign(String payload) throws JoseException {
-        JsonWebSignature jws = new JsonWebSignature();
-        jws.setPayload(payload);
-        jws.setKey(privateKey);
-        jws.setAlgorithmHeaderValue(ALG);
-        return jws.getCompactSerialization();
+        return signer.sign(claims.toJson());
     }
 
     private static KeyPair generate() throws GeneralSecurityException {

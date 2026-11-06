@@ -3,6 +3,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import com.sun.net.httpserver.HttpServer;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetHttpClientSignaling.Probe;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings;
@@ -280,6 +281,33 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void aFailureReachesATypedHandlerWithItsReason() throws Exception {
+        startForeign(200, "37", null);
+        BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
+        NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(
+                trusting().withScheme(Scheme.HTTP), group, "client-1");
+        client.setSignalHandler(CONNECTION_ID, new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(String signal) {
+                signals.add(signal);
+            }
+
+            @Override
+            public void onFailure(long connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        });
+        client.connect(address).get(15, TimeUnit.SECONDS);
+
+        client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+
+        SignalingFailure failure = failures.poll(15, TimeUnit.SECONDS);
+        assertEquals(new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR, JoinRefusal.INTERNAL.errorCode(),
+                "HTTP 200 without an SDP answer: 37"), failure);
+        assertTrue(signals.isEmpty());
+    }
+
+    @Test
     void answerWaitIsConfigurable() throws Exception {
         startServer(null);
         NetherNetHttpClientSignaling client = connected(trusting().withAnswerTimeout(Duration.ofMillis(300)));
@@ -291,6 +319,43 @@ class NetherNetHttpClientSignalingTest {
                 + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
         // The client hung up, which the server reports as an abandoned join
         join.reply().abandoned().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void aTlsHandshakeTheServerNeverAnswersWaitsForTheAnswerDeadline() throws Exception {
+        // Accepts connections (the backlog does) and never sends a byte
+        try (ServerSocket silent = new ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))) {
+            address = new InetSocketAddress("127.0.0.1", silent.getLocalPort());
+            // Past Netty's own 10 s handshake timer, which used to end the wait as a TLS refusal
+            NetherNetHttpClientSignaling client = connected(trusting().withScheme(Scheme.HTTPS)
+                    .withAnswerTimeout(Duration.ofSeconds(11)));
+            long start = System.nanoTime();
+
+            client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+
+            assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
+                    + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+            assertTrue(System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(11));
+        }
+    }
+
+    @Test
+    void aLoopGroupThatShutDownFailsRequestsInsteadOfLeavingThemPending() throws Exception {
+        EventLoopGroup stopped = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        stopped.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
+        InetSocketAddress nowhere = new InetSocketAddress("127.0.0.1", 9);
+        HttpClientSettings plain = HttpClientSettings.DEFAULT.withScheme(Scheme.HTTP);
+
+        ExecutionException probe = assertThrows(ExecutionException.class,
+                () -> NetherNetHttpClientSignaling.probe(nowhere, plain, stopped, null).get(5, TimeUnit.SECONDS));
+        assertInstanceOf(ConnectException.class, probe.getCause());
+
+        NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(plain, stopped, "client-1");
+        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.connect(nowhere).get(5, TimeUnit.SECONDS);
+        client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
+                + JoinRefusal.INTERNAL.errorCode(), nextSignal());
     }
 
     @Test

@@ -30,6 +30,6 @@ public enum NetherConnectionFailure {
     PEER_FAILED,
     /** The peer closed before the channel became active. */
     PEER_CLOSED,
-    /** Applying the descriptions or creating the peer failed. */
+    /** Exchanging or applying the descriptions, or creating the peer, failed. */
     NEGOTIATION_FAILED
 }

@@ -346,7 +346,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
         channel.closeFuture().addListener(future -> limits.closed());
         HttpConnection connection = new HttpConnection(channel, limits);
         InetSocketAddress peer = (InetSocketAddress) channel.remoteAddress();
-        // A proxy's clients count by the source it declares, once that is read
+        // A proxy's clients count by the source it declares: in its PROXY header, or in each
+        // request's headers (HttpSourceCounter)
         if (!trustedProxies.isProxy(peer) && !connection.countAddress(peer.getAddress())) {
             log.debug("Refused a signaling connection from {}: its address holds its share", peer);
             channel.close();
@@ -360,25 +361,16 @@ public final class NetherNetHttpSignaling implements JoinSource {
         HttpServerCodec codec = new HttpServerCodec();
         pipeline.addLast(codec);
         pipeline.addLast(new HttpRequestBudget(connection, codec));
+        if (trustedProxies.isProxy(peer)) {
+            pipeline.addLast(new HttpSourceCounter(this, connection));
+        }
         pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
         pipeline.addLast(new HttpRequestHandler(this, connection));
     }
 
-    /**
-     * Where a request came from, counting a proxied client against its address the first time it
-     * is known.
-     *
-     * @return the source, or null when the client's address holds its share and the connection
-     *         is closing
-     */
+    /** Where a request came from. */
     SourcedAddress sourceOf(HttpConnection connection, InetSocketAddress peer, List<String> forwardedFor) {
-        SourcedAddress source = SourcedAddress.signaling(peer, connection.proxyDeclared, forwardedFor, trustedProxies);
-        if (!connection.addressCounted && !connection.countAddress(source.address().getAddress())) {
-            log.debug("Refused a signaling connection for {}: its address holds its share", source);
-            connection.channel.close();
-            return null;
-        }
-        return source;
+        return SourcedAddress.signaling(peer, connection.proxyDeclared, forwardedFor, trustedProxies);
     }
 
     /** Counts a client a PROXY protocol header declared. */

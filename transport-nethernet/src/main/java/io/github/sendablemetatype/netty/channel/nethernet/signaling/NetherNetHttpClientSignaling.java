@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerStatus;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.HttpClientSettings;
@@ -27,11 +28,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -58,6 +60,7 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import javax.net.ssl.SSLException;
+import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -74,9 +77,11 @@ import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -90,8 +95,8 @@ import java.util.function.Function;
  * not a NetherNet status (a web page, say) fails it too. The offer then goes out as
  * {@code POST /v1/join/{localNetworkId}} on the scheme that answered, and its answer comes back as
  * a {@code CONNECTRESPONSE} signal; a refusal, a {@code 2xx} without an SDP (vanilla BDS answers a
- * refused offer with {@code 200} and body {@code 37}) or a transport failure as a
- * {@code CONNECTERROR}. HTTP carries nothing after the offer, so the offer has to hold every
+ * refused offer with {@code 200} and body {@code 37}), no answer in time or a transport failure
+ * as a {@link SignalingFailure}. HTTP carries nothing after the offer, so the offer has to hold every
  * candidate; candidate signals are dropped.
  * <p>
  * Requests are HTTP/1.1 with {@code Connection: close}, follow no redirects, and quote at most
@@ -219,6 +224,19 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         });
     }
 
+    /** False: HTTP carries one offer with every candidate in it, and one answer. */
+    @Override
+    public boolean trickles() {
+        return false;
+    }
+
+    /** The longer of the status request's wait and the settings' answer wait. */
+    @Override
+    public Duration answerTimeout() {
+        Duration answer = settings.answerTimeout();
+        return answer.compareTo(STATUS_TIMEOUT) >= 0 ? answer : STATUS_TIMEOUT;
+    }
+
     /**
      * Posts the offer of a {@code CONNECTREQUEST}. Candidate and error signals are dropped: HTTP
      * carries nothing after the offer.
@@ -239,8 +257,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         Target current = target;
         if (closed || current == null) {
-            fail(connectionId, current, "HTTP client signaling is " + (closed ? "closed" : "not connected"),
-                    JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
+                    JoinRefusal.INTERNAL.errorCode(), "HTTP client signaling is " + (closed ? "closed" : "not connected")));
             return;
         }
         String path = "/v1/join/" + URLEncoder.encode(localNetworkId, StandardCharsets.UTF_8).replace("+", "%20");
@@ -258,21 +276,23 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         if (error != null) {
             Throwable cause = unwrap(error);
-            fail(connectionId, current, "could not reach the signaling endpoint: " + describe(cause),
-                    cause instanceof TimeoutException ? JoinRefusal.NO_ANSWER_IN_TIME.errorCode()
-                            : JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, cause instanceof TimeoutException
+                    ? new SignalingFailure(NetherConnectionFailure.HANDSHAKE_TIMEOUT,
+                            JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), "the signaling endpoint did not answer in time")
+                    : new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED, JoinRefusal.INTERNAL.errorCode(),
+                            "could not reach the signaling endpoint: " + describe(cause)));
             return;
         }
         if (response.status() / 100 != 2) {
-            fail(connectionId, current, "HTTP " + response.status() + reason(response.body()),
-                    errorCodeFor(response.status()));
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
+                    errorCodeFor(response.status()), "HTTP " + response.status() + reason(response.body())));
             return;
         }
         // A refusal can arrive as a 2xx with a short body instead of an SDP, as vanilla BDS does
         if (!response.body().startsWith("v=")) {
-            fail(connectionId, current,
-                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body()),
-                    JoinRefusal.INTERNAL.errorCode());
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
+                    JoinRefusal.INTERNAL.errorCode(),
+                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body())));
             return;
         }
         SignalHandler handler = handlers.get(connectionId);
@@ -281,12 +301,11 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
     }
 
-    private void fail(long connectionId, Target current, String reason, int errorCode) {
-        log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), reason);
+    private void fail(long connectionId, Target current, SignalingFailure failure) {
+        log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), failure.reason());
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
-            handler.onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " "
-                    + Long.toUnsignedString(connectionId) + " " + errorCode);
+            handler.onFailure(connectionId, failure);
         }
     }
 
@@ -367,7 +386,9 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     /**
-     * Runs one request on a connection of its own.
+     * Runs one request on a connection of its own. The timeout covers all of it: the name lookup,
+     * the connection, the TLS handshake and the response. The result always completes, also when
+     * the loop group is shutting down, and the request is released whether or not it was written.
      *
      * @param ssl the client context for HTTPS, or null for plain HTTP
      */
@@ -375,13 +396,35 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                                                         FullHttpRequest request, Duration timeout,
                                                         EventLoopGroup group, ChannelGroup exchanges) {
         CompletableFuture<Response> result = new CompletableFuture<>();
+        // Taken by the write once connected; whatever ends the exchange first releases it otherwise
+        AtomicReference<FullHttpRequest> unsent = new AtomicReference<>(request);
+        result.whenComplete((response, failure) -> {
+            FullHttpRequest left = unsent.getAndSet(null);
+            if (left != null) {
+                left.release();
+            }
+        });
+        try {
+            ScheduledFuture<?> deadline = group.next().schedule(() -> {
+                result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
+            }, timeout.toNanos(), TimeUnit.NANOSECONDS);
+            result.whenComplete((response, failure) -> deadline.cancel(false));
+        } catch (RejectedExecutionException e) {
+            // The loop group is shutting down
+            result.completeExceptionally(e);
+            return result;
+        }
         resolve(address).whenComplete((resolved, failure) -> {
             if (failure != null) {
-                request.release();
                 result.completeExceptionally(unwrap(failure));
                 return;
             }
-            connect(address, resolved, ssl, request, timeout, group, exchanges, result);
+            try {
+                connect(address, resolved, ssl, unsent, group, exchanges, result);
+            } catch (RuntimeException e) {
+                // Thrown into a stage nobody reads, it would leave the result pending forever
+                result.completeExceptionally(e);
+            }
         });
         return result;
     }
@@ -401,7 +444,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     private static void connect(InetSocketAddress address, InetSocketAddress resolved, SslContext ssl,
-                                FullHttpRequest request, Duration timeout, EventLoopGroup group,
+                                AtomicReference<FullHttpRequest> unsent, EventLoopGroup group,
                                 ChannelGroup exchanges, CompletableFuture<Response> result) {
         Bootstrap bootstrap = new Bootstrap()
                 .group(group)
@@ -414,12 +457,15 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                         ChannelPipeline pipeline = channel.pipeline();
                         SslHandler tls = null;
                         if (ssl != null) {
-                            ServerBytes serverBytes = new ServerBytes();
+                            ServerSide server = new ServerSide();
                             tls = ssl.newHandler(channel.alloc(), address.getHostString(), address.getPort());
-                            pipeline.addLast(serverBytes, tls);
+                            // The exchange's deadline bounds the handshake too; Netty's own 10 s
+                            // timer would end a stalled handshake with a failure of its own
+                            tls.setHandshakeTimeoutMillis(0);
+                            pipeline.addLast(server, tls);
                             tls.handshakeFuture().addListener(handshake -> {
                                 if (!handshake.isSuccess()) {
-                                    result.completeExceptionally(tlsFailure(handshake.cause(), serverBytes.seen));
+                                    result.completeExceptionally(tlsFailure(handshake.cause(), server));
                                 }
                             });
                         }
@@ -428,57 +474,90 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                     }
                 });
         ChannelFuture connected = bootstrap.connect(resolved);
+        if (connected.isDone() && !connected.isSuccess()) {
+            // A loop that no longer takes tasks refuses the registration at once, and would not run
+            // a listener either
+            result.completeExceptionally(connected.cause());
+            return;
+        }
         Channel channel = connected.channel();
         if (exchanges != null) {
             exchanges.add(channel);
         }
-        ScheduledFuture<?> deadline = channel.eventLoop().schedule(() -> {
-            result.completeExceptionally(new TimeoutException("no response within " + timeout.toMillis() + " ms"));
-            channel.close();
-        }, timeout.toNanos(), TimeUnit.NANOSECONDS);
-        result.whenComplete((response, failure) -> {
-            deadline.cancel(false);
-            channel.close();
-        });
+        result.whenComplete((response, failure) -> channel.close());
         connected.addListener(future -> {
             if (!future.isSuccess()) {
-                request.release();
                 result.completeExceptionally(future.cause());
                 return;
             }
-            channel.writeAndFlush(request).addListener(written -> {
-                if (!written.isSuccess()) {
-                    result.completeExceptionally(written.cause());
-                }
-            });
+            FullHttpRequest request = unsent.getAndSet(null);
+            if (request != null) {
+                channel.writeAndFlush(request).addListener(written -> {
+                    if (!written.isSuccess()) {
+                        result.completeExceptionally(written.cause());
+                    }
+                });
+            }
         });
     }
 
     /**
      * Whether a failed handshake is the server refusing TLS, the one case the retail client falls
-     * back to plain HTTP for: it closed or reset before sending anything, or what it sent was not
-     * TLS. Anything else, such as a certificate the client rejects or an alert, is final.
+     * back to plain HTTP for: it closed or reset the connection before sending anything, or what it
+     * sent was not TLS. Anything else is final: a certificate the client rejects, an alert, and a
+     * handshake that ended without the server ending it (a timeout, or this side closing).
      */
-    private static SSLException tlsFailure(Throwable cause, boolean serverSpoke) {
+    private static SSLException tlsFailure(Throwable cause, ServerSide server) {
         for (Throwable t = cause; t != null; t = t.getCause()) {
             if (t instanceof NotSslRecordException) {
                 return new TlsRefusedException("the server did not answer with TLS", cause);
             }
         }
-        if (!serverSpoke) {
+        if (!server.spoke && server.ended) {
             return new TlsRefusedException("the server closed the connection before answering", cause);
         }
         return cause instanceof SSLException ssl ? ssl : new SSLException(cause.toString(), cause);
     }
 
-    /** Notes whether the server sent anything, which tells a refused handshake from a failed one. */
-    private static final class ServerBytes extends ChannelInboundHandlerAdapter {
-        volatile boolean seen;
+    /**
+     * What the server did on a TLS connection, which tells a refused handshake from a failed one.
+     * First in the pipeline, so it sees the server's bytes, a reset and the end of the connection
+     * before the TLS handler fails the handshake.
+     */
+    private static final class ServerSide extends ChannelDuplexHandler {
+        /** Whether the server sent any byte. */
+        boolean spoke;
+        /** Whether the server ended the connection: closed it, or reset it. */
+        boolean ended;
+        private boolean closing;
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            seen = true;
+            spoke = true;
             ctx.fireChannelRead(msg);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            if (cause instanceof IOException) {
+                ended = true;
+            }
+            ctx.fireExceptionCaught(cause);
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            // A close this side asked for passed here on its way out; the server's close did not
+            if (!closing) {
+                ended = true;
+            }
+            super.channelInactive(ctx);
+        }
+
+        @Override
+        public void close(ChannelHandlerContext ctx, ChannelPromise promise) throws Exception {
+            closing = true;
+            super.close(ctx, promise);
         }
     }
 

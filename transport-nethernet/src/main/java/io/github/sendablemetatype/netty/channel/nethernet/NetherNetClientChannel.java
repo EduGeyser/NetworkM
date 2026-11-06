@@ -13,10 +13,14 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
+import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import org.jose4j.lang.JoseException;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -27,16 +31,19 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * A NetherNet client: offers a connection over trickle signaling and opens
- * the two data channels. A handshake that does not finish in time is retried
- * with a new peer and connection ID; once connected, a failing peer ends the
- * connection like on the server.
+ * A NetherNet client: offers a connection over its signaling and opens the
+ * two data channels. Over signaling that trickles, candidates follow the
+ * offer one by one; otherwise the offer waits for gathering and carries them
+ * all. A handshake that does not finish in time is retried with a new peer
+ * and connection ID; once connected, a failing peer ends the connection like
+ * on the server.
  */
 public class NetherNetClientChannel extends NetherNetChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetClientChannel.class);
@@ -183,22 +190,27 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         log.debug("Starting Handshake with Connection ID: {}", Long.toUnsignedString(this.connectionId));
 
-        cancelHandshakeTimeout();
-
-        int handshakeTimeout = this.config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
-        handshakeTimeoutTask = eventLoop().schedule(() -> {
-            if (isCurrentHandshake(gen)) {
-                connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
-                resetAndRetryHandshake();
-            }
-        }, handshakeTimeout, TimeUnit.MILLISECONDS);
+        armHandshakeTimeout(gen, handshakeTimeoutMillis() + signalingWaitMillis());
 
         try {
             signaling.setNotFoundHandler(reason -> executeForAttempt(gen, () ->
                     failHandshake(gen, "Target Network ID " + this.targetNetworkId + " not found or offline", null)));
-            signaling.setSignalHandler(this.connectionId, signal -> {
-                if (isCurrentAttempt(gen)) {
-                    handleSignal(signal);
+            signaling.setSignalHandler(this.connectionId, new NetherNetSignaling.SignalHandler() {
+                @Override
+                public void onSignal(String signal) {
+                    if (isCurrentAttempt(gen)) {
+                        handleSignal(signal);
+                    }
+                }
+
+                @Override
+                public void onFailure(long id, SignalingFailure failure) {
+                    executeForAttempt(gen, () -> {
+                        if (isCurrentHandshake(gen)) {
+                            connectionFailed(failure.failure());
+                            failHandshake(gen, "The signaling gave up on the offer: " + failure.reason(), null);
+                        }
+                    });
                 }
             });
             signaling.connect(remoteAddress).whenComplete((iceServers, failure) -> executeForAttempt(gen, () -> {
@@ -253,6 +265,30 @@ public class NetherNetClientChannel extends NetherNetChannel {
         connectPromise.tryFailure(failure);
         cancelHandshakeTimeout();
         close();
+    }
+
+    /** Starts the attempt's deadline over: past it, the attempt is retried. */
+    private void armHandshakeTimeout(int gen, long millis) {
+        cancelHandshakeTimeout();
+        handshakeTimeoutTask = eventLoop().schedule(() -> {
+            if (isCurrentHandshake(gen)) {
+                connectionFailed(NetherConnectionFailure.HANDSHAKE_TIMEOUT);
+                resetAndRetryHandshake();
+            }
+        }, millis, TimeUnit.MILLISECONDS);
+    }
+
+    private long handshakeTimeoutMillis() {
+        return config().getOption(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS);
+    }
+
+    /**
+     * How long the signaling may wait for an answer of its own. Until the answer is here, an
+     * attempt's deadline makes room for it: HTTP waits 20 s for an answer by default, and a retry
+     * would probe and post again while that answer can still arrive.
+     */
+    private long signalingWaitMillis() {
+        return signaling.answerTimeout().toMillis();
     }
 
     private void cancelHandshakeTimeout() {
@@ -313,22 +349,37 @@ public class NetherNetClientChannel extends NetherNetChannel {
         bindUnreliable(created.openChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL)));
 
         final long attemptConnectionId = this.connectionId;
-        created.offer().whenComplete((offer, failure) -> executeForAttempt(gen, () -> {
+        CompletionStage<String> offered = created.offer();
+        // Signaling that does not trickle carries every candidate in the offer, so it waits for
+        // gathering, as vanilla's HTTP offers do (they carry host candidates).
+        CompletionStage<String> description = signaling.trickles() ? offered
+                : offered.thenCompose(ignored -> created.gatheredLocalDescription());
+        description.whenComplete((offer, failure) -> executeForAttempt(gen, () -> {
             if (failure != null) {
                 // The handshake timeout retries.
                 log.debug("Creating the offer failed: {}", failure.toString());
                 return;
             }
             mid = NetherNetConstants.applicationMid(offer);
+            String signed;
+            try {
+                signed = signed(offer);
+            } catch (JoseException | IllegalArgumentException e) {
+                failHandshake(gen, "Could not sign the offer with the client identity", e);
+                return;
+            }
             try {
                 signaling.sendSignal(targetNetworkId,
-                        NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, offer));
+                        NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, signed));
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
                 resetAndRetryHandshake();
                 return;
             }
             offerSent = true;
+            if (signalingWaitMillis() > 0) {
+                armHandshakeTimeout(gen, handshakeTimeoutMillis() + signalingWaitMillis());
+            }
             List<String> pending = pendingLocalCandidates;
             pendingLocalCandidates = new ArrayList<>();
             for (String candidate : pending) {
@@ -337,6 +388,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 }
             }
         }));
+    }
+
+    /** The offer with the configured identity's assertion, or as it is without one. */
+    private String signed(String offer) throws JoseException {
+        ClientIdentity identity = config().getOption(NetherChannelOption.NETHER_CLIENT_IDENTITY);
+        return identity == null ? offer : identity.withAssertion(offer);
     }
 
     private boolean sendLocalCandidate(long attemptConnectionId, String candidate) {
@@ -389,6 +446,10 @@ public class NetherNetClientChannel extends NetherNetChannel {
                     failHandshake(generation, "Invalid remote max-message-size", e);
                     return;
                 }
+                if (signalingWaitMillis() > 0) {
+                    // The answer is here: what is left is the handshake itself
+                    armHandshakeTimeout(generation, handshakeTimeoutMillis());
+                }
             }
             Peer current = peer();
             if (current == null) return;
@@ -431,6 +492,10 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         @Override
         public void onLocalCandidate(String candidate, String candidateMid) {
+            if (!signaling.trickles()) {
+                // The offer carries it
+                return;
+            }
             final long attemptConnectionId = connectionId;
             executeForAttempt(generation, () -> {
                 if (offerSent) {
@@ -443,7 +508,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         @Override
         public void onGatheringComplete() {
-            // Trickle signaling only: every candidate went out on its own.
+            // Trickling, every candidate went out on its own; otherwise the offer waits for
+            // the gathered description.
         }
 
         @Override
