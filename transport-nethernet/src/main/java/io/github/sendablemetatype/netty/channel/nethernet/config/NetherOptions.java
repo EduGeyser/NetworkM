@@ -139,6 +139,17 @@ final class NetherOptions {
             };
         }
 
+        /** An integer from {@code min} to {@code max}, both included. */
+        static Rule<Integer> between(int min, int max) {
+            return (option, value) -> {
+                Objects.requireNonNull(value, () -> option + " must not be null");
+                if (value < min || value > max) {
+                    throw new IllegalArgumentException(option + " must be from " + min + " to " + max + ", not " + value);
+                }
+                return value;
+            };
+        }
+
         /** A duration longer than zero. */
         static Rule<Duration> positiveDuration() {
             return (option, value) -> {

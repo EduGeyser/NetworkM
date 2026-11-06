@@ -1,8 +1,10 @@
 package io.github.sendablemetatype.netty.channel.nethernet.config;
 
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetChannel;
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Rule;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherOptions.Setting;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.DefaultChannelConfig;
@@ -19,6 +21,14 @@ import java.util.Map;
 public class DefaultNetherChannelConfig extends DefaultChannelConfig {
     public static final int DEFAULT_MAX_REASSEMBLED_BYTES = 16 * 1024 * 1024;
     public static final int DEFAULT_SEND_PAUSE_BYTES = 2 * 1024 * 1024;
+    /**
+     * The highest pause level: the channel hands the engine another segment while less than the
+     * pause level is queued, so the pause level and one segment of the largest size the channel
+     * sends ({@link NetherNetConstants#MAX_OUTBOUND_MESSAGE_SIZE}) must fit what every engine
+     * holds ({@link DataLink#SEND_QUEUE_CAPACITY}). 16 MiB less 256 KiB.
+     */
+    public static final int MAX_SEND_PAUSE_BYTES = DataLink.SEND_QUEUE_CAPACITY
+            - NetherNetConstants.MAX_OUTBOUND_MESSAGE_SIZE;
     public static final int DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 
     /** Every NetherNet option this config handles; subclasses declare theirs here too. */
@@ -27,7 +37,7 @@ public class DefaultNetherChannelConfig extends DefaultChannelConfig {
     private final Setting<Integer> maxReassembledBytes = options.add(NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES,
             DEFAULT_MAX_REASSEMBLED_BYTES, Rule.atLeast(1));
     private final Setting<Integer> sendPauseBytes = options.add(NetherChannelOption.NETHER_SEND_PAUSE_BYTES,
-            DEFAULT_SEND_PAUSE_BYTES, Rule.atLeast(1));
+            DEFAULT_SEND_PAUSE_BYTES, Rule.between(1, MAX_SEND_PAUSE_BYTES));
     private final Setting<Integer> maxQueuedBytes = options.add(NetherChannelOption.NETHER_MAX_QUEUED_BYTES,
             DEFAULT_MAX_QUEUED_BYTES, Rule.atLeast(1));
     private final Setting<NetherChannelMetrics> metrics = options.add(NetherChannelOption.NETHER_METRICS,
