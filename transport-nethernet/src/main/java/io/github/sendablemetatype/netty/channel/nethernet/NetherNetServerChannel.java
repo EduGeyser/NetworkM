@@ -155,6 +155,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     // Guarded by sourcesLock.
     private final Map<JoinSource, Registration> sources = new LinkedHashMap<>();
     private boolean sourcesStarted;
+    /**
+     * Removed sources still letting go of their ports, one stage each until it completes. Added to
+     * under sourcesLock with the removal, so the close sees every source either here or in sources.
+     */
+    private final Set<CompletableFuture<Void>> removedSources = ConcurrentHashMap.newKeySet();
 
     private volatile InetSocketAddress localAddress;
     /**
@@ -288,24 +293,30 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /**
      * Stops and closes a source. Its players stay connected; joins it delivered that have no child
-     * yet are refused at once and give back their share of the budget.
+     * yet are refused at once and give back their share of the budget. The endpoint's
+     * {@link #termination()} still waits for the source's own until it completes.
      *
      * @param source the source
      * @return whether the endpoint had it
      */
     public boolean removeSource(JoinSource source) {
         Registration registration;
+        CompletableFuture<Void> released = new CompletableFuture<>();
         synchronized (sourcesLock) {
             registration = sources.remove(source);
+            if (registration == null) {
+                return false;
+            }
+            // The endpoint's termination waits for it, also when the endpoint closes meanwhile
+            removedSources.add(released);
         }
-        if (registration == null) {
-            return false;
-        }
+        released.whenComplete((ignored, failure) -> removedSources.remove(released));
         registration.removed = true;
         // Before the source closes, so the refusals can still reach their clients.
         withdrawAdmissions(registration);
         registration.releaseHeldChecks();
         closeQuietly(source);
+        settled(source::termination).whenComplete((ignored, failure) -> released.complete(null));
         for (ChildlessPeer peer : childless) {
             if (peer.from == registration) {
                 peer.close();
@@ -643,8 +654,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /**
      * Completes once this endpoint is closed and has released everything it held: the termination
      * of every child and of every peer a source opened, the ports of its sources
-     * ({@link JoinSource#termination()}), its shared ICE port, and the engine it owns, if it owns
-     * one. A host that binds the same address again, as on a reload, waits for this first: the
+     * ({@link JoinSource#termination()}), also of sources removed before the close that have not let
+     * go of them yet, its shared ICE port, and the engine it owns, if it owns one. A host that binds the same address again, as on a reload, waits for this first: the
      * close future completes before any of it. Never completes exceptionally; a part that never
      * finishes its teardown keeps it pending, so wait with a timeout.
      *
@@ -906,10 +917,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     protected void doClose() throws Exception {
         ready.completeExceptionally(new ClosedChannelException());
         List<Registration> closing;
+        List<CompletableFuture<Void>> stillRemoving;
         synchronized (sourcesLock) {
             open = false;
             closing = List.copyOf(sources.values());
             sources.clear();
+            stillRemoving = List.copyOf(removedSources);
         }
         for (Registration registration : closing) {
             registration.removed = true;
@@ -918,8 +931,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // Before the sources close, so the refusals can still reach their clients. Without this,
         // a check the executor drops below would keep its share and throttle entry for good.
         List.copyOf(admitting).forEach(Admission::withdraw);
-        // What termination waits for: the sources' ports, and the chain from the peers to the engine.
-        List<CompletableFuture<Void>> released = new ArrayList<>();
+        // What termination waits for: the sources' ports, removed sources included, and the chain
+        // from the peers to the engine.
+        List<CompletableFuture<Void>> released = new ArrayList<>(stillRemoving);
         for (Registration registration : closing) {
             closeQuietly(registration.source);
             released.add(settled(registration.source::termination));

@@ -595,6 +595,26 @@ class NetherNetServerChannelTest {
         server.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
     }
 
+    @Test
+    void terminationWaitsForASourceRemovedBeforeTheCloseThatStillLetsGoOfItsPort() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource removed = harness.source(true);
+        CompletableFuture<Void> removedReleased = new CompletableFuture<>();
+        removed.termination = removedReleased;
+        FakeJoinSource released = harness.source(true);
+
+        assertTrue(server.removeSource(removed));
+        assertTrue(server.removeSource(released));
+        server.close().sync();
+        harness.sync();
+        assertTrue(removed.closed);
+        assertFalse(server.termination().toCompletableFuture().isDone(),
+                "the removed source still holds its port");
+
+        removedReleased.complete(null);
+        server.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    }
+
     // Peers without a child.
 
     @Test

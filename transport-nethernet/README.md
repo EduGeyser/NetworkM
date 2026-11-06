@@ -109,7 +109,7 @@ everything: peers, the ICE port and an owned engine close afterwards on the
 engine's threads. `termination()` completes once the children and the peers
 sources opened have terminated, the sources have let go of their ports
 (`JoinSource.termination()`: HTTP signaling's TCP listener, LAN discovery's UDP
-socket), the ICE port is closed, and an owned engine is closed. A host that binds
+socket), sources removed before the close included, the ICE port is closed, and an owned engine is closed. A host that binds
 the same address again, as on a reload, waits for it, with a timeout: a part
 whose teardown never finishes keeps it pending.
 
