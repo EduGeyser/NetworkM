@@ -2,7 +2,6 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetServerSignaling;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
 
@@ -27,40 +26,36 @@ public class NetherNetChannelFactory<T extends Channel> implements ChannelFactor
     }
 
     /**
-     * Server channels that each create the default engine once their signaling
-     * bound, and close it with themselves.
+     * Server endpoints that each create the default engine when they bind, and
+     * close it with themselves. Add join sources to each endpoint with
+     * {@link NetherNetServerChannel#addSource}.
      *
-     * @param signaling the signaling the joins arrive over
      * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(signaling));
+    public static ChannelFactory<NetherNetServerChannel> server() {
+        return new NetherNetChannelFactory<>(NetherNetServerChannel::new);
     }
 
     /**
-     * Server channels on the caller's engine. The channels never close it, so
+     * Server endpoints on the caller's engine. The endpoints never close it, so
      * it can serve several binds; its owner closes it after the last.
      *
      * @param engine the engine
-     * @param signaling the signaling the joins arrive over
      * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(NetherNetEngine engine, NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engine, signaling));
+    public static ChannelFactory<NetherNetServerChannel> server(NetherNetEngine engine) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engine));
     }
 
     /**
-     * Server channels that each own the engine the supplier returns, created
-     * once their signaling bound, so a bind that fails creates no engine
-     * state. Each channel closes its engine with itself.
+     * Server endpoints that each own the engine the supplier returns, created
+     * when they bind and closed with them.
      *
-     * @param engineSupplier creates one engine per channel
-     * @param signaling the signaling the joins arrive over
+     * @param engineSupplier creates one engine per endpoint
      * @return a ChannelFactory for NetherNetServerChannel
      */
-    public static ChannelFactory<NetherNetServerChannel> server(Supplier<? extends NetherNetEngine> engineSupplier,
-                                                                NetherNetServerSignaling signaling) {
-        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engineSupplier, signaling));
+    public static ChannelFactory<NetherNetServerChannel> server(Supplier<? extends NetherNetEngine> engineSupplier) {
+        return new NetherNetChannelFactory<>(() -> new NetherNetServerChannel(engineSupplier));
     }
 
     /**

@@ -200,6 +200,18 @@ public class NetherNetConstants {
     }
 
     /**
+     * Builds a signaling message for a CONNECTERROR. Vanilla reads the payload as a signed 32-bit
+     * decimal number from its signaling error enumeration.
+     *
+     * @param connectionId the unique connection ID
+     * @param errorCode the error code
+     * @return the formatted signaling message
+     */
+    public static String buildSignalConnectError(long connectionId, int errorCode) {
+        return RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId) + " " + errorCode;
+    }
+
+    /**
      * Returns the outgoing fragment limit for the peer's SCTP media sections.
      * Missing attributes use the RFC 8841 default; zero means unlimited.
      * All results are capped by our local outgoing ceiling. If multiple active

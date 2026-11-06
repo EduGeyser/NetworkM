@@ -425,12 +425,6 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         }
     }
 
-    /**
-     * Moves {@link #remoteAddress()} to the newest selected pair's remote side.
-     * For a relayed pair that is the TURN relay, the transport peer actually
-     * connected to us, never the address the client declared behind it. A
-     * client that dialed a network ID keeps that as its remote address.
-     */
     private void applyPath() {
         EventLoop loop = eventLoop();
         if (!loop.inEventLoop()) {
@@ -439,12 +433,25 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         }
         TransportPath path = latestPath;
         InetSocketAddress remote = path == null ? null : path.remote();
-        if (!isOpen() || remote == null || remote.isUnresolved()
-                || !(remoteAddress instanceof InetSocketAddress) || remote.equals(remoteAddress)) {
+        if (!isOpen() || remote == null || remote.isUnresolved()) {
             return;
         }
-        // The addressing merge adds the address's source and a change event here.
-        remoteAddress = remote;
+        followPath(path);
+    }
+
+    /**
+     * Event loop: the newest selected pair, whose remote side is a resolved
+     * address. Moves {@link #remoteAddress()} to it. For a relayed pair that
+     * is the TURN relay, the transport peer actually connected to us, never
+     * the address the client declared behind it. A client that dialed a
+     * network ID keeps that as its remote address. A server's child reports
+     * through its address tracker instead.
+     */
+    void followPath(TransportPath path) {
+        InetSocketAddress remote = path.remote();
+        if (remoteAddress instanceof InetSocketAddress && !remote.equals(remoteAddress)) {
+            remoteAddress = remote;
+        }
     }
 
     // ---- Message size ----
@@ -1263,7 +1270,9 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      * Where the peer is. Before ICE selects a pair, the address signaling saw,
      * or a unique placeholder when it saw none. From then on the remote side
      * of the newest selected pair, which for a relayed connection is the TURN
-     * relay. A client that dialed a network ID keeps it.
+     * relay; a server's child moves to the pair only when it goes active, and
+     * fires a {@link io.github.sendablemetatype.netty.channel.nethernet.address.RemoteAddressChangedEvent}
+     * for each later move. A client that dialed a network ID keeps it.
      */
     @Override
     public SocketAddress remoteAddress() {
