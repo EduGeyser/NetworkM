@@ -10,9 +10,10 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A pure Java engine for transport tests. It keeps the interface's contract: a
- * peer's callbacks are serialized, local candidates wait for the local
- * description, a link's messages follow its announcement, and nothing fires
- * once a peer's close stage completed.
+ * peer's callbacks are serialized (all of them, where the contract only
+ * promises it per link and for the peer's own events), local candidates wait
+ * for the local description, a link's messages follow its announcement, and
+ * nothing fires once a peer's close stage completed.
  *
  * <p>An engine made with {@code new FakeEngine()} does nothing on its own: the
  * test completes SDP stages, fires peer events, settles sends and moves queued

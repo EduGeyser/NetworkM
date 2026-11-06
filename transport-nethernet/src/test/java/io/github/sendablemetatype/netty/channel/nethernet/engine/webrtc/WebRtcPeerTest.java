@@ -420,6 +420,43 @@ class WebRtcPeerTest {
     }
 
     @Test
+    void dataChannelObserversAskForTheNetworkThread() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+
+        peer.onRemoteChannel(channel);
+
+        assertTrue(channel.observer.isOkToCallOnTheNetworkThread());
+    }
+
+    /**
+     * The attaching thread's look at the state can be older than the close the
+     * network thread reports meanwhile; the listener must not hear of an open
+     * after the close.
+     */
+    @Test
+    void aRemoteChannelClosedWhileItIsAttachedIsNotReportedOpenAfterwards() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+        int[] reads = {0};
+        channel.onStateRead = link -> {
+            switch (++reads[0]) {
+                // Opens before the observer is registered, which fires no event.
+                case 1 -> link.state = RTCDataChannelState.OPEN;
+                // Closes during the look after registration, which reads OPEN.
+                case 2 -> link.changeState(RTCDataChannelState.CLOSED);
+                default -> {
+                }
+            }
+        };
+
+        peer.onRemoteChannel(channel);
+
+        assertEquals(List.of("remote ReliableDataChannel", "channel closed ReliableDataChannel REMOTE_CLOSED"),
+                listener.snapshot());
+    }
+
+    @Test
     void aTextMessageIsReportedAsText() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);

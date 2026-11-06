@@ -22,9 +22,13 @@ interface NativeLink {
     /** Read without waiting for an engine thread: libwebrtc answers these off its proxy. */
     ChannelParameters parameters();
 
+    /** Waits for the factory's network thread, unless called there. */
     RTCDataChannelState state();
 
-    /** Why the channel failed or closed, or null if libwebrtc reports nothing. */
+    /**
+     * Why the channel failed or closed, or null if libwebrtc reports nothing.
+     * Waits for the factory's network thread, unless called there.
+     */
     LinkError error();
 
     void registerObserver(RTCDataChannelObserver observer);

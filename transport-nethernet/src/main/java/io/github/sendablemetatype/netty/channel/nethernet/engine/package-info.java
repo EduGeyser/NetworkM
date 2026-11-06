@@ -12,10 +12,13 @@
  * and listener callbacks, and never blocks on an engine thread. Operations
  * that the engine performs on its own threads return a
  * {@link java.util.concurrent.CompletionStage}.</li>
- * <li>{@link PeerListener} callbacks run on engine threads. For one peer they
- * are serialized and ordered. They must return promptly and must not block.
- * Send completions are the exception: they may arrive on another engine
- * thread, concurrently with listener callbacks.</li>
+ * <li>{@link PeerListener} callbacks run on engine threads. They must return
+ * promptly and must not block. The events of one data link are serialized and
+ * ordered, and so are the peer's own events (candidates, states, the selected
+ * path, remote links, the peer's end); the two may run at the same time on
+ * different engine threads, and a link's events are not ordered with the
+ * peer's. Send completions may arrive on yet another engine thread,
+ * concurrently with listener callbacks.</li>
  * <li>A buffer handed to {@link PeerListener#onMessage} or
  * {@link PeerListener#onTextMessage} is valid only during the call.</li>
  * </ul>

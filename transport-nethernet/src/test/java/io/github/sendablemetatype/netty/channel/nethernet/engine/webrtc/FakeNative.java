@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Consumer;
 
 /** Fakes of the adapter's native seams, recording every call in one shared log. */
 final class FakeNative {
@@ -178,6 +179,9 @@ final class FakeNative {
         volatile RTCDataChannelObserver observer;
         // What sendAsync throws: a RuntimeException or a plain Error, as webrtc-java does.
         Throwable sendFailure;
+        // Runs during each state read, after the state was read: what changes meanwhile.
+        volatile Consumer<Link> onStateRead = link -> {
+        };
 
         Link(ChannelParameters parameters, List<String> log) {
             this.parameters = parameters;
@@ -191,7 +195,9 @@ final class FakeNative {
 
         @Override
         public RTCDataChannelState state() {
-            return state;
+            RTCDataChannelState read = state;
+            onStateRead.accept(this);
+            return read;
         }
 
         @Override

@@ -51,9 +51,12 @@ import java.util.function.Function;
  * <p>Threads: every call that may wait for libwebrtc (creating the
  * connection, description steps, candidates, metrics, teardown) runs on the
  * control thread of the peer's factory. libwebrtc delivers the connection's
- * events, the results of description steps and the data channel events on the
- * factory's signaling thread, which serializes them per peer; send results
- * arrive on webrtc-java's callback thread.
+ * events and the results of description steps on the factory's signaling
+ * thread, and the data channels' events on its network thread, where their
+ * observers ask to be called ({@link WebRtcLink}); send results arrive on
+ * webrtc-java's callback thread. So a link's events are not ordered with the
+ * connection's: a link can open before the connection reports that it is
+ * connected.
  */
 final class WebRtcPeer implements Peer {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(WebRtcPeer.class);

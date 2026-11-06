@@ -6,6 +6,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
 import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
 import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelSendObserver;
+import io.github.sendablemetatype.webrtc.RTCDataChannelState;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -14,7 +15,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -31,6 +31,13 @@ import java.util.function.Consumer;
  * counted until that decrease, or for good if the channel closes first; only
  * a send libwebrtc discarded without trying it, or one that never reached it,
  * leaves the count with its failure.
+ *
+ * <p>libwebrtc calls the channel's observer on the factory's network thread,
+ * rather than posting each event to the signaling thread first. There the
+ * observer only counts, reads the channel's state and error, which libwebrtc
+ * answers on that thread at once, and hands the events to the listener, which
+ * must not block either. It never calls a peer connection method: that would
+ * wait for the signaling thread, which may be waiting for the network thread.
  */
 final class WebRtcLink implements DataLink {
 
@@ -58,8 +65,15 @@ final class WebRtcLink implements DataLink {
     private boolean stopped;
     private final CompletableFuture<Void> settled = new CompletableFuture<>();
 
-    private final AtomicBoolean openReported = new AtomicBoolean();
-    private final AtomicBoolean closeReported = new AtomicBoolean();
+    /**
+     * Held for each event handed to the listener, so the events of this link
+     * reach it one at a time: the network thread delivers them, and for a
+     * remote link the thread that attached it reports the state it found.
+     * Never held while waiting for one of libwebrtc's threads.
+     */
+    private final Object events = new Object();
+    // Written under events; read outside it only to skip reading the error again.
+    private volatile Reported reported = Reported.NOTHING;
 
     WebRtcLink(WebRtcPeer peer, ChannelParameters parameters, NativeLink channel) {
         this.peer = peer;
@@ -120,11 +134,18 @@ final class WebRtcLink implements DataLink {
         created.registerObserver(observer);
     }
 
-    /** Starts delivering events of a remote channel the listener kept. */
+    /**
+     * Starts delivering events of a remote channel the listener kept. A
+     * remote channel is usually open already when libwebrtc announces it,
+     * and a change before the observer is registered fires no event, so the
+     * state is reported from here: once before registering, which puts the
+     * open ahead of the messages that registration delivers, and once after,
+     * for a change in between.
+     */
     void attachRemote() {
         NativeLink current = channel;
+        observer.onStateChange();
         current.registerObserver(observer);
-        // A remote channel is usually open already when libwebrtc announces it.
         observer.onStateChange();
     }
 
@@ -224,43 +245,62 @@ final class WebRtcLink implements DataLink {
         }
     }
 
+    /** What the listener heard of the link's state; it never hears of an open after the close. */
+    private enum Reported {
+        NOTHING, OPEN, CLOSED
+    }
+
     private final class Observer implements RTCDataChannelObserver {
+
+        @Override
+        public boolean isOkToCallOnTheNetworkThread() {
+            return true;
+        }
 
         @Override
         public void onBufferedAmountChange(long sentDataSize) {
             long after = queued.addAndGet(-sentDataSize);
             long level = lowWatermark;
             if (after <= level && after + sentDataSize > level) {
-                peer.dispatch(listener -> listener.onQueueLow(WebRtcLink.this));
+                synchronized (events) {
+                    peer.dispatch(listener -> listener.onQueueLow(WebRtcLink.this));
+                }
             }
         }
 
+        /**
+         * Also called by {@link WebRtcLink#attachRemote()}, on the thread that
+         * attaches the link, where reading the state waits for the network
+         * thread. The state is read before taking the lock, so the network
+         * thread never waits for a thread that waits for it. That thread's
+         * read can be older than one the network thread makes meanwhile,
+         * which is why an open is not reported after the close.
+         */
         @Override
         public void onStateChange() {
             NativeLink current = channel;
             if (current == null) {
                 return;
             }
-            switch (current.state()) {
-                case OPEN -> {
-                    if (openReported.compareAndSet(false, true)) {
-                        peer.dispatch(listener -> listener.onChannelOpen(WebRtcLink.this));
-                    }
-                }
-                case CLOSED -> {
-                    if (closeReported.compareAndSet(false, true)) {
-                        CloseCause cause = peer.linkCloseCause(current.error());
-                        peer.dispatch(listener -> listener.onChannelClosed(WebRtcLink.this, cause));
-                    }
-                }
-                default -> {
+            RTCDataChannelState state = current.state();
+            CloseCause cause = state == RTCDataChannelState.CLOSED && reported != Reported.CLOSED
+                    ? peer.linkCloseCause(current.error()) : null;
+            synchronized (events) {
+                if (state == RTCDataChannelState.OPEN && reported == Reported.NOTHING) {
+                    reported = Reported.OPEN;
+                    peer.dispatch(listener -> listener.onChannelOpen(WebRtcLink.this));
+                } else if (cause != null && reported != Reported.CLOSED) {
+                    reported = Reported.CLOSED;
+                    peer.dispatch(listener -> listener.onChannelClosed(WebRtcLink.this, cause));
                 }
             }
         }
 
         @Override
         public void onMessage(RTCDataChannelBuffer buffer) {
-            peer.deliver(WebRtcLink.this, buffer.data, buffer.binary);
+            synchronized (events) {
+                peer.deliver(WebRtcLink.this, buffer.data, buffer.binary);
+            }
         }
     }
 }
