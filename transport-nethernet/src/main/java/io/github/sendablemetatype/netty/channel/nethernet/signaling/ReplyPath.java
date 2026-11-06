@@ -57,4 +57,12 @@ public interface ReplyPath {
      * passed its deadline, or an NXS attempt expired. Message based paths never complete it.
      */
     CompletionStage<Void> abandoned();
+
+    /**
+     * Tells the source the endpoint is done with this join: it was refused, or its connection
+     * closed. The source drops what it keeps to route the join's signals, such as a handler by
+     * connection ID or a pinned LAN peer. Called once, last; later sends may fail.
+     */
+    default void finished() {
+    }
 }
