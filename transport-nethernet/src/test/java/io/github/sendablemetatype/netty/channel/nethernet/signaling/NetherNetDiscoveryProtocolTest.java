@@ -69,7 +69,7 @@ class NetherNetDiscoveryProtocolTest {
     }
 
     /**
-     * A client that dials an address registers its attempt for target "0", the server discovery
+     * A client that dials an address registers its attempt for target DIALED_SERVER, the server discovery
      * finds, before discovery runs: no sender is that server until discovery found it, and then
      * only the server it found is.
      */
@@ -79,7 +79,7 @@ class NetherNetDiscoveryProtocolTest {
              NetherNetDiscoverySignaling signaling = new NetherNetDiscoverySignaling(1, new InetSocketAddress(0),
                      discovery.value, 10_000)) {
             List<Signal> received = new CopyOnWriteArrayList<>();
-            signaling.setSignalHandler("42", "0", received::add);
+            signaling.setSignalHandler("42", NetherNetSignaling.DIALED_SERVER, received::add);
 
             discovery.receive(message(21, 1, 0, "CONNECTERROR 42 1"));
             discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));

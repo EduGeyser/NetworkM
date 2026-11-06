@@ -352,7 +352,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
      * target. It is a discovery message, not a NetherNet signal, so it has no place in
      * {@link #sendSignal}.
      *
-     * @param targetNetworkId the target's network ID, or {@code "0"} for the server discovery found
+     * @param targetNetworkId the target's network ID, or {@link #DIALED_SERVER} for the server discovery found
      */
     public void sendPing(String targetNetworkId) {
         send(targetNetworkId, NetherNetDiscovery.PING);
@@ -362,8 +362,8 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     private void send(String targetNetworkId, String message) {
         String actualIdStr = targetNetworkId;
 
-        // If '0' is passed, try to use the discovered ID (Client Mode)
-        if (actualIdStr == null || actualIdStr.equals("0")) {
+        // Client Mode: the server discovery found
+        if (actualIdStr == null || actualIdStr.equals(DIALED_SERVER)) {
             actualIdStr = discoveredServerId.get();
         }
 
@@ -386,9 +386,9 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
 
     @Override
     public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
-        // "0" (or none) is the server discovery finds, as in sendSignal. The handler is registered
+        // DIALED_SERVER (or none) is the server discovery finds, as in sendSignal. The handler is registered
         // before discovery runs, so the sender is checked against the server known when a signal arrives.
-        if (remoteNetworkId == null || remoteNetworkId.equals("0")) {
+        if (remoteNetworkId == null || remoteNetworkId.equals(DIALED_SERVER)) {
             this.discovery.registerSignalHandler(connectionId, sender -> {
                 String discovered = discoveredServerId.get();
                 return discovered != null && Long.parseUnsignedLong(discovered) == sender;

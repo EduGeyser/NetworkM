@@ -571,7 +571,9 @@ signals of one connection ID, and
 `setSignalHandler(connectionId, remoteNetworkId, handler)` registers it for the
 signals of that ID from that remote peer only. A client attempt passes the peer
 its offer went to, so a third party that learned the ID can neither answer nor
-fail the attempt. On LAN, the target `"0"` means the server discovery found.
+fail the attempt. A client that dialed an address passes the target
+`NetherNetSignaling.DIALED_SERVER` (`"0"`), which on LAN means the server
+discovery found.
 HTTP needs no such check, since the answer is the response to the client's own
 request.
 
