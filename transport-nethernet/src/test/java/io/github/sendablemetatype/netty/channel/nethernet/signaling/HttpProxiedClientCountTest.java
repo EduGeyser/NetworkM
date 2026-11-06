@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -67,5 +68,21 @@ class HttpProxiedClientCountTest {
         EmbeddedHttp other = connect();
         other.send(unfinishedPost("203.0.113.10"));
         assertTrue(other.isOpen(), "the proxy's own address is not what counts");
+    }
+
+    @Test
+    void aRequestForAnotherClientMovesTheCount() {
+        EmbeddedHttp reused = connect();
+        reused.send(EmbeddedHttp.get("/v1/join", "X-Forwarded-For: 203.0.113.9\r\n"));
+        assertEquals(200, reused.response().status());
+        EmbeddedHttp busy = connect();
+        busy.send(unfinishedPost("203.0.113.10"));
+
+        reused.send(unfinishedPost("203.0.113.10"));
+
+        assertFalse(reused.isOpen(), "the second client's own share is taken");
+        EmbeddedHttp first = connect();
+        first.send(unfinishedPost("203.0.113.9"));
+        assertTrue(first.isOpen(), "the first client's count went with the request");
     }
 }

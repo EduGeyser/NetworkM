@@ -13,7 +13,9 @@ import java.net.InetSocketAddress;
  * arrive, before the body is read. Connections from trusted proxies are not counted when they
  * open, since every client behind a proxy shares its address; counting only after the whole
  * request would let one client behind a proxy that streams bodies hold connections up to the
- * global cap with headers sent and bodies unfinished.
+ * global cap with headers sent and bodies unfinished. Each request is counted: a proxy that sends
+ * one client's status request and another client's offer on one connection moves the count to the
+ * second client.
  * <p>
  * Added only for connections from trusted proxies, between the HTTP codec and the aggregator.
  */
