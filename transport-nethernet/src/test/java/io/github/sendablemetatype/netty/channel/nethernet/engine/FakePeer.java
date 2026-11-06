@@ -258,11 +258,6 @@ public final class FakePeer implements Peer {
         return metricsRequests.get();
     }
 
-    /** How often the transport asked for the gathered local description. */
-    public int gatheredRequests() {
-        return gatheredRequests.get();
-    }
-
     // ---- The engine's side ----
 
     /** Completes the answer stage; local candidates may follow. */

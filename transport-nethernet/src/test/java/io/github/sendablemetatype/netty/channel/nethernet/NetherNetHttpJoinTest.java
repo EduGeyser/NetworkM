@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(20)
 class NetherNetHttpJoinTest {
+    private static final String HOST_CANDIDATE = "a=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host";
     private final ManualCheckExecutor checks = new ManualCheckExecutor();
     private EndpointHarness harness;
     private NetherNetHttpSignaling http;
@@ -41,7 +42,7 @@ class NetherNetHttpJoinTest {
     private void start(boolean manualChecks) throws Exception {
         harness = manualChecks ? new EndpointHarness(() -> checks) : new EndpointHarness();
         harness.engine.answerWith(ANSWER);
-        harness.engine.gatherWith(ANSWER);
+        harness.engine.gatherWith(ANSWER + HOST_CANDIDATE + "\r\n");
     }
 
     private void bind() throws Exception {
@@ -63,7 +64,8 @@ class NetherNetHttpJoinTest {
         assertTrue(lower.contains("content-type: application/sdp\r\n"), response);
         assertTrue(lower.contains("connection: close\r\n"), response);
         assertTrue(response.contains("a=identity:"), "the endpoint's identity signs the answer: " + response);
-        assertTrue(response.endsWith("a=end-of-candidates\r\n"), response);
+        assertTrue(response.endsWith(HOST_CANDIDATE + "\r\na=end-of-candidates\r\n"),
+                "the answer waits for gathering and carries every candidate: " + response);
         NetherNetChildChannel child = harness.child();
         assertEquals(OfferCheckResult.Level.ATTESTED, child.getOfferCheck().level());
         assertEquals(TransportIdentityBinding.Result.ACCEPTED,
