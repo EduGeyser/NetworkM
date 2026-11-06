@@ -10,6 +10,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerMet
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherServerThrottle;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
@@ -486,8 +487,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             }
         }
         if (relayed && configured.isEmpty()) {
-            log.warn("PROXY protocol relays front the ICE port, but no advertised addresses name them: answers "
-                    + "name this host, and players can only connect if something in front of signaling rewrites them");
+            log.warn(relaysWithoutAddressesWarning(config.getIceServers().stream().anyMatch(IceServer::isTurn)));
         }
 
         NetherNetEngine current = engine.get();
@@ -541,6 +541,25 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 }
             }
         });
+    }
+
+    /**
+     * The bind warning for PROXY protocol relays that no advertised address names. Answers then
+     * carry only TURN relay candidates, since anything else would name this host, so players
+     * cannot use the relays at all.
+     *
+     * @param turnConfigured whether the host configured a TURN server; Xbox signaling hands out
+     *                       its own per join, which a bind cannot know about
+     */
+    private static String relaysWithoutAddressesWarning(boolean turnConfigured) {
+        String fix = " Set NETHER_SERVER_ADVERTISED_ADDRESSES to the relays' public addresses.";
+        return turnConfigured
+                ? "PROXY protocol relays front the ICE port, but no advertised addresses name them: answers carry "
+                        + "only TURN relay candidates, so players connect through TURN, not through the relays." + fix
+                : "PROXY protocol relays front the ICE port, but no advertised addresses name them and no TURN server "
+                        + "is configured: answers carry no candidates, so players cannot reach this server through "
+                        + "the relays at all, and only joins whose signaling hands out TURN servers (Xbox) can "
+                        + "connect." + fix;
     }
 
     /**

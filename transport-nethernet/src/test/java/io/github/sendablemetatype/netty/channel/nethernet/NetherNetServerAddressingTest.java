@@ -260,6 +260,69 @@ class NetherNetServerAddressingTest {
         assertEquals(List.of(), peer.remoteCandidates());
     }
 
+    /** What the engine gathered behind a relay: a private host, its public mapping and a TURN allocation. */
+    private static final String GATHERED_WITH_TURN = "v=0\r\nm=application 5000 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+            + "c=IN IP4 203.0.113.50\r\na=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host\r\n"
+            + "a=candidate:2 1 udp 1686052607 203.0.113.50 5000 typ srflx raddr 10.0.0.5 rport 5000\r\n"
+            + "a=candidate:3 1 udp 41885439 192.0.2.80 40000 typ relay raddr 203.0.113.50 rport 5000\r\n"
+            + "a=fingerprint:sha-256 " + OfferFixtures.DIGEST + "\r\na=mid:data\r\na=end-of-candidates\r\n";
+
+    private void bindBehindRelaysWithoutAdvertisedAddresses() throws Exception {
+        harness.engine.answerWith(ANSWER);
+        harness.engine.gatherWith(GATHERED_WITH_TURN);
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
+                new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+        harness.bind();
+    }
+
+    @Test
+    void behindRelaysWithoutAdvertisedAddressesAFullAnswerCarriesOnlyTurn() throws Exception {
+        bindBehindRelaysWithoutAdvertisedAddresses();
+
+        // The typed endpoint would be announced on a direct host
+        String answer = harness.source(false).offer(1, OFFER,
+                new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
+                new Join.Addressed("8.8.8.8:19132", 19132, false)).answer();
+
+        assertEquals(1, answer.split("a=candidate:", -1).length - 1, answer);
+        assertTrue(answer.contains("a=candidate:3 1 udp 41885439 192.0.2.80 40000 typ relay raddr 0.0.0.0 rport 0\r\n"),
+                answer);
+        for (String origin : List.of("10.0.0.5", "203.0.113.50", "8.8.8.8")) {
+            assertFalse(answer.contains(origin), origin + " leaked: " + answer);
+        }
+    }
+
+    @Test
+    void behindRelaysWithoutAdvertisedAddressesTrickledCandidatesAreOnlyTurn() throws Exception {
+        bindBehindRelaysWithoutAdvertisedAddresses();
+        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        reply.answer();
+        FakePeer peer = harness.engine.lastPeer();
+
+        peer.localCandidate("candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host", "data");
+        peer.localCandidate("candidate:2 1 udp 1686052607 203.0.113.50 5000 typ srflx raddr 10.0.0.5 rport 5000",
+                "data");
+        peer.localCandidate("candidate:3 1 udp 41885439 192.0.2.80 40000 typ relay raddr 203.0.113.50 rport 5000",
+                "data");
+        peer.gatheringComplete(GATHERED_WITH_TURN);
+        harness.sync();
+
+        assertEquals(List.of("candidate candidate:3 1 udp 41885439 192.0.2.80 40000 typ relay raddr 0.0.0.0 rport 0"),
+                reply.drain().stream().filter(sent -> sent.startsWith("candidate ")).toList());
+    }
+
+    @Test
+    void behindRelaysNoCandidateIsGuessedForTheClient() throws Exception {
+        bindBehindRelaysWithoutAdvertisedAddresses();
+
+        // A check to a guessed candidate would leave this host straight, past the relay
+        harness.source(false).offer(1, HOST_ONLY_OFFER,
+                new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null), null).answer();
+        harness.sync();
+
+        assertEquals(List.of(), harness.engine.lastPeer().remoteCandidates());
+    }
+
     @Test
     void proxyRelaysNeedTheSharedPort() {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,

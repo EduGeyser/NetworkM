@@ -79,7 +79,8 @@ public final class AnswerCandidates {
                     advertised(gathered, udpHosts, advertised.endpoints(), new Translator(false));
             case CandidateAnnouncement.Relayed relayed -> {
                 List<CandidateLine> translated = new Translator(true).translate(udpHosts, relayed.relays());
-                if (translated.isEmpty()) {
+                // No relays configured is the endpoint's bind warning, not one per answer
+                if (translated.isEmpty() && !relayed.relays().isEmpty()) {
                     log.warn("None of the relays {} can be announced from the gathered ICE candidates", relayed.relays());
                 }
                 yield new Rewrite(AnswerCandidates::relayedKeeps, translated);

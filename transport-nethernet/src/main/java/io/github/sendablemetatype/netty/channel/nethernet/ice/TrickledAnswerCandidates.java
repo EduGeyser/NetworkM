@@ -42,8 +42,9 @@ public final class TrickledAnswerCandidates {
     public synchronized List<String> local(String candidate) {
         Optional<CandidateLine> parsed = CandidateLine.parse(candidate);
         if (parsed.isEmpty()) {
-            // Not ours to judge; the peer's engine decides what to make of it
-            return List.of(candidate);
+            // Not ours to judge, so the peer's engine decides what to make of it; behind relays
+            // nothing goes out that might name this host
+            return this.announcement instanceof CandidateAnnouncement.Relayed ? List.of() : List.of(candidate);
         }
         CandidateLine line = parsed.get();
         List<CandidateLine> out = new ArrayList<>();

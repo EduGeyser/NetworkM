@@ -43,6 +43,13 @@ class IceServerTest {
     }
 
     @Test
+    void relaysWhenAnyUrlIsTurn() {
+        assertTrue(new IceServer(List.of("stun:relay.example", "TURN:relay.example:3478"), "u", "p").isTurn());
+        assertTrue(new IceServer(List.of("turns:relay.example:5349"), "u", "p").isTurn());
+        assertFalse(new IceServer(List.of("stun:stun.example:3478"), null, null).isTurn());
+    }
+
+    @Test
     void leavesAStunServerAlone() {
         // No credentials to lose, and the host is the whole point of the line
         assertEquals("IceServer[urls=[stun:stun.example:3478], username=null, credential=null]",

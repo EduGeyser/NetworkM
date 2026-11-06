@@ -114,7 +114,19 @@ class TrickledAnswerCandidatesTest {
     }
 
     @Test
-    void passesALineItCannotReadAsItIs() {
+    void behindRelaysWithoutTheirAddressesSendsOnlyTurnWithoutItsOrigin() {
+        TrickledAnswerCandidates filter = AnswerCandidates.trickled(new CandidateAnnouncement.Relayed(List.of()));
+
+        assertEquals(List.of(
+                        "candidate:5 1 udp 41885439 198.51.100.9 40000 typ relay raddr 0.0.0.0 rport 0 generation 0"),
+                signaled(filter, DOCKER, LAN, LAN_V6, SRFLX, RELAY));
+        assertEquals(List.of(), filter.gatheringComplete());
+    }
+
+    @Test
+    void passesALineItCannotReadAsItIsExceptBehindRelays() {
         assertEquals(List.of("candidate:garbled"), signaled(advertised("203.0.113.99"), "candidate:garbled"));
+        assertEquals(List.of(), signaled(AnswerCandidates.trickled(new CandidateAnnouncement.Relayed(List.of())),
+                "candidate:1 1 udp 2122260223 10.88.0.4 19135 typ bogus"));
     }
 }

@@ -363,6 +363,20 @@ class AnswerCandidatesTest {
     }
 
     @Test
+    void relayedMediaWithoutRelayAddressesAnnouncesOnlyTurn() {
+        String result = relayed(ANSWER);
+
+        assertEquals(1, count(result, "a=candidate:"), result);
+        assertTrue(result.contains("a=candidate:3 1 udp 41885439 198.51.100.9 40000 typ relay raddr 0.0.0.0 rport 0"
+                + " generation 0 network-id 1\r\n"), result);
+        assertTrue(result.contains("m=application 40000 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 198.51.100.9\r\n"),
+                result);
+        assertFalse(result.contains("203.0.113.50"), result);
+        assertFalse(result.contains("192.168.1.5"), result);
+        assertEquals(0, count(relayed(ANSWER_WITHOUT_TURN), "a=candidate:"), "without TURN nothing is left");
+    }
+
+    @Test
     void relayedMediaKeepsTurnWithoutItsOrigin() {
         // TURN uses sockets of its own, so it stays a path behind relays, but its related address
         // is this host's public mapping, which the relays exist to hide
