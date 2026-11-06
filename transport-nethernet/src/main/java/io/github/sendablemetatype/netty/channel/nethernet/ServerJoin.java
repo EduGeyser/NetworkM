@@ -52,6 +52,8 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     private final String id;
     private final Settings settings;
     private final RemoteCandidateIntake intake;
+    /** The offer as the engine gets it, run through the intake before any trickled candidate. */
+    private final String remoteDescription;
     private final CandidateAnnouncement announcement;
     private final TrickledAnswerCandidates trickled;
     private final Runnable handshakeDone;
@@ -76,6 +78,9 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         this.id = Long.toUnsignedString(join.connectionId());
         this.settings = settings;
         this.intake = intake;
+        // Now, on the endpoint's loop: the client's trickled candidates take the offer's mid, and
+        // they can arrive before the child's own loop starts negotiating.
+        this.remoteDescription = intake.remoteDescription(join.offer());
         this.announcement = announcement;
         this.trickled = join.reply().trickles() ? AnswerCandidates.trickled(announcement) : null;
         this.handshakeDone = handshakeDone;
@@ -128,7 +133,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         if (peer == null) {
             return;
         }
-        CompletionStage<String> answer = peer.answer(intake.remoteDescription(join.offer()));
+        CompletionStage<String> answer = peer.answer(remoteDescription);
         CompletionStage<String> gathered = answer.thenCompose(ignored -> peer.gatheredLocalDescription());
         if (trickled != null) {
             answer.whenComplete((sdp, failure) -> onChildLoop(() -> answered(sdp, failure)));

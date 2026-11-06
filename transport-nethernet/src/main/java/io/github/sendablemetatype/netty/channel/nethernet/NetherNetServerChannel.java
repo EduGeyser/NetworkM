@@ -307,12 +307,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
         OfferCheck offerCheck = config.getOfferCheck();
         ExecutorService checkExecutor = checkExecutors.get();
-        try {
-            // Off the event loop: the first join should not wait for the issuers' keys.
-            checkExecutor.execute(offerCheck::prefetch);
-        } catch (RejectedExecutionException e) {
-            log.debug("Could not prefetch the trusted issuers' keys: {}", e.toString());
-        }
+        // Off the event loop, and off the bounded check executor, whose slots belong to joins: the
+        // first join should not wait for the issuers' keys.
+        Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
         ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(),
                 iceEndpoint == null ? 0 : iceEndpoint.port(), relayed);
         this.bound = new Bound(answers, iceEndpoint, advertised, proxies, offerCheck, checkExecutor);
