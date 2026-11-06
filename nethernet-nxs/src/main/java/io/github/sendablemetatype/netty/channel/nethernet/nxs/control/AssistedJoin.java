@@ -18,10 +18,15 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.control;
 
 import com.google.gson.JsonObject;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.DtlsFingerprint;
+import io.github.sendablemetatype.netty.util.nethernet.IdentityPublicKey;
 import io.netty.util.NetUtil;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 
 /**
@@ -192,6 +197,10 @@ public record AssistedJoin(
     }
 
     /**
+     * The provider must send the key in its canonical form: standard base64 of the
+     * {@link IdentityPublicKey#canonical canonical} SPKI DER. Any other spelling of a key is refused rather than
+     * normalized.
+     *
      * @return The player's key as canonical SPKI DER, 120 bytes
      * @throws IllegalArgumentException If this is a diagnostic or the key is not a canonical P-384 key
      */
@@ -199,7 +208,19 @@ public record AssistedJoin(
         if (cpk == null) {
             throw new IllegalArgumentException("A diagnostic join carries no client key");
         }
-        return CanonicalCpk.decode(cpk);
+        byte[] der;
+        PublicKey key;
+        try {
+            der = Base64.getDecoder().decode(cpk);
+            key = KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(der));
+        } catch (GeneralSecurityException | IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Invalid assisted CPK", invalid);
+        }
+        if (!Arrays.equals(der, IdentityPublicKey.canonical(key))
+                || !Base64.getEncoder().encodeToString(der).equals(cpk)) {
+            throw new IllegalArgumentException("Noncanonical assisted CPK");
+        }
+        return der;
     }
 
     private static String one(List<String> lines, String prefix) {
