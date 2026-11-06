@@ -68,7 +68,7 @@ class NetherNetServerAdmissionTest {
         FakeJoinSource source = new FakeJoinSource(trickles);
         harness.server.addSource(source);
 
-        FakeJoinSource.Reply reply = source.offer(1, OFFER);
+        FakeJoinSource.Reply reply = source.offer("1", OFFER);
 
         reply.assertRefused(JoinRefusal.IDENTITY_MISSING);
         harness.sync();
@@ -83,7 +83,7 @@ class NetherNetServerAdmissionTest {
         harness.bind();
         FakeJoinSource source = new FakeJoinSource(true);
         harness.server.addSource(source);
-        source.offer(1, retailOffer().replace(DIGEST, OTHER_DIGEST)).assertRefused(JoinRefusal.IDENTITY_INVALID);
+        source.offer("1", retailOffer().replace(DIGEST, OTHER_DIGEST)).assertRefused(JoinRefusal.IDENTITY_INVALID);
         assertTrue(harness.engine.peers().isEmpty());
     }
 
@@ -100,13 +100,13 @@ class NetherNetServerAdmissionTest {
         FakeJoinSource source = new FakeJoinSource(true);
         harness.server.addSource(source);
 
-        source.offer(1, educationOffer());
+        source.offer("1", educationOffer());
         NetherNetChildChannel education = harness.child();
         assertEquals(OfferCheckResult.Level.KEY_PROVEN, education.getOfferCheck().level());
         assertEquals(TransportIdentityBinding.Result.ACCEPTED,
                 TransportIdentityBinding.verifyLogin(education, CLIENT_KEY.getPublic()));
 
-        source.offer(2, retailOffer());
+        source.offer("2", retailOffer());
         assertEquals(OfferCheckResult.Level.ATTESTED, harness.child().getOfferCheck().level());
         assertEquals(List.of("remote-1 false", "remote-2 true"), accepted);
     }
@@ -118,8 +118,8 @@ class NetherNetServerAdmissionTest {
         harness.server.addSource(strict, OfferPolicy.REQUIRE_ATTESTED);
         FakeJoinSource lenient = harness.source(true);
 
-        strict.offer(1, educationOffer()).assertRefused(JoinRefusal.IDENTITY_INVALID);
-        lenient.offer(2, OFFER);
+        strict.offer("1", educationOffer()).assertRefused(JoinRefusal.IDENTITY_INVALID);
+        lenient.offer("2", OFFER);
         NetherNetChildChannel child = harness.child();
         assertEquals(OfferCheckResult.Level.NO_ASSERTION, child.getOfferCheck().level());
         assertEquals(TransportIdentityBinding.State.NONE, TransportIdentityBinding.state(child),
@@ -138,10 +138,10 @@ class NetherNetServerAdmissionTest {
         FakeJoinSource strict = new FakeJoinSource(false);
         harness.server.addSource(strict, OfferPolicy.REQUIRE_ATTESTED);
 
-        lenient.offer(1, retailOffer());
+        lenient.offer("1", retailOffer());
         assertEquals(OfferCheckResult.Level.KEY_PROVEN, harness.child().getOfferCheck().level(),
                 "the proven key is enough by default");
-        strict.offer(2, retailOffer()).assertRefused(JoinRefusal.TRUST_SOURCE_UNREACHABLE);
+        strict.offer("2", retailOffer()).assertRefused(JoinRefusal.TRUST_SOURCE_UNREACHABLE);
     }
 
     @Test
@@ -162,7 +162,7 @@ class NetherNetServerAdmissionTest {
     void anUnusableOfferIsRefusedBeforeItsCheck() throws Exception {
         useManualChecks();
         harness.bind();
-        harness.source(true).offer(1, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n")
+        harness.source(true).offer("1", "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n")
                 .assertRefused(JoinRefusal.INTERNAL);
         assertTrue(checks.tasks.isEmpty());
         assertTrue(harness.engine.peers().isEmpty());
@@ -175,7 +175,7 @@ class NetherNetServerAdmissionTest {
         useManualChecks();
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK_TIMEOUT_MILLIS, 50);
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, educationOffer());
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", educationOffer());
 
         reply.assertRefused(JoinRefusal.NO_ANSWER_IN_TIME);
         assertTrue(((Future<?>) checks.tasks.peek()).isCancelled(), "the check is withdrawn");
@@ -197,7 +197,7 @@ class NetherNetServerAdmissionTest {
         try {
             // The join's admission runs first, then the loop stalls past the check's deadline
             loop.submit(() -> {
-                reply.complete(source.offer(1, OFFER));
+                reply.complete(source.offer("1", OFFER));
                 loop.execute(() -> {
                     try {
                         resume.await();
@@ -224,8 +224,8 @@ class NetherNetServerAdmissionTest {
         useManualChecks();
         harness.bind();
         FakeJoinSource source = harness.source(true);
-        source.offer(1, educationOffer());
-        source.offer(2, educationOffer()).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("1", educationOffer());
+        source.offer("2", educationOffer()).assertRefused(JoinRefusal.CAPACITY);
         assertEquals(1, checks.tasks.size());
 
         checks.runNext();
@@ -236,7 +236,7 @@ class NetherNetServerAdmissionTest {
     void aJoinAbandonedDuringItsCheckCreatesNothing() throws Exception {
         useManualChecks();
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(false).offer(1, educationOffer());
+        FakeJoinSource.Reply reply = harness.source(false).offer("1", educationOffer());
         harness.sync();
         assertEquals(1, harness.server.gate().pending());
 
@@ -258,7 +258,7 @@ class NetherNetServerAdmissionTest {
         throttle.allow = true;
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_THROTTLE, throttle);
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", OFFER);
         Future<?> queued = checks.awaitQueued();
         AdmissionGate gate = harness.server.gate();
 
@@ -281,7 +281,7 @@ class NetherNetServerAdmissionTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_THROTTLE, throttle);
         harness.bind();
         FakeJoinSource source = harness.source(true);
-        FakeJoinSource.Reply reply = source.offer(1, OFFER);
+        FakeJoinSource.Reply reply = source.offer("1", OFFER);
         Future<?> queued = checks.awaitQueued();
 
         assertTrue(harness.server.removeSource(source));
@@ -307,16 +307,16 @@ class NetherNetServerAdmissionTest {
         SourcedAddress anyone = new SourcedAddress(new InetSocketAddress("192.0.2.1", 1), AddressSource.SIGNALING, null);
         assertTrue(http.sink.admits(anyone));
 
-        xbox.offer(1, OFFER);
+        xbox.offer("1", OFFER);
         FakePeer peer = harness.negotiating();
         assertFalse(http.sink.admits(anyone));
         assertFalse(xbox.sink.admits(anyone));
-        http.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        http.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
 
         peer.completeAnswer(ANSWER);
         harness.activate(peer);
         assertTrue(http.sink.admits(anyone), "an active connection is no longer pending");
-        http.offer(3, OFFER);
+        http.offer("3", OFFER);
         harness.child();
         assertEquals("3", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
     }
@@ -327,19 +327,19 @@ class NetherNetServerAdmissionTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_MAX_SESSIONS, 1);
         harness.bind();
         FakeJoinSource source = harness.source(true);
-        source.offer(1, OFFER);
+        source.offer("1", OFFER);
         NetherNetChildChannel child = harness.child();
         FakePeer peer = harness.negotiating();
 
         child.close().sync();
         harness.sync();
         assertEquals(1, harness.server.gate().sessions(), "the peer's teardown still runs");
-        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
 
         peer.finishClose();
         harness.sync();
         assertEquals(0, harness.server.gate().sessions());
-        source.offer(3, OFFER);
+        source.offer("3", OFFER);
         assertEquals("3", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
     }
 
@@ -349,19 +349,19 @@ class NetherNetServerAdmissionTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_MAX_PENDING_JOINS, 1);
         harness.bind();
         FakeJoinSource source = harness.source(true);
-        source.offer(1, OFFER);
+        source.offer("1", OFFER);
         NetherNetChildChannel child = harness.child();
         FakePeer peer = harness.negotiating();
 
         child.close().sync();
         harness.sync();
         assertEquals(1, harness.server.gate().pending(), "the peer that never went active still tears down");
-        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
 
         peer.finishClose();
         harness.sync();
         assertEquals(0, harness.server.gate().pending());
-        source.offer(3, OFFER);
+        source.offer("3", OFFER);
         assertEquals("3", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
     }
 
@@ -382,12 +382,12 @@ class NetherNetServerAdmissionTest {
         harness.bind();
         FakeJoinSource source = harness.source(false);
 
-        source.offer(1, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("1", OFFER).assertRefused(JoinRefusal.CAPACITY);
         assertEquals(List.of(FakeJoinSource.CLIENT), throttled);
         assertTrue(harness.engine.peers().isEmpty(), "a refused join creates no peer");
 
         throttle.allow = true;
-        source.offer(2, OFFER);
+        source.offer("2", OFFER);
         NetherNetChildChannel child = harness.child();
         FakePeer peer = harness.negotiating();
         child.close().sync();
@@ -405,9 +405,9 @@ class NetherNetServerAdmissionTest {
         FakeJoinSource xbox = new FakeJoinSource(true);
         harness.server.addSource(xbox);
 
-        xbox.offer(1, OFFER, SourcedAddress.unknown(), null).assertRefused(JoinRefusal.IDENTITY_MISSING);
+        xbox.offer("1", OFFER, SourcedAddress.unknown(), null).assertRefused(JoinRefusal.IDENTITY_MISSING);
         assertTrue(xbox.sink.admits(SourcedAddress.unknown()));
-        xbox.offer(2, educationOffer(), SourcedAddress.unknown(), null);
+        xbox.offer("2", educationOffer(), SourcedAddress.unknown(), null);
         assertEquals("2", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
     }
 
@@ -420,11 +420,11 @@ class NetherNetServerAdmissionTest {
         SourcedAddress client = new SourcedAddress(FakeJoinSource.CLIENT, AddressSource.SIGNALING, null);
         SourcedAddress other = new SourcedAddress(new InetSocketAddress("192.0.2.1", 1), AddressSource.SIGNALING, null);
 
-        source.offer(1, OFFER);
+        source.offer("1", OFFER);
         harness.child();
         assertFalse(source.sink.admits(client));
         assertTrue(source.sink.admits(other));
-        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
     }
 
     private void useManualChecks() {

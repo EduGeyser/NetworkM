@@ -30,6 +30,7 @@ import static io.github.sendablemetatype.netty.channel.nethernet.signaling.Embed
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -357,7 +358,8 @@ class HttpSignalingRequestTest {
         assertEquals(new Join.Addressed("127.0.0.1:19132", EmbeddedHttp.LOCAL.getPort(), false), join.addressed());
         assertFalse(join.reply().trickles());
         assertThrows(UnsupportedOperationException.class, () -> join.reply().candidate("candidate:1"));
-        assertTrue(join.connectionId() > 0);
+        assertNotEquals(0, Long.parseUnsignedLong(join.connectionId()),
+                "a generated ID is nonzero decimal uint64 text");
     }
 
     @Test

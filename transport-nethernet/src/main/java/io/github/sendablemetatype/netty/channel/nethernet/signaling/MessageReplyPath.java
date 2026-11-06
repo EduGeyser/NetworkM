@@ -85,21 +85,17 @@ abstract class MessageReplyPath implements ReplyPath {
         }
     }
 
-    /**
-     * A message for this join from the client, in its wire form {@code <TYPE> <id> <payload>}.
-     * Signals that do not concern a join in progress are dropped.
-     */
-    void received(String message) {
-        String[] parts = message.split(" ", 3);
-        String payload = parts.length > 2 ? parts[2] : "";
-        RemoteSignal signal = switch (parts[0]) {
+    /** A signal for this join from the client. Signals that do not concern a join in progress are dropped. */
+    void received(Signal message) {
+        String payload = message.payload();
+        RemoteSignal signal = switch (message.type()) {
             case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> payload.isEmpty() ? null
                     : new RemoteSignal.Candidate(payload);
             case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> new RemoteSignal.Error(errorCode(payload));
             default -> null;
         };
         if (signal == null) {
-            log.trace("Ignoring signal {} for join {}", parts[0], connectionId);
+            log.trace("Ignoring a {} signal for join {}", message.type(), connectionId);
             return;
         }
         synchronized (this) {

@@ -94,7 +94,7 @@ class NetherNetXboxRpcSignalingTest {
         EmbeddedChannel first = connect(turnResult(0));
         loop.advanceTimeBy(SignalingSupervisor.STABLE_AFTER.toSeconds(), TimeUnit.SECONDS);
         AtomicInteger handlerCalls = new AtomicInteger();
-        signaling.setSignalHandler(7, signal -> handlerCalls.incrementAndGet());
+        signaling.setSignalHandler("7", signal -> handlerCalls.incrementAndGet());
 
         first.writeInbound(new CloseWebSocketFrame(1001, "Signaling server instance is shutting down."));
         run();
@@ -339,12 +339,12 @@ class NetherNetXboxRpcSignalingTest {
     @ValueSource(booleans = {false, true})
     void webRtcMessagesReachTheirHandlerAndGetAReceipt(boolean batched) {
         EmbeddedChannel socket = connect(turnResult(0));
-        AtomicReference<String> received = new AtomicReference<>();
-        signaling.setSignalHandler(42, received::set);
+        AtomicReference<Signal> received = new AtomicReference<>();
+        signaling.setSignalHandler("42", received::set);
 
         receiveWebRtc(socket, "CANDIDATEADD 42 candidate", batched);
 
-        assertEquals("CANDIDATEADD 42 candidate", received.get());
+        assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, "42", "candidate"), received.get());
         List<JsonObject> sent = drain(socket);
         assertEquals(2, sent.size());
         assertEquals("request-1", sent.getFirst().get("id").getAsString());
@@ -361,7 +361,7 @@ class NetherNetXboxRpcSignalingTest {
         drain(socket);
 
         Join join = sink.delivered.getFirst();
-        assertEquals(9, join.connectionId());
+        assertEquals("9", join.connectionId());
         assertEquals("peer", join.remoteNetworkId());
         assertEquals("offer", join.offer());
         assertEquals(AddressSource.UNKNOWN, join.source().source());
@@ -404,6 +404,37 @@ class NetherNetXboxRpcSignalingTest {
         assertEquals(2, signals.size());
         receiveWebRtc(socket, "CONNECTREQUEST 9 retry", false);
         assertEquals("retry", sink.delivered.getLast().offer());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"00042", "pfab-7Q:x~!"})
+    void aConnectionIdIsMatchedAndEchoedExactlyAsWritten(String id) {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST " + id + " offer", false);
+        receiveWebRtc(socket, "CANDIDATEADD " + id + " candidate:1", false);
+        drain(socket);
+
+        Join join = sink.delivered.getFirst();
+        assertEquals(id, join.connectionId());
+        assertEquals(List.of("candidate candidate:1"), RecordingSink.signalsOf(join));
+        join.reply().answer("v=0");
+        assertEquals(List.of("CONNECTRESPONSE " + id + " v=0"),
+                drain(socket).stream().map(NetherNetXboxRpcSignalingTest::webRtcMessage).toList());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CONNECTREQUEST 4\u00072 offer", "CONNECTREQUEST 4é2 offer",
+            "CONNECTREQUEST  offer"})
+    void aSignalWithAnInvalidConnectionIdIsDropped(String signal) {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, signal, false);
+        receiveWebRtc(socket, "CONNECTREQUEST " + "1".repeat(65) + " offer", false);
+        assertEquals(List.of(), sink.delivered);
+
+        receiveWebRtc(socket, "CONNECTREQUEST " + "1".repeat(64) + " offer", false);
+        assertEquals("1".repeat(64), sink.delivered.getFirst().connectionId());
     }
 
     // Requests.

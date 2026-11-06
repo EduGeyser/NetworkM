@@ -10,7 +10,6 @@ import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.security.MessageDigest;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class NetherNetConstants {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetConstants.class);
@@ -210,44 +209,6 @@ public class NetherNetConstants {
      */
     public static String buildSignalConnectError(String connectionId, int errorCode) {
         return RTC_NEGOTIATION_CONNECT_ERROR + " " + connectionId + " " + errorCode;
-    }
-
-    /** The longest connection ID a received signal may carry. */
-    public static final int MAX_CONNECTION_ID_LENGTH = 64;
-
-    /**
-     * Whether a received connection ID is one NetherNet routes. Connection IDs are opaque: they are
-     * matched and echoed exactly as the initiator wrote them, never parsed as numbers. One is valid
-     * when it is 1 to {@value #MAX_CONNECTION_ID_LENGTH} printable ASCII characters without spaces
-     * (0x21 to 0x7E). The ID goes into logs and back onto the wire, so control characters and
-     * unbounded lengths are refused rather than passed along.
-     *
-     * @param connectionId the second field of a received signal
-     * @return true when the signal may be routed by this ID
-     */
-    public static boolean isValidConnectionId(String connectionId) {
-        int length = connectionId.length();
-        if (length == 0 || length > MAX_CONNECTION_ID_LENGTH) {
-            return false;
-        }
-        for (int i = 0; i < length; i++) {
-            char c = connectionId.charAt(i);
-            if (c < 0x21 || c > 0x7E) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * A new connection ID for an attempt NetherNet starts or answers. Received IDs are opaque, but
-     * the IDs vanilla writes are nonzero uint64 values in decimal, and other peers may parse them as
-     * numbers (go-nethernet does), so generated IDs keep that form.
-     *
-     * @return a nonzero unsigned 64-bit value in decimal
-     */
-    public static String newConnectionId() {
-        return Long.toUnsignedString(ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE));
     }
 
     /**

@@ -47,13 +47,13 @@ class NetherNetServerStunTest {
         assertEquals(List.of(SERVER), endpoint.stunMonitors(), "the monitor opens with the port");
         FakeJoinSource source = harness.source(false);
 
-        String before = source.offer(1, OFFER).answer();
+        String before = source.offer("1", OFFER).answer();
         assertFalse(before.contains("typ srflx"), "nothing is announced before the server answered: " + before);
 
         // The router took another port on the way out; the mapping must be public to be announced
         endpoint.mapStun(SERVER, new InetSocketAddress("93.184.216.40", 1454));
         awaitReads(endpoint, 2);
-        String answer = source.offer(2, OFFER).answer();
+        String answer = source.offer("2", OFFER).answer();
 
         int icePort = endpoint.port();
         assertTrue(answer.contains("a=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host\r\n"), answer);

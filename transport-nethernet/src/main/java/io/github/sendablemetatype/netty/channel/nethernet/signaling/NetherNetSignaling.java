@@ -46,9 +46,9 @@ public interface NetherNetSignaling extends AutoCloseable {
         /**
          * Called when a signal is received for the registered connection ID.
          *
-         * @param signal The raw signal payload.
+         * @param signal the parsed signal
          */
-        void onSignal(String signal);
+        void onSignal(Signal signal);
 
         /**
          * Called when client signaling gave up on the offer of the registered connection ID. By
@@ -59,8 +59,8 @@ public interface NetherNetSignaling extends AutoCloseable {
          * @param failure      why the signaling gave up
          */
         default void onFailure(String connectionId, SignalingFailure failure) {
-            onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + connectionId
-                    + " " + failure.errorCode());
+            onSignal(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, connectionId,
+                    Integer.toString(failure.errorCode())));
         }
     }
 }

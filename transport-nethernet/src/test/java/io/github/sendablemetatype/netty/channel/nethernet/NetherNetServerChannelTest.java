@@ -96,7 +96,7 @@ class NetherNetServerChannelTest {
     void aSharedEngineIsNeverClosedAndServesASecondBind() throws Exception {
         for (int bind = 0; bind < 2; bind++) {
             NetherNetServerChannel server = harness.bind();
-            harness.source(true).offer(bind + 1, OFFER);
+            harness.source(true).offer(Integer.toString(bind + 1), OFFER);
             harness.child();
             server.close().syncUninterruptibly();
         }
@@ -120,7 +120,7 @@ class NetherNetServerChannelTest {
             engine.open.complete(null);
             harness.sync();
             assertEquals(1, source.starts.get());
-            source.offer(1, OFFER);
+            source.offer("1", OFFER);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (engine.fake.peers().isEmpty() && System.nanoTime() < deadline) {
                 Thread.sleep(5);
@@ -170,8 +170,8 @@ class NetherNetServerChannelTest {
     @Test
     void peersShareOneIcePortAtTheBoundAddressByDefault() throws Exception {
         NetherNetServerChannel server = harness.bind();
-        harness.source(true).offer(1, OFFER);
-        harness.source(false).offer(2, OFFER);
+        harness.source(true).offer("1", OFFER);
+        harness.source(false).offer("2", OFFER);
         harness.negotiating();
         harness.sync();
 
@@ -188,7 +188,7 @@ class NetherNetServerChannelTest {
     void portsPerSessionAreAnOption() throws Exception {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         harness.bind();
-        harness.source(true).offer(1, OFFER);
+        harness.source(true).offer("1", OFFER);
         assertNull(harness.negotiating().config().endpoint());
     }
 
@@ -210,8 +210,8 @@ class NetherNetServerChannelTest {
         assertEquals(1, http.starts.get(), "a bound endpoint starts a source at once");
         assertEquals(List.of(xbox, http), server.sources());
 
-        FakeJoinSource.Reply trickled = xbox.offer(1, OFFER);
-        FakeJoinSource.Reply full = http.offer(2, OFFER);
+        FakeJoinSource.Reply trickled = xbox.offer("1", OFFER);
+        FakeJoinSource.Reply full = http.offer("2", OFFER);
 
         String trickledAnswer = trickled.answer();
         assertTrue(trickledAnswer.contains("a=identity:"));
@@ -236,7 +236,7 @@ class NetherNetServerChannelTest {
     void removingASourceClosesItButLeavesItsPlayersConnected() throws Exception {
         NetherNetServerChannel server = harness.bind();
         FakeJoinSource source = harness.source(true);
-        source.offer(1, OFFER);
+        source.offer("1", OFFER);
         FakePeer peer = harness.negotiating();
         peer.completeAnswer(ANSWER);
         NetherNetChildChannel child = harness.child();
@@ -251,7 +251,7 @@ class NetherNetServerChannelTest {
         assertTrue(child.isActive());
         assertFalse(peer.closeCalled());
 
-        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+        source.offer("2", OFFER).assertRefused(JoinRefusal.CAPACITY);
         assertEquals(1, harness.engine.peers().size());
     }
 
@@ -264,7 +264,7 @@ class NetherNetServerChannelTest {
         harness.bind();
         FakeJoinSource source = harness.source(true);
         source.iceServers = List.of(new IceServer(List.of("turn:relay.example:3478"), "user", "secret"));
-        FakeJoinSource.Reply reply = source.offer(3, OFFER);
+        FakeJoinSource.Reply reply = source.offer("3", OFFER);
 
         NetherNetChildChannel child = harness.child();
         FakePeer peer = harness.negotiating();
@@ -289,7 +289,7 @@ class NetherNetServerChannelTest {
     @Test
     void aFailedAnswerRefusesOnceAndClosesTheChild() throws Exception {
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(4, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("4", OFFER);
         FakePeer peer = harness.negotiating();
         peer.failAnswer(new IllegalStateException("SetRemoteDescription failed"));
         peer.closed(CloseCause.NEGOTIATION_FAILED);
@@ -305,7 +305,7 @@ class NetherNetServerChannelTest {
     void anAnswerThatCannotBeSignedFailsTheJoin() throws Exception {
         harness.engine.answerWith("v=0\r\n");
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(5, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("5", OFFER);
         reply.assertRefused(JoinRefusal.INTERNAL);
         harness.sync();
         assertTrue(harness.engine.lastPeer().closeCalled());
@@ -315,7 +315,7 @@ class NetherNetServerChannelTest {
     void aPeerTheEngineCannotCreateIsRefusedAndNeverExposed() throws Exception {
         harness.engine.failCreation(new NoClassDefFoundError("native binding unavailable"));
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(6, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("6", OFFER);
         reply.assertRefused(JoinRefusal.INTERNAL);
         assertNull(harness.children.poll(100, TimeUnit.MILLISECONDS), "a child without a peer is never exposed");
         harness.sync();
@@ -330,7 +330,7 @@ class NetherNetServerChannelTest {
         harness.bind();
         FakeJoinSource source = harness.source(false);
 
-        FakeJoinSource.Reply lost = source.offer(1, OFFER);
+        FakeJoinSource.Reply lost = source.offer("1", OFFER);
         NetherNetChildChannel undelivered = harness.child();
         lost.answer();
         // The source took the answer but could not write it
@@ -338,7 +338,7 @@ class NetherNetServerChannelTest {
         harness.sync();
         assertFalse(undelivered.isOpen());
 
-        FakeJoinSource.Reply delivered = source.offer(2, OFFER);
+        FakeJoinSource.Reply delivered = source.offer("2", OFFER);
         NetherNetChildChannel connected = harness.child();
         delivered.answer();
         harness.activate(harness.engine.lastPeer());
@@ -350,7 +350,7 @@ class NetherNetServerChannelTest {
     @Test
     void aConnectErrorFromTheClientClosesTheChild() throws Exception {
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(7, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("7", OFFER);
         FakePeer peer = harness.negotiating();
         reply.signal(new RemoteSignal.Error(2));
         harness.sync();
@@ -369,7 +369,7 @@ class NetherNetServerChannelTest {
                     }
                 });
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", OFFER);
         harness.child();
         harness.sync();
         assertTrue(harness.engine.lastPeer().closeCalled());
@@ -388,7 +388,7 @@ class NetherNetServerChannelTest {
         });
         harness.bind();
         FakeJoinSource source = harness.source(true);
-        source.offer(3, OFFER);
+        source.offer("3", OFFER);
         FakePeer peer = harness.negotiating();
 
         harness.server.close().sync();

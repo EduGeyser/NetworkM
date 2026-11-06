@@ -1,6 +1,5 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusRequest;
@@ -345,7 +344,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
      * client that leaves, or a deadline that passes, completes {@link #abandoned()}.
      */
     private final class Exchange implements ReplyPath {
-        private final String connectionId = NetherNetConstants.newConnectionId();
+        private final String connectionId = Signal.newConnectionId();
         private final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         private final CompletionStage<Void> abandonedView = abandoned.minimalCompletionStage();
         private State state = State.PENDING;

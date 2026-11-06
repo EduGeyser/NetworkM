@@ -452,30 +452,25 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             return;
         }
 
-        String[] parts = messageData.split(" ", 3);
-        if (parts.length < 2) return;
-
-        String type = parts[0];
+        Signal signal = Signal.parse(messageData).orElse(null);
+        if (signal == null) {
+            return;
+        }
+        String type = signal.type();
         if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)
                 && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)
                 && !NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD.equals(type)
                 && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)) {
             return;
         }
-        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)
-                && (parts.length < 3 || parts[2].isEmpty())) {
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type) && signal.payload().isEmpty()) {
             return;
         }
-        String connectionId = parts[1];
-        if (!NetherNetConstants.isValidConnectionId(connectionId)) {
-            log.debug("Ignoring a {} signal with an invalid connection ID ({} chars)", signalType(messageData),
-                    connectionId.length());
-            return;
-        }
+        String connectionId = signal.connectionId();
         SignalHandler handler = signalHandlers.get(connectionId);
         if (handler != null) {
             if (rememberPeer(senderId, sender, connectionId)) {
-                handler.onSignal(messageData);
+                handler.onSignal(signal);
             }
             return;
         }
@@ -488,7 +483,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                         join.sender());
             } else if (rememberPeer(senderId, sender, null)) {
                 // A repeated offer reaches the join too, which ignores it.
-                join.handler().onSignal(messageData);
+                join.handler().onSignal(signal);
             }
             return;
         }
@@ -499,7 +494,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
                 log.debug("Received a CONNECTREQUEST, but nothing takes offers");
             } else if (rememberPeer(senderId, sender, null)) {
                 log.trace("Dispatching an offer: ID={} Sender={}", connectionId, Long.toUnsignedString(senderId));
-                offers.onOffer(connectionId, senderId, parts[2], sender);
+                offers.onOffer(connectionId, senderId, signal.payload(), sender);
             }
         } else {
             log.debug("Unhandled signal type: {}", type);

@@ -76,7 +76,7 @@ class LanJoinSourceTest {
 
         send("CONNECTREQUEST 42 v=0");
         Join join = awaitJoin(1);
-        assertEquals(42, join.connectionId());
+        assertEquals("42", join.connectionId());
         assertEquals(Long.toUnsignedString(CLIENT_ID), join.remoteNetworkId());
         assertEquals("v=0", join.offer());
         assertEquals(new SourcedAddress((InetSocketAddress) client.getLocalSocketAddress(),
@@ -139,6 +139,38 @@ class LanJoinSourceTest {
             awaitSize(signals, 2);
             assertEquals("error 2", signals.get(1), "the other join's end leaves this one routed");
         }
+    }
+
+    @Test
+    void aConnectionIdIsMatchedAndEchoedExactlyAsWritten() throws Exception {
+        source.start(sink);
+        bound.get(2, TimeUnit.SECONDS);
+        send("CONNECTREQUEST 00042 v=0");
+        send("CONNECTREQUEST pfab-7Q:x~! v=0");
+        Join opaque = awaitJoin(2);
+        Join padded = sink.delivered.getFirst();
+        assertEquals("00042", padded.connectionId());
+        assertEquals("pfab-7Q:x~!", opaque.connectionId());
+
+        List<String> signals = RecordingSink.signalsOf(opaque);
+        send("CANDIDATEADD pfab-7Q:x~! candidate:1");
+        awaitSize(signals, 1);
+        padded.reply().answer("v=0 answer").toCompletableFuture().get(2, TimeUnit.SECONDS);
+        assertEquals("CONNECTRESPONSE 00042 v=0 answer", receive());
+    }
+
+    @Test
+    void aSignalWithAnInvalidConnectionIdIsDropped() throws Exception {
+        source.start(sink);
+        bound.get(2, TimeUnit.SECONDS);
+        send("CONNECTREQUEST 4\u00072 v=0");
+        send("CONNECTREQUEST " + "1".repeat(65) + " v=0");
+        send("CONNECTREQUEST  v=0");
+        send("CONNECTREQUEST " + "1".repeat(64) + " v=0");
+
+        // The valid offer went last, and loopback keeps one socket's datagrams in order, so the
+        // others were handled before it arrived.
+        assertEquals("1".repeat(64), awaitJoin(1).connectionId());
     }
 
     @Test

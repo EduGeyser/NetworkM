@@ -995,30 +995,26 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     private void dispatchSignal(String sender, String rawMsg) {
         try {
-            // Signal format: <Type> <ConnectionID> <Data>
-            String[] parts = rawMsg.split(" ", 3);
-            if (parts.length < 2) return;
-
-            String connectionId = parts[1];
-            if (!NetherNetConstants.isValidConnectionId(connectionId)) {
-                log.debug("Dropped a signal with an invalid connection ID ({} chars)", connectionId.length());
+            Signal signal = Signal.parse(rawMsg).orElse(null);
+            if (signal == null) {
                 return;
             }
+            String connectionId = signal.connectionId();
 
             SignalHandler handler = handlers.get(connectionId);
             if (handler != null) {
-                handler.onSignal(rawMsg);
+                handler.onSignal(signal);
                 return;
             }
 
             JoinKey key = new JoinKey(sender, connectionId);
-            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0]);
+            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type());
             XboxJoin join = joins.get(key);
             if (join != null) {
                 if (request) {
                     log.debug("Ignoring a repeated offer for connection ID {}", connectionId);
                 } else {
-                    join.received(rawMsg);
+                    join.received(signal);
                 }
                 return;
             }
@@ -1026,11 +1022,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             if (request && current != null) {
                 XboxJoin created = new XboxJoin(key);
                 if (joins.putIfAbsent(key, created) == null) {
-                    current.join(new Join(connectionId, sender, parts.length > 2 ? parts[2] : "",
+                    current.join(new Join(connectionId, sender, signal.payload(),
                             SourcedAddress.unknown(), created));
                 }
             } else {
-                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, parts[0]);
+                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, signal.type());
             }
         } catch (Exception e) {
             // The signal can be an offer with the client's identity token in it, so it is not logged.

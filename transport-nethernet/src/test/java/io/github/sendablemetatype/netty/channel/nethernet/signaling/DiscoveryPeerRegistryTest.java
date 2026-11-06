@@ -57,22 +57,22 @@ class DiscoveryPeerRegistryTest {
     void registeredConnectionsPinQuietPeersUntilEveryHandlerIsRemoved() {
         AtomicLong now = new AtomicLong();
         DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(2, 10, now::get);
-        peers.register(41);
-        peers.rememberSignal(41, 1, ADDRESS);
-        peers.register(41);
-        peers.register(42);
-        peers.rememberSignal(42, 1, ADDRESS);
+        peers.register("41");
+        peers.rememberSignal("41", 1, ADDRESS);
+        peers.register("41");
+        peers.register("42");
+        peers.rememberSignal("42", 1, ADDRESS);
         for (int i = 2; i <= 10; i++) {
             peers.remember(i, ADDRESS);
         }
         now.set(100);
         assertEquals(0, peers.passiveSize());
         assertEquals(ADDRESS, peers.get(1));
-        peers.unregister(41);
+        peers.unregister("41");
         now.set(200);
         assertEquals(ADDRESS, peers.get(1));
         now.set(300);
-        peers.unregister(42);
+        peers.unregister("42");
 
         assertNull(peers.get(1));
         assertEquals(0, peers.passiveSize());
@@ -102,12 +102,12 @@ class DiscoveryPeerRegistryTest {
     @Test
     void clearReleasesPins() {
         DiscoveryPeerRegistry peers = new DiscoveryPeerRegistry(2, 10, () -> 0);
-        peers.register(41);
-        peers.rememberSignal(41, 1, ADDRESS);
+        peers.register("41");
+        peers.rememberSignal("41", 1, ADDRESS);
         peers.hold(2, ADDRESS);
         peers.clear();
 
-        peers.unregister(41);
+        peers.unregister("41");
         peers.release(2);
         assertNull(peers.get(1));
         assertNull(peers.get(2));

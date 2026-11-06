@@ -72,7 +72,7 @@ class NetherNetServerAuthenticatedJoinTest {
         AtomicReference<NetherNetChildChannel> created = new AtomicReference<>();
         AtomicReference<Boolean> exposedYet = new AtomicReference<>();
 
-        source.authenticated(1, OFFER, CHECK_SOURCE, new Join.Authenticated(CREDENTIALS, IDENTITY, binding, child -> {
+        source.authenticated("1", OFFER, CHECK_SOURCE, new Join.Authenticated(CREDENTIALS, IDENTITY, binding, child -> {
             created.set(child);
             exposedYet.set(!harness.children.isEmpty());
         }));
@@ -94,11 +94,11 @@ class NetherNetServerAuthenticatedJoinTest {
         harness.bind();
         FakeJoinSource http = harness.source(false);
         FakeJoinSource nxs = harness.source(false);
-        http.offer(1, OFFER);
+        http.offer("1", OFFER);
         harness.negotiating();
 
         AtomicReference<NetherNetChildChannel> created = new AtomicReference<>();
-        nxs.authenticated(2, OFFER, CHECK_SOURCE, new Join.Authenticated(CREDENTIALS, IDENTITY, binding(),
+        nxs.authenticated("2", OFFER, CHECK_SOURCE, new Join.Authenticated(CREDENTIALS, IDENTITY, binding(),
                 created::set)).assertRefused(JoinRefusal.CAPACITY);
         assertNull(created.get(), "a refused join has no child");
         assertEquals(1, harness.engine.peers().size());

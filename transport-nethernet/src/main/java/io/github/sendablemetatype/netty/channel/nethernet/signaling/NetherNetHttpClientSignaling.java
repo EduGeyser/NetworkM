@@ -242,16 +242,16 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
      */
     @Override
     public void sendSignal(String targetNetworkId, String data) {
-        String[] parts = data.split(" ", 3);
-        if (parts.length < 3 || !NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0])) {
-            log.debug("HTTP signaling carries only the offer; dropped a {} signal", parts[0]);
+        Signal signal = Signal.parse(data).orElse(null);
+        if (signal == null) {
             return;
         }
-        String connectionId = parts[1];
-        if (!NetherNetConstants.isValidConnectionId(connectionId)) {
-            log.debug("Dropped an offer with an invalid connection ID ({} chars)", connectionId.length());
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type())
+                || signal.payload().isEmpty()) {
+            log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type());
             return;
         }
+        String connectionId = signal.connectionId();
         Target current = target;
         if (closed || current == null) {
             fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
@@ -260,7 +260,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         String path = "/v1/join/" + URLEncoder.encode(localNetworkId, StandardCharsets.UTF_8).replace("+", "%20");
         FullHttpRequest request = request(HttpMethod.POST, path, current.address(),
-                Unpooled.copiedBuffer(parts[2], StandardCharsets.UTF_8));
+                Unpooled.copiedBuffer(signal.payload(), StandardCharsets.UTF_8));
         request.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/sdp");
         request.headers().set(HttpHeaderNames.ACCEPT, "application/sdp");
         exchange(current.address(), current.secure() ? current.ssl() : null, request, settings.answerTimeout(), group,
@@ -294,7 +294,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
-            handler.onSignal(NetherNetConstants.buildSignalConnectResponse(connectionId, response.body()));
+            handler.onSignal(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, connectionId,
+                    response.body()));
         }
     }
 

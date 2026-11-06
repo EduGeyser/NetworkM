@@ -14,6 +14,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.netty.channel.ChannelPromise;
@@ -196,7 +197,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                     failHandshake(gen, "Target Network ID " + this.targetNetworkId + " not found or offline", null)));
             signaling.setSignalHandler(this.connectionId, new NetherNetSignaling.SignalHandler() {
                 @Override
-                public void onSignal(String signal) {
+                public void onSignal(Signal signal) {
                     if (isCurrentAttempt(gen)) {
                         handleSignal(signal);
                     }
@@ -407,13 +408,11 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
     }
 
-    private void handleSignal(String signal) {
+    private void handleSignal(Signal signal) {
         final int generation = attemptGeneration;
-        String[] parts = signal.split(" ", 3);
-        if (parts.length < 2) return; // Allow length 2 for ERROR packets without payload
-        String type = parts[0];
-        String idStr = parts[1];
-        String data = parts.length > 2 ? parts[2] : "";
+        String type = signal.type();
+        String idStr = signal.connectionId();
+        String data = signal.payload();
 
         // Verify this signal belongs to the current attempt. Signaling routed it here by an ID
         // this channel generated, so the ID is safe to log.
@@ -559,7 +558,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     }
 
     private String cycleConnectionId() {
-        this.connectionId = NetherNetConstants.newConnectionId();
+        this.connectionId = Signal.newConnectionId();
         return this.connectionId;
     }
 }
