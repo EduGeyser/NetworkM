@@ -851,6 +851,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             if (settled.get()) {
                 // Withdrawn on another thread while the step was being set up.
                 started.cancel(true);
+                ScheduledFuture<?> timer = deadline;
+                if (timer != null) {
+                    timer.cancel(false);
+                }
                 return;
             }
             started.whenComplete((result, failure) -> onLoop(() -> next.accept(result, failure)));
@@ -1027,8 +1031,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /** What a join whose off-loop step did not finish gets: the filter follows the check's rules. */
     private static JoinRefusal stepRefusal(Throwable cause) {
         return switch (cause) {
-            case TimeoutException late -> JoinRefusal.NO_ANSWER_IN_TIME;
-            case RejectedExecutionException full -> JoinRefusal.CAPACITY;
+            case TimeoutException _ -> JoinRefusal.NO_ANSWER_IN_TIME;
+            case RejectedExecutionException _ -> JoinRefusal.CAPACITY;
             default -> JoinRefusal.INTERNAL;
         };
     }

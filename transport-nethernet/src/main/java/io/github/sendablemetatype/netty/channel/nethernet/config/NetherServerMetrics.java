@@ -22,7 +22,11 @@ import java.net.InetSocketAddress;
  * Events that belong to the listener rather than to one connection, which is
  * the only place a join that never became a channel can be seen. Anything
  * that happens once a connection exists belongs on its channel instead. An
- * exception thrown here is logged and otherwise ignored.
+ * exception thrown here is logged at debug and otherwise ignored.
+ *
+ * <p>The server channel reports the joins it admits and refuses. HTTP
+ * signaling reports what it refuses on its own, before or instead of the
+ * endpoint; give its builder the same instance, and nothing is counted twice.
  *
  * @see NetherChannelMetrics for the per connection counterpart
  */
@@ -38,7 +42,12 @@ public interface NetherServerMetrics {
     default void connectionAccepted(String networkId, boolean verifiedIdentity) {
     }
 
-    /** The status names the reason, and is what the peer was refused with. */
+    /**
+     * A join was refused, by the endpoint or by HTTP signaling itself. The
+     * status names the reason ({@code JoinRefusal#httpStatus()}), and is what
+     * the peer was refused with over HTTP; joins over other sources report the
+     * status of the same refusal.
+     */
     default void joinRefused(int httpStatus) {
     }
 

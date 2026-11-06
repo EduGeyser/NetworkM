@@ -6,10 +6,11 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
  * Xbox RPC, LAN and NXS. Never a success status: a 2xx would leave the client parsing an answer
  * that was never written.
  *
- * <p>The statuses follow the initial table of ruling E-7. The error codes are positions in the
- * vanilla client's signaling error enumeration, as go-nethernet lists it ({@code signal.go},
- * {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a signed 32-bit
- * decimal number. Which message each status or code makes the client show is still to be
+ * <p>The statuses follow the initial table of ruling E-7, with {@link #BAD_OFFER} and
+ * {@link #DUPLICATE} added by the later endpoint and HTTP rulings. The error codes are positions
+ * in the vanilla client's signaling error enumeration, as go-nethernet lists it
+ * ({@code signal.go}, {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a
+ * signed 32-bit decimal number. Which message each status or code makes the client show is still to be
  * captured (real-client check 6).
  */
 public enum JoinRefusal {
