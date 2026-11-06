@@ -52,6 +52,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** The NXS host side on an endpoint of the fake engine. */
 @Timeout(30)
 class HostTransportTest {
+    /** The provider's STUN server assisted joins gather their answer candidate through. */
+    private static final InetSocketAddress STUN = new InetSocketAddress("192.0.2.7", 3478);
     private final HostFixture fixture;
 
     HostTransportTest() throws Exception {
@@ -309,24 +311,12 @@ class HostTransportTest {
 
     @Test
     void anAssistedJoinIsAnsweredWithOneFreshCandidateAndTheServerIdentity() throws Exception {
-        String hostAnswer = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
-                + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n"
-                + "a=ice-ufrag:NXS1K001assisted\r\na=ice-pwd:assistedpassword0123456789\r\n"
-                + "a=fingerprint:" + fixture.identity.fingerprint().value() + "\r\na=setup:active\r\na=mid:0\r\n"
-                + "a=sctp-port:5000\r\na=max-message-size:262144\r\n";
-        fixture.engine.answerWith(hostAnswer);
-        fixture.engine.gatherWith(hostAnswer + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
-                + "a=end-of-candidates\r\n");
         fixture.start(new HostTransport.Settings(HostTransport.Publication.MAINTAINED, List.of(), false, true, false,
                 TicketLedger.Limits.defaults()));
         fixture.installKey();
-        InetSocketAddress stun = new InetSocketAddress("192.0.2.7", 3478);
-        fixture.transport.configureStunServers(List.of(new StunServer("192.0.2.7", 3478))).toCompletableFuture()
-                .get(5, TimeUnit.SECONDS);
-        InetSocketAddress mapped = new InetSocketAddress("93.184.216.40", fixture.endpoint.port());
-        fixture.endpoint.mapStun(stun, mapped);
-
         AssistedJoin join = assistedJoin();
+        answerAssistedWith(join.localUfrag(), join.localPassword());
+
         AssistedAnswer answer = fixture.transport.assistedJoin(join, System.nanoTime() + TimeUnit.SECONDS.toNanos(10),
                 OwnershipGuard.ALWAYS).toCompletableFuture().get(10, TimeUnit.SECONDS);
 
@@ -337,7 +327,7 @@ class HostTransportTest {
         List<String> candidates = answer.sdp().lines().filter(line -> line.startsWith("a=candidate:")).toList();
         assertEquals(List.of("a=candidate:1 1 UDP 2130706431 93.184.216.40 " + fixture.endpoint.port() + " typ srflx"),
                 candidates, "one fresh mapping of the gameplay port, gathered for this join");
-        assertEquals(List.of(stun), fixture.endpoint.stunMonitors());
+        assertEquals(List.of(STUN), fixture.endpoint.stunMonitors());
 
         NetherNetChildChannel child = fixture.child();
         assertEquals(join.id(), child.attr(AdmissionPrincipal.KEY).get().ticketId().value());
@@ -401,10 +391,9 @@ class HostTransportTest {
         fixture.engine.answerWith(hostAnswer);
         fixture.engine.gatherWith(hostAnswer + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
                 + "a=end-of-candidates\r\n");
-        InetSocketAddress stun = new InetSocketAddress("192.0.2.7", 3478);
-        fixture.transport.configureStunServers(List.of(new StunServer("192.0.2.7", 3478))).toCompletableFuture()
-                .get(5, TimeUnit.SECONDS);
-        fixture.endpoint.mapStun(stun, new InetSocketAddress("93.184.216.40", fixture.endpoint.port()));
+        fixture.transport.configureStunServers(List.of(new StunServer(STUN.getHostString(), STUN.getPort())))
+                .toCompletableFuture().get(5, TimeUnit.SECONDS);
+        fixture.endpoint.mapStun(STUN, new InetSocketAddress("93.184.216.40", fixture.endpoint.port()));
     }
 
     private AssistedJoin assistedJoin(String incarnation, String localUfrag, String localPassword) {
