@@ -24,6 +24,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCand
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostProfile;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.OutcomeStage;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.TransportOutcome;
+import io.github.sendablemetatype.netty.util.nethernet.DtlsCertificate;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityPublicKey;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
@@ -36,17 +37,18 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
-import io.netty.pkitesting.CertificateBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
@@ -99,8 +101,10 @@ class StatelessJoinNativeTest {
     }
 
     @Test
-    void aClientWithOnlyTheProfileAndATicketJoinsTheSharedPort() throws Exception {
-        HostIdentity identity = HostFixture.identity(CertificateBuilder.Algorithm.ecp256);
+    void aClientWithOnlyTheProfileAndATicketJoinsTheSharedPort(@TempDir Path directory) throws Exception {
+        // The client's answer carries only the published fingerprint, so DTLS completes only if the peer presents
+        // the very certificate the host generated
+        DtlsCertificate certificate = DtlsCertificate.loadOrCreate(directory.resolve("dtls-certificate.pem"));
         server = (NetherNetServerChannel) new ServerBootstrap()
                 .group(group)
                 .channelFactory(() -> new NetherNetServerChannel(engine))
@@ -122,7 +126,7 @@ class StatelessJoinNativeTest {
                 })
                 .bind(new InetSocketAddress("0.0.0.0", 0)).sync().channel();
         transport = new HostTransport(new HostTransport.Settings(HostTransport.Publication.FIXED, List.of(), false,
-                false, false, TicketLedger.Limits.defaults()), identity, server.eventLoop());
+                false, false, TicketLedger.Limits.defaults()), certificate, server.eventLoop());
         server.addSource(transport.source());
         transport.started().toCompletableFuture().get(WAIT_SECONDS, TimeUnit.SECONDS);
         transport.installAdmissionKeys(List.of(new AdmissionKey(KEY_ID, SECRET))).toCompletableFuture()

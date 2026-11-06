@@ -120,7 +120,7 @@ class HostTransportTest {
     }
 
     @Test
-    void aHeldTicketIsTakenByAPeerWithItsCredentialsAndTheHostIdentity() throws Exception {
+    void aHeldTicketIsTakenByAPeerWithItsCredentialsAndTheHostCertificate() throws Exception {
         fixture.start(HostFixture.fixed());
         fixture.installKey();
         StatelessAdmissionCodec.Credentials ticket = fixture.mint(30);
@@ -130,7 +130,7 @@ class HostTransportTest {
         NetherNetChildChannel child = fixture.child();
 
         assertEquals(new IceCredentials(ticket.localUfrag(), ticket.icePwd()), peer.config().localCredentials());
-        assertEquals(fixture.identity.dtls(), peer.config().identity());
+        assertEquals(fixture.certificate.dtls(), peer.config().identity());
         assertEquals(fixture.endpoint, peer.config().endpoint());
         await(() -> !peer.remoteOffers().isEmpty(), "the offer the token implies");
         String offer = peer.remoteOffers().getFirst();
@@ -297,7 +297,7 @@ class HostTransportTest {
         HostProfileSnapshot snapshot = fixture.transport.captureHostProfile().toCompletableFuture()
                 .get(5, TimeUnit.SECONDS);
 
-        assertEquals(fixture.identity.fingerprint(), snapshot.profile().dtlsFingerprint());
+        assertEquals(fixture.fingerprint(), snapshot.profile().dtlsFingerprint());
         assertEquals(HostFixture.KEY_ID, snapshot.profile().admissionKeyId());
         assertEquals(fixture.transport.incarnation(), snapshot.profile().incarnation());
         assertEquals(5000, snapshot.profile().sctpPort());
@@ -322,7 +322,7 @@ class HostTransportTest {
 
         FakePeer peer = fixture.lastPeer();
         assertEquals(new IceCredentials(join.localUfrag(), join.localPassword()), peer.config().localCredentials());
-        assertEquals(fixture.identity.dtls(), peer.config().identity());
+        assertEquals(fixture.certificate.dtls(), peer.config().identity());
         assertTrue(answer.asserted(), "clients since 26.40 refuse an answer without the server's identity");
         List<String> candidates = answer.sdp().lines().filter(line -> line.startsWith("a=candidate:")).toList();
         assertEquals(List.of("a=candidate:1 1 UDP 2130706431 93.184.216.40 " + fixture.endpoint.port() + " typ srflx"),
@@ -386,7 +386,7 @@ class HostTransportTest {
         String hostAnswer = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
                 + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n"
                 + "a=ice-ufrag:" + ufrag + "\r\na=ice-pwd:" + password + "\r\n"
-                + "a=fingerprint:" + fixture.identity.fingerprint().value() + "\r\na=setup:active\r\na=mid:0\r\n"
+                + "a=fingerprint:" + fixture.fingerprint().value() + "\r\na=setup:active\r\na=mid:0\r\n"
                 + "a=sctp-port:5000\r\na=max-message-size:262144\r\n";
         fixture.engine.answerWith(hostAnswer);
         fixture.engine.gatherWith(hostAnswer + "a=candidate:1 1 udp 2122260223 127.0.0.1 40000 typ host\r\n"
@@ -404,7 +404,7 @@ class HostTransportTest {
                 + "a=sctp-port:5000\r\na=max-message-size:262144\r\n"
                 + "a=candidate:1 1 udp 2122260223 198.51.100.9 50000 typ host\r\n";
         return new AssistedJoin("0123456789abcdef0123456789abcdef", "instance", 1, incarnation, HostFixture.KEY_ID,
-                fixture.identity.fingerprint(), System.currentTimeMillis() + 20_000, "42",
+                fixture.fingerprint(), System.currentTimeMillis() + 20_000, "42",
                 Base64.getEncoder().encodeToString(IdentityPublicKey.canonical(fixture.clientKey.getPublic())),
                 localUfrag, localPassword, offer);
     }

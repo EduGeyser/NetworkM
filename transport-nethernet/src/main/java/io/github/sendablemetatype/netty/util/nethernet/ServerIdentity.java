@@ -22,32 +22,15 @@ import org.jose4j.jwt.JwtClaims;
 import org.jose4j.lang.JoseException;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.AclEntry;
-import java.nio.file.attribute.AclEntryPermission;
-import java.nio.file.attribute.AclEntryType;
-import java.nio.file.attribute.AclFileAttributeView;
-import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.PosixFileAttributeView;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
-import java.nio.file.attribute.UserPrincipal;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
-import java.util.EnumSet;
-import java.util.List;
 import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * The operator identity a server presents in the {@code a=identity} of every answer, on every
@@ -62,7 +45,6 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 public final class ServerIdentity {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(ServerIdentity.class);
-    private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rw-------");
 
     private final AssertionSigner signer;
     private final ECPublicKey publicKey;
@@ -101,32 +83,11 @@ public final class ServerIdentity {
      */
     public static ServerIdentity loadOrCreate(Path keyFile, String domain) throws IOException, GeneralSecurityException {
         Path path = keyFile.toAbsolutePath();
-        if (Files.exists(path)) {
-            tightenExisting(path);
-            return loaded(path, domain, "Loaded");
-        }
-        if (Files.isSymbolicLink(path)) {
-            throw new IOException("Refusing to create the identity key through a symbolic link: " + path);
-        }
-        Path directory = path.getParent();
-        Files.createDirectories(directory);
-        boolean posix = Files.getFileStore(directory).supportsFileAttributeView(PosixFileAttributeView.class);
-
-        Path temporary = createOwnerOnly(directory, posix);
-        boolean created;
-        try {
-            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-                channel.write(ByteBuffer.wrap(PemKeys.writeSec1(generate()).getBytes(StandardCharsets.US_ASCII)));
-                channel.force(true);
-            }
-            created = link(temporary, path);
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
-        if (posix) {
-            syncDirectory(directory);
-        }
-        return loaded(path, domain, created ? "Created" : "Loaded the concurrently created");
+        KeyFile.Origin origin = KeyFile.ensure(path, "the identity key", () -> PemKeys.writeSec1(generate()));
+        ServerIdentity identity = new ServerIdentity(
+                PemKeys.read(Files.readString(path, StandardCharsets.UTF_8), path.toString()), domain);
+        log.info("{} the NetherNet server identity key {} (SHA-256 {})", origin.verb(), path, identity.fingerprint());
+        return identity;
     }
 
     /**
@@ -199,82 +160,5 @@ public final class ServerIdentity {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
         generator.initialize(new ECGenParameterSpec("secp384r1"));
         return generator.generateKeyPair();
-    }
-
-    private static ServerIdentity loaded(Path path, String domain, String how)
-            throws IOException, GeneralSecurityException {
-        ServerIdentity identity = new ServerIdentity(
-                PemKeys.read(Files.readString(path, StandardCharsets.UTF_8), path.toString()), domain);
-        log.info("{} the NetherNet server identity key {} (SHA-256 {})", how, path, identity.fingerprint());
-        return identity;
-    }
-
-    // Tightened only when actually too wide, and never through a link: a linked key usually sits on
-    // a read-only mount, such as a Kubernetes secret volume, where the chmod would fail.
-    private static void tightenExisting(Path path) throws IOException {
-        if (Files.isSymbolicLink(path)
-                || !Files.getFileStore(path).supportsFileAttributeView(PosixFileAttributeView.class)) {
-            return;
-        }
-        if (!OWNER_ONLY.containsAll(Files.getPosixFilePermissions(path))) {
-            Files.setPosixFilePermissions(path, OWNER_ONLY);
-        }
-    }
-
-    // The file is empty until it is owner-only, so the key is never readable by others.
-    private static Path createOwnerOnly(Path directory, boolean posix) throws IOException {
-        Path temporary = directory.resolve(".identity-" + Long.toUnsignedString(ThreadLocalRandom.current().nextLong(), 36) + ".tmp");
-        if (posix) {
-            return Files.createFile(temporary, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
-        }
-        if (!Files.getFileStore(directory).supportsFileAttributeView(AclFileAttributeView.class)) {
-            return Files.createFile(temporary);
-        }
-        // Set at creation, not after: a handle another account opened in between would keep its
-        // access after the ACL is tightened. An ACL given at creation also inherits nothing from
-        // the directory (checked on Windows 11).
-        UserPrincipal owner = directory.getFileSystem().getUserPrincipalLookupService()
-                .lookupPrincipalByName(System.getProperty("user.name"));
-        List<AclEntry> ownerOnly = List.of(AclEntry.newBuilder()
-                .setType(AclEntryType.ALLOW)
-                .setPrincipal(owner)
-                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
-                .build());
-        return Files.createFile(temporary, new FileAttribute<List<AclEntry>>() {
-            @Override
-            public String name() {
-                return "acl:acl";
-            }
-
-            @Override
-            public List<AclEntry> value() {
-                return ownerOnly;
-            }
-        });
-    }
-
-    /**
-     * Links the written key into place, which fails if a file appeared at the path meanwhile, so
-     * a key is never replaced. Without hard links there is no way to publish a complete file
-     * without that risk (a move may replace a file created in the same instant), so creation fails.
-     *
-     * @return whether this process created the file, false when another one won
-     */
-    private static boolean link(Path temporary, Path path) throws IOException {
-        try {
-            Files.createLink(path, temporary);
-            return true;
-        } catch (FileAlreadyExistsException race) {
-            return false;
-        } catch (UnsupportedOperationException noHardLinks) {
-            throw new IOException("Cannot create " + path + " safely: its file system has no hard links. "
-                    + "Create the key elsewhere and point to it, or use an ephemeral identity", noHardLinks);
-        }
-    }
-
-    private static void syncDirectory(Path directory) throws IOException {
-        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
     }
 }

@@ -41,7 +41,10 @@ public enum TransportDisconnectReason {
     IP_RECENTLY_CONNECTED,
     /** The remote sent something invalid. */
     BAD_PACKET,
-    /** The remote sent more than could be queued. */
+    /**
+     * More was queued than the transport holds: data waiting to be sent, as when the remote stops reading, or data
+     * received before the connection was active.
+     */
     QUEUE_TOO_LONG,
     /** The remote sent more split packets than could be reassembled. */
     SPLIT_QUEUE_TOO_LONG,

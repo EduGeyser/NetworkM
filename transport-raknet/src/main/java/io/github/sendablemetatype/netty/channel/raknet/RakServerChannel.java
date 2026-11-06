@@ -112,13 +112,15 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
      *
      * @param address         remote address of new connection.
      * @param protocolVersion RakNet protocol version from the handshake cookie, or 0 if not available.
-     * @return RakChildChannel instance of new channel, or {@code null} if a non-replaceable channel already exists.
+     * @return RakChildChannel instance of new channel, or {@code null} if a non-replaceable channel already exists
+     *         or the throttle turned the client away.
      */
     public RakChildChannel createChildChannel(InetSocketAddress address, InetSocketAddress localAddress, long clientGuid, int mtu, int protocolVersion) {
         RakChildChannel existingChannel = this.childChannelMap.get(address);
         if (existingChannel != null && (this.config().getCookieMode() == RakServerCookieMode.INVALID
                 || this.config().getCookieMode() == RakServerCookieMode.OFF)) {
             // Could be spoofed, so we don't close the existing channel.
+            this.reportAlreadyConnected(address);
             return null;
         }
 
@@ -130,6 +132,9 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         if (previous != null && throttle != null && throttle.getClass() == DefaultRakServerThrottle.class) {
             ReplacementAdmission admission = previous.beginReplacement(throttle, clientAddress);
             if (admission == ReplacementAdmission.REJECTED) {
+                // The throttle refused the reconnect. The other cause, a replacement already in progress, needs
+                // this method to run concurrently for one address, which the server's one event loop rules out.
+                this.reportThrottled(clientAddress);
                 return null;
             }
             if (admission == ReplacementAdmission.ACCEPTED) {
@@ -139,6 +144,7 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         }
         if (!replacingReservation && throttle != null) {
             if (!throttle.accept(clientAddress)) {
+                this.reportThrottled(clientAddress);
                 return null;
             }
             reservation = new ThrottleReservation(throttle, clientAddress);
@@ -181,6 +187,28 @@ public class RakServerChannel extends ProxyChannel<DatagramChannel> implements S
         }
         this.pipeline().fireChannelRead(channel).fireChannelReadComplete();
         return channel;
+    }
+
+    private void reportAlreadyConnected(InetSocketAddress address) {
+        RakServerMetrics metrics = this.config().getMetrics();
+        if (metrics != null) {
+            try {
+                metrics.alreadyConnected(address);
+            } catch (RuntimeException cause) {
+                log.warn("Failed to report a connection refused as already connected for {}", address, cause);
+            }
+        }
+    }
+
+    private void reportThrottled(InetSocketAddress address) {
+        RakServerMetrics metrics = this.config().getMetrics();
+        if (metrics != null) {
+            try {
+                metrics.connectionThrottled(address);
+            } catch (RuntimeException cause) {
+                log.warn("Failed to report a throttled connection for {}", address, cause);
+            }
+        }
     }
 
     public RakChildChannel getChildChannel(SocketAddress address) {

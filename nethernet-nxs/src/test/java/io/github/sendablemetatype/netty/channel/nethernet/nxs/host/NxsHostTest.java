@@ -45,7 +45,7 @@ class NxsHostTest {
                 .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
         int port = ((InetSocketAddress) server.localAddress()).getPort();
 
-        NxsHost.Host host = NxsHost.open(server, runtime(port), fixture.identity).toCompletableFuture()
+        NxsHost.Host host = NxsHost.open(server, runtime(port), fixture.certificate).toCompletableFuture()
                 .get(5, TimeUnit.SECONDS);
         assertEquals(List.of(host.transport().source()), server.sources());
 
@@ -61,7 +61,7 @@ class NxsHostTest {
         int port = ((InetSocketAddress) server.localAddress()).getPort();
 
         ExecutionException refused = assertThrows(ExecutionException.class, () -> NxsHost.open(server,
-                runtime(port == 65535 ? port - 1 : port + 1), fixture.identity).toCompletableFuture().get());
+                runtime(port == 65535 ? port - 1 : port + 1), fixture.certificate).toCompletableFuture().get());
         assertInstanceOf(IllegalArgumentException.class, refused.getCause());
         server.close().sync();
     }

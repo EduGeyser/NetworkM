@@ -28,6 +28,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.Admissio
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionPrincipal;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionRequest;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AssistedAdmission;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.DtlsFingerprint;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionCodec;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionValidator;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketId;
@@ -60,6 +61,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePor
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingHealth;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingState;
 import io.github.sendablemetatype.netty.util.address.EndpointAddress;
+import io.github.sendablemetatype.netty.util.nethernet.DtlsCertificate;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -104,7 +106,8 @@ import java.util.function.LongSupplier;
  * credentials; its answer goes back through the provider's control socket, cut to one candidate on the gameplay port
  * as upstream builds it, with {@code m=} and {@code c=} naming that candidate.</li>
  * <li><b>Profile.</b> It publishes the shared port's candidates (configured, local, or maintained with STUN through
- * the provider's servers), the one DTLS identity every NXS peer presents, and the admission parameters.</li>
+ * the provider's servers), the fingerprint of the one DTLS certificate every NXS peer presents, and the admission
+ * parameters.</li>
  * </ul>
  * Its state lives on the endpoint's event loop. A login still undecided at its ticket's deadline closes the child:
  * the application must decide it with {@code TransportIdentityBinding.verifyLogin} (area 9, finding F1). Closing
@@ -233,7 +236,9 @@ public final class HostTransport implements ProviderTransport {
     }
 
     private final Settings settings;
-    private final HostIdentity identity;
+    private final DtlsCertificate certificate;
+    /** The certificate's fingerprint, as the profile publishes it and assisted joins name it. */
+    private final DtlsFingerprint fingerprint;
     private final EventExecutor loop;
     private final LongSupplier millis = System::currentTimeMillis;
     private final LongSupplier nanos = System::nanoTime;
@@ -277,9 +282,10 @@ public final class HostTransport implements ProviderTransport {
     /**
      * @param loop The endpoint's event loop, which runs the source's handlers
      */
-    HostTransport(Settings settings, HostIdentity identity, EventExecutor loop) {
+    HostTransport(Settings settings, DtlsCertificate certificate, EventExecutor loop) {
         this.settings = Objects.requireNonNull(settings, "settings");
-        this.identity = Objects.requireNonNull(identity, "identity");
+        this.certificate = Objects.requireNonNull(certificate, "certificate");
+        this.fingerprint = DtlsFingerprint.of(certificate.sha256());
         this.loop = Objects.requireNonNull(loop, "loop");
         byte[] nonce = new byte[16];
         new SecureRandom().nextBytes(nonce);
@@ -488,7 +494,7 @@ public final class HostTransport implements ProviderTransport {
         AdmissionContext admission = session.admission;
         Join join = new Join(connectionId(admission.ticketId()), admission.networkId(), admission.remoteDescription(),
                 source, reply, null, new Join.Authenticated(
-                new IceCredentials(admission.localUfrag(), admission.localPassword()), identity.dtls(),
+                new IceCredentials(admission.localUfrag(), admission.localPassword()), certificate.dtls(),
                 TransportIdentityBinding.of(ledger.verifier(session.reservation)), child -> created(session, child)));
         sink.join(join);
     }
@@ -664,7 +670,7 @@ public final class HostTransport implements ProviderTransport {
         long now = millis.getAsLong();
         if (closing || draining || port == null || !ledger.isServing()
                 || !incarnation.equals(join.incarnation())
-                || !identity.fingerprint().equals(join.hostFingerprint())
+                || !fingerprint.equals(join.hostFingerprint())
                 || !validator.keyIds().contains(join.keyId())
                 || epochs.stream().noneMatch(epoch -> epoch.id().equals(join.keyId())
                 && epoch.retireAfter() > now && epoch.retireAfter() >= join.expiresAt())) {
@@ -987,7 +993,7 @@ public final class HostTransport implements ProviderTransport {
             probes = offered;
             families = Set.of();
         }
-        HostProfile profile = new HostProfile(offered, identity.fingerprint(), keyId, SCTP_PORT,
+        HostProfile profile = new HostProfile(offered, fingerprint, keyId, SCTP_PORT,
                 StatelessAdmissionCodec.MAX_MESSAGE_SIZE, incarnation);
         long revision = candidateRevision;
         long version = publicationVersion;
@@ -1213,6 +1219,6 @@ public final class HostTransport implements ProviderTransport {
 
     @Override
     public String toString() {
-        return "HostTransport[incarnation=" + incarnation + ", " + identity + "]";
+        return "HostTransport[incarnation=" + incarnation + ", " + certificate + "]";
     }
 }
