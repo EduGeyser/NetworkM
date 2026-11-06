@@ -69,8 +69,8 @@ import java.util.function.Supplier;
  *   <li>{@code POST /v1/join/{networkId}}: the body is the client's SDP offer; the response is
  *   the full answer ({@code application/sdp}) or a {@link JoinRefusal}'s status with an empty
  *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle. The
- *   endpoint refuses a second offer for a network ID whose join has neither failed nor gone active
- *   yet with {@link JoinRefusal#DUPLICATE}, whichever of its HTTP sources the offers came on
+ *   endpoint refuses a second offer for a network ID whose join has neither been answered nor
+ *   failed yet with {@link JoinRefusal#DUPLICATE}, whichever of its HTTP sources the offers came on
  *   ({@link #oneJoinPerNetworkId()}).</li>
  * </ul>
  * Everything else is a {@code 404}, as on vanilla.

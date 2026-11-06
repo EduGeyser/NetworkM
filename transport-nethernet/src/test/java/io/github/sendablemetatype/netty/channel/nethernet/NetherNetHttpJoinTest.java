@@ -181,35 +181,43 @@ class NetherNetHttpJoinTest {
     }
 
     @Test
-    void everyHttpSourceOfAnEndpointHoldsANetworkIdUntilItsJoinGoesActive() throws Exception {
-        start(false);
+    void everyHttpSourceOfAnEndpointHoldsANetworkIdUntilItsJoinIsAnswered() throws Exception {
+        start(true);
         bind();
         NetherNetHttpSignaling other = httpSource();
 
-        assertStatus(200, response(post(http, "42", retailOffer())));
-        NetherNetChildChannel pending = harness.child();
-        assertStatus(409, response(post(other, "42", retailOffer())));
-        assertEquals(1, harness.engine.peers().size(), "the duplicate gets no peer");
-        assertTrue(pending.isOpen(), "and the first join is untouched");
+        Socket first = post(http, "42", educationOffer());
+        checks.awaitQueued();
+        assertStatus(409, response(post(other, "42", educationOffer())));
+        assertTrue(harness.engine.peers().isEmpty(), "the duplicate gets no peer");
 
-        harness.activate(harness.engine.peers().getFirst());
-        assertTrue(pending.isActive());
-        assertStatus(200, response(post(other, "42", retailOffer())));
+        checks.runNext();
+        assertStatus(200, response(first));
+        NetherNetChildChannel answered = harness.child();
+        assertFalse(answered.isActive());
+        Socket again = post(other, "42", educationOffer());
+        checks.awaitQueued();
+        checks.runNext();
+        assertStatus(200, response(again));
+        assertTrue(answered.isOpen(), "the first join is untouched");
     }
 
     @Test
-    void aNetworkIdStaysHeldAfterItsHttpSourceIsReplacedUntilItsJoinFails() throws Exception {
-        start(false);
+    void removingAnHttpSourceFreesTheNetworkIdOfTheJoinItAbandons() throws Exception {
+        harness = new EndpointHarness();
         bind();
-        assertStatus(200, response(post(http, "42", retailOffer())));
+        Socket first = post(http, "42", retailOffer());
         NetherNetChildChannel pending = harness.child();
+        harness.negotiating();
+        // Only later peers answer: the first join stays without one.
+        harness.engine.answerWith(ANSWER);
+        harness.engine.gatherWith(ANSWER + HOST_CANDIDATE + "\r\n");
 
         assertTrue(harness.server.removeSource(http));
-        NetherNetHttpSignaling replacement = httpSource();
-        assertStatus(409, response(post(replacement, "42", retailOffer())));
+        response(first);
+        awaitTrue(() -> !pending.isOpen(), "the abandoned join closes");
 
-        pending.close().sync();
-        harness.sync();
+        NetherNetHttpSignaling replacement = httpSource();
         assertStatus(200, response(post(replacement, "42", retailOffer())));
     }
 

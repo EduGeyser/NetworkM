@@ -550,9 +550,10 @@ class NetherNetServerAdmissionTest {
 
     // One pending join per network ID.
 
-    /** How the first join for a network ID ends, or not yet, before a second one comes. */
+    /** How far the first join for a network ID got, or how it ended, before a second one comes. */
     enum FirstJoin {
-        REFUSED(true), CLIENT_LEFT(true), PENDING(false), ACTIVE(true), CLOSED(true);
+        REFUSED(true), CLIENT_LEFT(true), SOURCE_REMOVED(true), PENDING(false), PENDING_SOURCE_REMOVED(false),
+        ANSWERED(true), NEGOTIATION_FAILED(true), CLOSED(true);
 
         final boolean frees;
 
@@ -563,12 +564,14 @@ class NetherNetServerAdmissionTest {
 
     @ParameterizedTest
     @EnumSource(FirstJoin.class)
-    void aNetworkIdStaysHeldUntilItsJoinGoesActiveOrFails(FirstJoin outcome) throws Exception {
+    void aNetworkIdStaysHeldUntilItsJoinIsAnsweredOrFails(FirstJoin outcome) throws Exception {
         useManualChecks();
         reportRefusals();
         harness.bind();
         FakeJoinSource source = new FakeJoinSource(false, true);
         harness.server.addSource(source);
+        // The ID is held across every source that asks for it, also one added later.
+        FakeJoinSource other = new FakeJoinSource(false, true);
 
         FakeJoinSource.Reply first = source.offerFrom("42", "1",
                 outcome == FirstJoin.REFUSED ? OFFER : educationOffer());
@@ -584,22 +587,38 @@ class NetherNetServerAdmissionTest {
                 assertEquals(1, first.finished.get());
                 checks.runNext(); // the withdrawn check
             }
-            case PENDING, ACTIVE, CLOSED -> {
+            case SOURCE_REMOVED -> {
+                harness.server.removeSource(source);
+                first.assertRefused(JoinRefusal.CAPACITY);
+                checks.runNext(); // the withdrawn check
+            }
+            case PENDING, PENDING_SOURCE_REMOVED, ANSWERED, NEGOTIATION_FAILED, CLOSED -> {
                 checks.runNext();
                 NetherNetChildChannel child = harness.child();
-                if (outcome == FirstJoin.ACTIVE) {
-                    harness.activate(harness.engine.lastPeer());
-                    assertTrue(child.isActive());
-                } else if (outcome == FirstJoin.CLOSED) {
-                    child.close().sync();
-                    harness.sync();
+                FakePeer peer = harness.negotiating();
+                switch (outcome) {
+                    case PENDING_SOURCE_REMOVED -> harness.server.removeSource(source);
+                    case ANSWERED -> {
+                        peer.completeAnswer(ANSWER);
+                        peer.gatheringComplete(ANSWER);
+                        first.answer();
+                    }
+                    case NEGOTIATION_FAILED -> {
+                        peer.failAnswer(new IllegalStateException("no answer"));
+                        first.assertRefused(JoinRefusal.INTERNAL);
+                    }
+                    case CLOSED -> child.close().sync();
+                    default -> {
+                    }
                 }
+                harness.sync();
             }
         }
+        harness.server.addSource(other);
         int peers = harness.engine.peers().size();
         refusedStatuses.clear();
 
-        FakeJoinSource.Reply second = source.offerFrom("42", "2", educationOffer());
+        FakeJoinSource.Reply second = other.offerFrom("42", "2", educationOffer());
         if (outcome.frees) {
             checks.awaitQueued();
             checks.runNext();
@@ -614,6 +633,28 @@ class NetherNetServerAdmissionTest {
             assertEquals(List.of(409), refusedStatuses);
             assertTrue(harness.server.gate().pending() > 0, "the first join keeps its place");
         }
+    }
+
+    @Test
+    void anAnsweredJoinThatEndsLaterLeavesTheNextJoinsHoldAlone() throws Exception {
+        harness.bind();
+        FakeJoinSource source = new FakeJoinSource(false, true);
+        harness.server.addSource(source, EndpointHarness.ADMIT_ALL);
+        FakeJoinSource.Reply first = source.offerFrom("42", "1", OFFER);
+        NetherNetChildChannel firstChild = harness.child();
+        FakePeer peer = harness.negotiating();
+        peer.completeAnswer(ANSWER);
+        peer.gatheringComplete(ANSWER);
+        first.answer();
+
+        source.offerFrom("42", "2", OFFER);
+        NetherNetChildChannel secondChild = harness.child();
+        firstChild.close().sync();
+        harness.sync();
+        assertEquals(1, first.finished.get());
+
+        source.offerFrom("42", "3", OFFER).assertRefused(JoinRefusal.DUPLICATE);
+        assertTrue(secondChild.isOpen());
     }
 
     @Test
