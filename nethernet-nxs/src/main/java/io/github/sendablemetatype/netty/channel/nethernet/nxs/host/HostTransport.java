@@ -108,7 +108,8 @@ import java.util.function.LongSupplier;
  * </ul>
  * Its state lives on the endpoint's event loop. A login still undecided at its ticket's deadline closes the child:
  * the application must decide it with {@code TransportIdentityBinding.verifyLogin} (area 9, finding F1). Closing
- * this transport stops admitting and revokes pending logins; players already in stay connected (ruling A-1).
+ * this transport stops admitting, revokes pending logins and closes the children they belong to; players whose login
+ * was accepted stay connected (ruling A-1).
  */
 public final class HostTransport implements ProviderTransport {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(HostTransport.class);
@@ -1122,8 +1123,10 @@ public final class HostTransport implements ProviderTransport {
     }
 
     /**
-     * Stops admitting, revokes the admission keys and every pending login, and gives the held checks back. Players
-     * whose login was decided stay connected. Idempotent; the endpoint calls it when it closes or removes this source.
+     * Stops admitting, revokes the admission keys and every pending login, gives the held checks back, and closes
+     * every child whose login was not accepted, since no login deadline closes it once this transport is gone.
+     * Players whose login was accepted stay connected. Idempotent; the endpoint calls it when it closes or removes
+     * this source.
      */
     @Override
     public CompletionStage<Void> close() {
@@ -1156,7 +1159,14 @@ public final class HostTransport implements ProviderTransport {
                 state.end(new IllegalStateException("The NXS host transport closed"));
             }
         }
-        ledger.close();
+        for (TicketLedger.Reservation reservation : ledger.close()) {
+            Session session = sessions.get(reservation);
+            if (session != null) {
+                log.debug("Closing NXS ticket {}: its login was not accepted before NXS closed",
+                        reservation.ticketId());
+                session.child.close();
+            }
+        }
         started.completeExceptionally(new IllegalStateException("The NXS host transport is closed"));
         health(SignalingState.CLOSED, null);
         closed.complete(null);

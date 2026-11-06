@@ -183,6 +183,29 @@ class HostTransportTest {
     }
 
     @Test
+    void removingNxsClosesTheChildrenWhoseLoginIsUndecidedAndKeepsThePlayers() throws Exception {
+        fixture.start(HostFixture.fixed());
+        fixture.installKey();
+        fixture.hold(fixture.mint(30).localUfrag(), CLIENT);
+        FakePeer undecidedPeer = fixture.lastPeer();
+        NetherNetChildChannel undecided = fixture.child();
+        activate(undecidedPeer);
+
+        fixture.hold(fixture.mint(30).localUfrag(), new InetSocketAddress("203.0.113.68", 50003));
+        FakePeer playerPeer = fixture.lastPeer();
+        NetherNetChildChannel player = fixture.child();
+        activate(playerPeer);
+        assertEquals(TransportIdentityBinding.Result.ACCEPTED,
+                TransportIdentityBinding.verifyLogin(player, fixture.clientKey.getPublic()));
+
+        assertTrue(fixture.server.removeSource(fixture.transport.source()));
+        assertTrue(undecided.closeFuture().await(5, TimeUnit.SECONDS),
+                "nothing would decide the login or close the child once NXS is gone");
+        Thread.sleep(300);
+        assertTrue(player.isOpen(), "a player whose login was accepted stays (ruling A-1)");
+    }
+
+    @Test
     void theProfileNamesTheIdentityTheKeyAndTheBoundPort() throws Exception {
         fixture.start(HostFixture.fixed());
         fixture.installKey();

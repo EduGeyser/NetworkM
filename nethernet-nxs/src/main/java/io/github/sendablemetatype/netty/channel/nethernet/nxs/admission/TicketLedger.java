@@ -279,18 +279,26 @@ public final class TicketLedger {
     /**
      * Refuses new reservations and revokes the pending logins.
      *
-     * @return The sessions still reserved, each now closing; finish each once its peer is gone
+     * @return The sessions whose login was not accepted, for closing: nothing decides a revoked login, so the session
+     *         would stay open with its data channels for as long as the client keeps it. Finish each once its peer is
+     *         gone. A session whose login was accepted carries on until it ends.
      */
     public synchronized List<Reservation> close() {
         closed = true;
-        List<Reservation> active = claims.values().stream().filter(reservation -> !reservation.closed).toList();
-        for (Reservation reservation : active) {
+        List<Reservation> refused = new ArrayList<>();
+        for (Reservation reservation : claims.values()) {
+            if (reservation.closed) {
+                continue;
+            }
             reservation.closing = true;
             reservation.verifier.close();
             reservation.admission.loginBinding().release();
+            if (reservation.verifier.rejected()) {
+                refused.add(reservation);
+            }
         }
         claims.values().removeIf(reservation -> reservation.closed);
-        return active;
+        return refused;
     }
 
     /** Asks the admission's binding; erases it once the login is decided or the session ends. */

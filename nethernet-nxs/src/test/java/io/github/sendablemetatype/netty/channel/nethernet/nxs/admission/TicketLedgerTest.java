@@ -202,6 +202,19 @@ class TicketLedgerTest extends AdmissionFixture {
     }
 
     @Test
+    void closingHandsBackForClosingOnlyTheSessionsWhoseLoginWasNotAccepted() throws Exception {
+        var gate = gate();
+        var player = gate.reserve(request(), now, 0);
+        assertTrue(gate.ready(player));
+        gate.verifier(player).acceptForwardedIdentity();
+        var undecided = gate.reserve(new AdmissionRequest(anotherToken(), remote, other), now, 0);
+        assertTrue(gate.ready(undecided));
+
+        assertEquals(List.of(undecided), gate.close());
+        assertTrue(gate.verifier(undecided).rejected(), "its login can no longer be accepted");
+    }
+
+    @Test
     void drainingRejectsNewReservations() {
         var gate = gate();
         assertTrue(gate.isServing());

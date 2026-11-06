@@ -23,8 +23,8 @@ import java.util.concurrent.CompletionStage;
  * // Every NXS child carries a login binding: decide it with TransportIdentityBinding.verifyLogin
  * // before the ticket's deadline, or the child is closed.
  * }</pre>
- * Closing the client closes the transport, which removes itself from the endpoint; players whose login was decided
- * stay connected.
+ * Closing the client closes the transport, which removes itself from the endpoint; players whose login was accepted
+ * stay connected, and every other NXS child is closed.
  */
 public final class NxsHost {
 
