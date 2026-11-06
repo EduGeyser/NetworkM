@@ -670,6 +670,68 @@ class RakSessionCodecTests {
     }
 
     @Test
+    void ackOfAnEarlierTransmissionAcknowledgesTheResentDatagram() {
+        try (Session s = new Session(false, 10000)) {
+            ByteBuf payload = s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            s.advance(2000);
+            Sent resent = s.readData().get(0);
+            // The acknowledgement took longer than the timeout, so it names the replaced transmission
+            s.advance(100);
+            s.ack(original.sequence, false);
+            assertEquals(0, payload.refCnt(), "The ACK must acknowledge the datagram");
+            assertEquals(2100, s.codec.getRTT(), "The RTT must be measured from the acknowledged transmission");
+            s.ack(resent.sequence, false);
+            s.advance(2000);
+            assertTrue(s.readData().isEmpty(), "Acknowledged data must not be resent");
+        }
+    }
+
+    @Test
+    void nackOfAReplacedTransmissionDoesNotResendAgain() {
+        try (Session s = new Session(false, 10000)) {
+            ByteBuf payload = s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            s.advance(2000);
+            Sent resent = s.readData().get(0);
+            s.ack(original.sequence, true);
+            assertTrue(s.readData().isEmpty(), "The resend that replaced it is already on its way");
+            s.ack(resent.sequence, false);
+            assertEquals(0, payload.refCnt());
+        }
+    }
+
+    @Test
+    void acksNameOnlyTheLatestTrackedTransmissions() {
+        try (Session s = new Session(false, 60000)) {
+            ByteBuf acknowledged = s.write(100, RakPriority.IMMEDIATE);
+            ByteBuf unacknowledged = s.write(100, RakPriority.IMMEDIATE);
+            List<List<Sent>> transmissions = new ArrayList<>(List.of(s.readData()));
+            for (int i = 1; i <= RakSessionCodec.MAX_TRACKED_TRANSMISSIONS; i++) {
+                s.advance(2000);
+                transmissions.add(s.readData());
+            }
+            int acknowledgedIndex = transmissions.get(0).get(0).reliabilityIndex;
+            // Transmission 2 of the first datagram and transmission 1 of the second, now forgotten
+            for (Sent sent : transmissions.get(1)) {
+                if (sent.reliabilityIndex == acknowledgedIndex) {
+                    s.ack(sent.sequence, false);
+                }
+            }
+            for (Sent sent : transmissions.get(0)) {
+                if (sent.reliabilityIndex != acknowledgedIndex) {
+                    s.ack(sent.sequence, false);
+                }
+            }
+            assertEquals(0, acknowledged.refCnt());
+            assertEquals(1, unacknowledged.refCnt());
+            s.transport.close();
+            assertEquals(0, unacknowledged.refCnt(), "Closing must release a resent datagram once");
+            s.transport.checkException();
+        }
+    }
+
+    @Test
     void ackOfEarliestDatagramPreservesTheNextDeadline() {
         try (Session s = new Session(false, 10000)) {
             s.write(100, RakPriority.IMMEDIATE);
