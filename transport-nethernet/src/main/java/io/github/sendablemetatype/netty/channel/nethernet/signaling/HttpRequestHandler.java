@@ -48,7 +48,7 @@ import java.util.function.Supplier;
 final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private static final String JOIN_PATH = "/v1/join";
     private static final String OFFER_PATH_PREFIX = "/v1/join/";
-    private static final String FORWARDED_FOR = "X-Forwarded-For";
+    static final String FORWARDED_FOR = "X-Forwarded-For";
     /** Long enough for any network ID a client sends; the query is the client's own say. */
     private static final int MAX_QUERY_NETWORK_ID_LENGTH = 64;
 
@@ -139,9 +139,6 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             return;
         }
         SourcedAddress source = signaling.sourceOf(connection, peer(), request.headers().getAll(FORWARDED_FOR));
-        if (source == null) {
-            return;
-        }
         if (!admits(sink, source)) {
             NetherNetHttpSignaling.log.debug("Declined NetherNet for {}: a join would be refused now", source);
             respond(HttpResponseStatus.NOT_FOUND, false);
@@ -187,9 +184,6 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         }
         InetSocketAddress peer = peer();
         SourcedAddress source = signaling.sourceOf(connection, peer, request.headers().getAll(FORWARDED_FOR));
-        if (source == null) {
-            return;
-        }
         int localPort = ctx.channel().localAddress() instanceof InetSocketAddress local ? local.getPort() : 0;
         Join.Addressed addressed = new Join.Addressed(request.headers().get(HttpHeaderNames.HOST), localPort,
                 signaling.trustedProxies().isProxy(peer));
