@@ -69,6 +69,8 @@ final class IndependentProviderStub implements AutoCloseable {
     volatile boolean forgetProfile;
     /** Leave the readiness out of heartbeat replies, as a broken provider might. */
     volatile boolean omitReadiness;
+    /** Answer every heartbeat with a null profile revision, so one that carries a profile goes unacknowledged. */
+    volatile boolean withholdRevision;
     volatile JsonObject readiness;
     volatile int outcomeAttempts;
     volatile boolean loseCompletionResponse;
@@ -546,7 +548,7 @@ final class IndependentProviderStub implements AutoCloseable {
         ok.add("admissionKeyRetirements", retirements == null ? new JsonArray() : retirements.deepCopy());
         draining = !body.get("acceptingPlayers").getAsBoolean();
         ok.addProperty("hostProfileRevision", "example-profile-" + profileRevision);
-        if (forgetProfile && !body.has("hostProfile")) {
+        if (forgetProfile && !body.has("hostProfile") || withholdRevision) {
             forgetProfile = false;
             ok.add("hostProfileRevision", JsonNull.INSTANCE);
         }

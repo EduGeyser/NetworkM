@@ -190,6 +190,25 @@ class ProviderRefusalsTest {
     }
 
     @Test
+    void repliesThatFailToApplyStillLengthenTheBackoff(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var transport = new FakeTransport();
+            var client = h.client(path, transport);
+            h.await(client.start());
+            // Every heartbeat now carries the profile and gets no acknowledgement for it
+            h.stub.withholdRevision = true;
+            h.stub.forgetProfile = true;
+            int before = h.stub.heartbeats;
+            h.run(Duration.ofSeconds(65));
+            assertFalse(h.logged(ProviderDiagnostic.Level.WARN, "Profile acknowledgement missing").isEmpty());
+            // The first check-in takes two exchanges, then a growing backoff tries again after about 10 and 30
+            // seconds; one stuck at its first step would try every 10
+            assertTrue(h.stub.heartbeats - before <= 4, (h.stub.heartbeats - before) + " heartbeats");
+            h.stub.withholdRevision = false;
+        }
+    }
+
+    @Test
     void aGoneRegistrationStopsSignalingUntilARestart(@TempDir Path path) throws Exception {
         try (var h = new ClientHarness()) {
             var transport = new FakeTransport();

@@ -266,7 +266,6 @@ final class Heartbeats {
     }
 
     private CompletableFuture<Boolean> apply(Round round, Wire.HeartbeatReply reply) {
-        failures = 0;
         long successNanos = runtime.clock.nanos(), successMillis = runtime.clock.millis();
         boolean again = false;
         HostProfileSnapshot snapshot = round.snapshot, diagnostic = round.diagnosticSnapshot;
@@ -409,6 +408,8 @@ final class Heartbeats {
                     });
                 })
                 .thenApply(ignored -> {
+                    // Only a reply applied in full ends the failures; one that fails to apply is one more
+                    failures = 0;
                     if (!more[0]) {
                         runtime.log.recovered(ProviderLog.Operation.STATUS);
                     }
