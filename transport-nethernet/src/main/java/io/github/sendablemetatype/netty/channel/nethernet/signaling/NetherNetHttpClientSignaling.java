@@ -27,11 +27,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -58,6 +59,7 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import javax.net.ssl.SSLException;
+import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -428,12 +430,15 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                         ChannelPipeline pipeline = channel.pipeline();
                         SslHandler tls = null;
                         if (ssl != null) {
-                            ServerBytes serverBytes = new ServerBytes();
+                            ServerSide server = new ServerSide();
                             tls = ssl.newHandler(channel.alloc(), address.getHostString(), address.getPort());
-                            pipeline.addLast(serverBytes, tls);
+                            // The exchange's deadline bounds the handshake too; Netty's own 10 s
+                            // timer would end a stalled handshake with a failure of its own
+                            tls.setHandshakeTimeoutMillis(0);
+                            pipeline.addLast(server, tls);
                             tls.handshakeFuture().addListener(handshake -> {
                                 if (!handshake.isSuccess()) {
-                                    result.completeExceptionally(tlsFailure(handshake.cause(), serverBytes.seen));
+                                    result.completeExceptionally(tlsFailure(handshake.cause(), server));
                                 }
                             });
                         }
@@ -476,29 +481,61 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
 
     /**
      * Whether a failed handshake is the server refusing TLS, the one case the retail client falls
-     * back to plain HTTP for: it closed or reset before sending anything, or what it sent was not
-     * TLS. Anything else, such as a certificate the client rejects or an alert, is final.
+     * back to plain HTTP for: it closed or reset the connection before sending anything, or what it
+     * sent was not TLS. Anything else is final: a certificate the client rejects, an alert, and a
+     * handshake that ended without the server ending it (a timeout, or this side closing).
      */
-    private static SSLException tlsFailure(Throwable cause, boolean serverSpoke) {
+    private static SSLException tlsFailure(Throwable cause, ServerSide server) {
         for (Throwable t = cause; t != null; t = t.getCause()) {
             if (t instanceof NotSslRecordException) {
                 return new TlsRefusedException("the server did not answer with TLS", cause);
             }
         }
-        if (!serverSpoke) {
+        if (!server.spoke && server.ended) {
             return new TlsRefusedException("the server closed the connection before answering", cause);
         }
         return cause instanceof SSLException ssl ? ssl : new SSLException(cause.toString(), cause);
     }
 
-    /** Notes whether the server sent anything, which tells a refused handshake from a failed one. */
-    private static final class ServerBytes extends ChannelInboundHandlerAdapter {
-        volatile boolean seen;
+    /**
+     * What the server did on a TLS connection, which tells a refused handshake from a failed one.
+     * First in the pipeline, so it sees the server's bytes, a reset and the end of the connection
+     * before the TLS handler fails the handshake.
+     */
+    private static final class ServerSide extends ChannelDuplexHandler {
+        /** Whether the server sent any byte. */
+        boolean spoke;
+        /** Whether the server ended the connection: closed it, or reset it. */
+        boolean ended;
+        private boolean closing;
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            seen = true;
+            spoke = true;
             ctx.fireChannelRead(msg);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            if (cause instanceof IOException) {
+                ended = true;
+            }
+            ctx.fireExceptionCaught(cause);
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            // A close this side asked for passed here on its way out; the server's close did not
+            if (!closing) {
+                ended = true;
+            }
+            super.channelInactive(ctx);
+        }
+
+        @Override
+        public void close(ChannelHandlerContext ctx, ChannelPromise promise) throws Exception {
+            closing = true;
+            super.close(ctx, promise);
         }
     }
 

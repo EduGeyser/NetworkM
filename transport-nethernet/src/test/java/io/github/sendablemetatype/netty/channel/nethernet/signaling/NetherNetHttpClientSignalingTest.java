@@ -294,6 +294,24 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void aTlsHandshakeTheServerNeverAnswersWaitsForTheAnswerDeadline() throws Exception {
+        // Accepts connections (the backlog does) and never sends a byte
+        try (ServerSocket silent = new ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))) {
+            address = new InetSocketAddress("127.0.0.1", silent.getLocalPort());
+            // Past Netty's own 10 s handshake timer, which used to end the wait as a TLS refusal
+            NetherNetHttpClientSignaling client = connected(trusting().withScheme(Scheme.HTTPS)
+                    .withAnswerTimeout(Duration.ofSeconds(11)));
+            long start = System.nanoTime();
+
+            client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
+
+            assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
+                    + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+            assertTrue(System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(11));
+        }
+    }
+
+    @Test
     void aLoopGroupThatShutDownFailsRequestsInsteadOfLeavingThemPending() throws Exception {
         EventLoopGroup stopped = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         stopped.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
