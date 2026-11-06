@@ -4,37 +4,40 @@ config:
   theme: redux
 ---
 flowchart LR
- subgraph InternalPipeline["<b>RakNet Internal Pipeline</b><br>(Parent DatagramChannel)"]
-    direction TB
-        ProxyRoute["<b>RakClientProxyRouteHandler</b><br><i>Routes to/from Client Channel</i>"]
-        DatagramCodec["<b>RakDatagramCodec</b><br><i>Encodes/Decodes<br>RakNet Datagrams</i>"]
-        AckHandler["<b>RakAcknowledgeHandler</b><br><i>Manages ACKs/NACKs</i>"]
-        SessionCodec["<b>RakSessionCodec</b><br><i>Reliability, Ordering,<br>Split Packets</i>"]
-  end
- subgraph UserPipeline["<b>User ChannelPipeline</b><br>(RakClientChannel)"]
-        UserLogic["<b>User Handlers</b><br><i>Application Logic</i>"]
-  end
-    Network(("Network Socket")) == Inbound <i>UDP Datagram</i> ==> DatagramCodec
-    DatagramCodec == <i>EncapsulatedPacket</i> ==> AckHandler
-    AckHandler == <i>EncapsulatedPacket</i> ==> SessionCodec & DatagramCodec
-    SessionCodec == <i>ByteBuf</i> ==> ProxyRoute
-    ProxyRoute == <i>ByteBuf</i> ==> UserLogic & SessionCodec
-    UserLogic == <i>ByteBuf</i> ==> ProxyRoute
-    SessionCodec == <i>EncapsulatedPacket</i> ==> AckHandler
-    DatagramCodec == Outbound <i>UDP Datagram</i> ==> Network
+    Network(("Network socket"))
 
-     ProxyRoute:::shared
-     DatagramCodec:::shared
-     AckHandler:::shared
-     SessionCodec:::shared
+ subgraph InternalPipeline["<b>RakNet internal pipeline</b><br>(parent DatagramChannel)"]
+    ProxyRoute["<b>RakClientProxyRouteHandler</b><br><i>Unwraps the server's datagrams, addresses outbound ones</i>"]
+    DatagramCodec["<b>RakDatagramCodec</b><br><i>Encodes and decodes datagrams</i>"]
+    AckHandler["<b>RakAcknowledgeHandler</b><br><i>Applies received ACKs and NACKs</i>"]
+    SessionCodec["<b>RakSessionCodec</b><br><i>Reliability, ordering, split messages</i>"]
+ end
+ subgraph UserPipeline["<b>User ChannelPipeline</b><br>(RakClientChannel)"]
+    UserLogic["<b>User Handlers</b><br><i>Application logic</i>"]
+ end
+
+    %% Inbound
+    Network == Inbound <i>UDP datagram</i> ==> ProxyRoute
+    ProxyRoute == <i>ByteBuf</i> ==> DatagramCodec
+    DatagramCodec == ACK, NACK ==> AckHandler
+    DatagramCodec == <i>RakDatagramPacket</i> ==> SessionCodec
+    SessionCodec == <i>RakMessage</i> ==> UserLogic
+    AckHandler -. Acknowledged ranges .-> SessionCodec
+
+    %% Outbound
+    UserLogic == <i>ByteBuf</i>, <i>RakMessage</i> ==> SessionCodec
+    SessionCodec == <i>RakDatagramPacket</i>, ACK, NACK ==> DatagramCodec
+    DatagramCodec == <i>ByteBuf</i> ==> ProxyRoute
+    ProxyRoute == Outbound <i>UDP datagram</i> ==> Network
+
+    %% Styling
+    ProxyRoute:::shared
+    DatagramCodec:::shared
+    AckHandler:::shared
+    SessionCodec:::shared
+
     classDef shared fill:#9b59b6,stroke:#333,stroke-width:2px
-    linkStyle 0 stroke:#2ecc71,stroke-width:4px,color:#2ecc71,fill:none
-    linkStyle 1 stroke:#2ecc71,stroke-width:4px,color:#2ecc71,fill:none
-    linkStyle 2 stroke:#2ecc71,stroke-width:4px,color:#2ecc71,fill:none
-    linkStyle 3 stroke:#3498db,stroke-width:4px,color:#3498db,fill:none
-    linkStyle 4 stroke:#2ecc71,stroke-width:4px,color:#2ecc71,fill:none
-    linkStyle 5 stroke:#2ecc71,stroke-width:4px,color:#2ecc71,fill:none
-    linkStyle 6 stroke:#3498db,stroke-width:4px,color:#3498db,fill:none
-    linkStyle 7 stroke:#3498db,stroke-width:4px,color:#3498db,fill:none
-    linkStyle 8 stroke:#3498db,stroke-width:4px,color:#3498db,fill:none
-    linkStyle 9 stroke:#3498db,stroke-width:4px,color:#3498db,fill:none
+
+    linkStyle 0,1,2,3,4 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
+    linkStyle 5 stroke:#2ecc71,stroke-width:2px,color:#2ecc71
+    linkStyle 6,7,8,9 stroke:#3498db,stroke-width:4px,color:#3498db
