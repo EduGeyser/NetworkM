@@ -548,6 +548,11 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
                 log.debug("Closing {}: {}", this, broken.getMessage());
                 endTransport(broken.reason(), new IOException(broken.getMessage()));
                 return;
+            } catch (RuntimeException | Error e) {
+                // The assembler closed on a lost segment; without an ending the connection would stall.
+                endTransport(TransportDisconnectReason.TRANSPORT_FAILED,
+                        new IOException("Reassembling a reliable message failed", e));
+                throw e;
             }
             if (whole == null) {
                 return;

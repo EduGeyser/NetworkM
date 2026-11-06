@@ -8,6 +8,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
@@ -145,6 +147,20 @@ class NetherNetDisconnectReasonTest {
     }
 
     @Test
+    void aFailedCopyEndsTheConnectionRatherThanSplittingTheMessage() {
+        FailingAllocator allocator = new FailingAllocator();
+        try (ActiveChild h = new ActiveChild(child -> child.config().setAllocator(allocator))) {
+            h.fixture.reliable(2, 1);
+            allocator.fail = true;
+            assertThrows(IllegalStateException.class, () -> h.fixture.reliable(1, 2));
+            allocator.fail = false;
+            h.fixture.reliable(0, 3);
+            h.run();
+            assertEquals(List.of("active", "TRANSPORT_FAILED", "inactive"), h.events);
+        }
+    }
+
+    @Test
     void aMessageOverTheReassemblyCapFiresSplitQueueTooLong() {
         try (ActiveChild h = new ActiveChild(child ->
                 child.config().setOption(NetherChannelOption.NETHER_MAX_REASSEMBLED_BYTES, 2))) {
@@ -233,6 +249,23 @@ class NetherNetDisconnectReasonTest {
             h.run();
             assertEquals(List.of("ice CONNECTED", "peer CONNECTED", "path HOST PEER_REFLEXIVE"), seen);
             assertEquals(List.of("active", "read:9"), h.events);
+        }
+    }
+
+    /** Hands out heap buffers until told to fail. */
+    private static final class FailingAllocator extends UnpooledByteBufAllocator {
+        volatile boolean fail;
+
+        FailingAllocator() {
+            super(false);
+        }
+
+        @Override
+        protected ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity) {
+            if (fail) {
+                throw new IllegalStateException("No buffer");
+            }
+            return super.newHeapBuffer(initialCapacity, maxCapacity);
         }
     }
 }

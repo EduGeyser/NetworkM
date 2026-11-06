@@ -61,6 +61,8 @@ final class NetherNetMessageAssembler {
      * @return the completed message, or null while a split message is still
      *         arriving and after the assembler closed
      * @throws NetherNetFramingException for framing the stream cannot continue past
+     * @throws RuntimeException when a copy fails, which closes the assembler
+     *         too: the stream lost a segment
      */
     synchronized ByteBuf decode(ByteBuffer segment, ByteBufAllocator allocator, int maxMessageBytes,
                                 NetherChannelMetrics metrics) {
@@ -95,7 +97,7 @@ final class NetherNetMessageAssembler {
             if (countdown != 0) {
                 expected = countdown - 1;
                 if (metrics != null) {
-                    // A failing metric must not reach the catch below, which drops the partial message.
+                    // A failing metric must not reach the catch below, which ends the stream.
                     try {
                         metrics.fragmentsIn(1);
                     } catch (RuntimeException e) {
@@ -109,7 +111,8 @@ final class NetherNetMessageAssembler {
             expected = -1;
             return message;
         } catch (RuntimeException | Error e) {
-            clear();
+            // Delivering later segments would split the lost message into others.
+            close();
             throw e;
         }
     }
