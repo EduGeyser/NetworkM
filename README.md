@@ -102,9 +102,11 @@ Java packages use the `io.github.sendablemetatype.webrtc` namespace.
 ## Building from source
 
 Run `./gradlew build` (or `gradlew.bat build` on Windows) with Java 17 or newer.
-Gradle provisions JDK 27 for compilation and tests. Compilation uses
-`--release 25`. CI runs the same tests on Java 25 and 27; use
-`-PtestJavaVersion=25` to test on the minimum supported version locally.
+Gradle provisions the newest JDK, which `newestJavaVersion` in
+[gradle.properties](gradle.properties) names, for compilation and tests.
+Compilation uses `--release 25`. CI runs the same tests on Java 25 and on the
+newest JDK; use `-PtestJavaVersion=25` to test on the minimum supported version
+locally.
 The `nethernet-nxs` tests run the NXS specification's Node.js verifiers and fail
 without Node.js; `-PnxsNode=<path>` selects the binary, `node` on the path
 otherwise.

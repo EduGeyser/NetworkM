@@ -37,7 +37,10 @@ val networkVersion = System.getenv("NETWORK_PUBLISH_VERSION")?.trim()?.takeIf { 
         ?: rootProject.property("version") as String
 val networkGroup = providers.gradleProperty("networkGroup").getOrElse("io.github.sendablemetatype.netty")
 val jacocoVersion = libs.versions.jacoco.get()
-val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(27)
+val newestJavaVersion = providers.gradleProperty("newestJavaVersion").map(String::toInt).get()
+// The oldest Java the artifacts run on, set by hand; CI tests on it next to the newest
+val minimumJavaVersion = 25
+val testJavaVersion = providers.gradleProperty("testJavaVersion").map(String::toInt).orElse(newestJavaVersion)
 val networkRepository = providers.gradleProperty("networkRepository")
         .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
 val networkRepositoryUrl = networkRepository.map { "https://github.com/$it" }
@@ -54,7 +57,7 @@ subprojects {
 
     configure<JavaPluginExtension> {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(27))
+            languageVersion.set(JavaLanguageVersion.of(newestJavaVersion))
         }
         withJavadocJar()
         withSourcesJar()
@@ -128,18 +131,18 @@ subprojects {
         }
         withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
-            options.release.set(25)
+            options.release.set(minimumJavaVersion)
             options.compilerArgs.add("-Xlint:deprecation,removal")
         }
         withType<Javadoc>().configureEach {
             (options as StandardJavadocDocletOptions).apply {
                 encoding = "UTF-8"
-                addStringOption("-release", "25")
+                addStringOption("-release", minimumJavaVersion.toString())
             }
         }
         withType<JavaExec>().configureEach {
             javaLauncher.set(javaToolchains.launcherFor {
-                languageVersion.set(JavaLanguageVersion.of(27))
+                languageVersion.set(JavaLanguageVersion.of(newestJavaVersion))
             })
         }
         withType<Test>().configureEach {
