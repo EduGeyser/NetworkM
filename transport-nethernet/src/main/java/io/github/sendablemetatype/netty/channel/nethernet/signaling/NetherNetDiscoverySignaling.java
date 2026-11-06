@@ -354,13 +354,22 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
 
     @Override
     public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        // "0" (or none) is the server discovery finds, as in sendSignal. The handler is registered
+        // before discovery runs, so the sender is checked against the server known when a signal arrives.
+        if (remoteNetworkId == null || remoteNetworkId.equals("0")) {
+            this.discovery.registerSignalHandler(connectionId, sender -> {
+                String discovered = discoveredServerId.get();
+                return discovered != null && Long.parseUnsignedLong(discovered) == sender;
+            }, handler);
+            return;
+        }
         long remote;
         try {
             remote = Long.parseUnsignedLong(remoteNetworkId);
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("A LAN Network ID is an unsigned 64-bit decimal number", e);
         }
-        this.discovery.registerSignalHandler(connectionId, remote, handler);
+        this.discovery.registerSignalHandler(connectionId, sender -> sender == remote, handler);
     }
 
     @Override

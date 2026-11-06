@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.LongPredicate;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -239,24 +240,25 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     }
 
     /**
-     * @param connectionId    the client attempt's connection ID
-     * @param remoteNetworkId the server's Network ID; signals with this connection ID from any other
-     *                        sender do not reach the handler
-     * @param handler         receives the attempt's signals
+     * @param connectionId the client attempt's connection ID
+     * @param sender       which sender Network IDs the attempt's signals may come from; signals with
+     *                     this connection ID from any other sender do not reach the handler
+     * @param handler      receives the attempt's signals
      */
-    public void registerSignalHandler(String connectionId, long remoteNetworkId, SignalHandler handler) {
+    public void registerSignalHandler(String connectionId, LongPredicate sender, SignalHandler handler) {
+        Objects.requireNonNull(sender, "sender");
         Objects.requireNonNull(handler, "handler");
         synchronized (lifecycleLock) {
             if (closed) {
                 throw new IllegalStateException("Discovery is closed");
             }
-            this.signalHandlers.put(connectionId, new ClientHandler(remoteNetworkId, handler));
+            this.signalHandlers.put(connectionId, new ClientHandler(sender, handler));
             this.peerAddresses.register(connectionId);
         }
     }
 
-    /** A client attempt's handler and the Network ID its signals must come from. */
-    private record ClientHandler(long remoteNetworkId, SignalHandler handler) {
+    /** A client attempt's handler and the senders its signals may come from. */
+    private record ClientHandler(LongPredicate sender, SignalHandler handler) {
     }
 
     public void unregisterSignalHandler(String connectionId) {
@@ -500,7 +502,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         // A signal with a client attempt's ID from another sender is not that attempt's; it may still
         // be an offer of its own, so it goes on to join routing.
         ClientHandler client = signalHandlers.get(connectionId);
-        if (client != null && client.remoteNetworkId() == senderId) {
+        if (client != null && client.sender().test(senderId)) {
             if (rememberPeer(senderId, sender, connectionId)) {
                 client.handler().onSignal(signal);
             }
