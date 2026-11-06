@@ -9,7 +9,6 @@ val webrtcNativePlatform = providers.gradleProperty("webrtcNativePlatform")
 dependencies {
     api(project(":transport-common"))
     api(platform(libs.netty.bom))
-    api(project(":transport-common"))
     api(libs.bundles.netty)
     api(libs.netty.codec.http)
     // PROXY protocol headers in front of HTTP signaling
