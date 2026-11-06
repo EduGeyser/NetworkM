@@ -98,21 +98,22 @@ record OfferAssertion(String idpDomain, String idpProtocol, String token, String
     }
 
     /**
-     * The canonical fingerprint JSON over an answer's fingerprint lines, for the server's own
-     * assertion. The answer comes from the local engine, so this is lenient about other lines.
+     * The canonical fingerprint JSON over a local description's fingerprint lines, for this side's
+     * own assertion: a server's answer or a client's offer. The description comes from the local
+     * engine, so this is lenient about other lines.
      *
-     * @throws IllegalArgumentException if the answer has no fingerprint or a malformed one
+     * @throws IllegalArgumentException if the description has no fingerprint or a malformed one
      */
-    static String answerFingerprintJson(String answerSdp) {
+    static String localFingerprintJson(String sdp) {
         List<String> fingerprints = new ArrayList<>();
-        for (String line : answerSdp.split("\\r?\\n", -1)) {
+        for (String line : sdp.split("\\r?\\n", -1)) {
             if (line.startsWith(FINGERPRINT_PREFIX)) {
                 fingerprints.add(fingerprintEntry(line)
-                        .orElseThrow(() -> new IllegalArgumentException("Malformed fingerprint line in the answer")));
+                        .orElseThrow(() -> new IllegalArgumentException("Malformed fingerprint line in the description")));
             }
         }
         if (fingerprints.isEmpty()) {
-            throw new IllegalArgumentException("The answer has no fingerprint line");
+            throw new IllegalArgumentException("The description has no fingerprint line");
         }
         return canonicalJson(fingerprints);
     }

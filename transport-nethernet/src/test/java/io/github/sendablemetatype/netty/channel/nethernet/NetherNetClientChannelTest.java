@@ -10,6 +10,10 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
+import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
+import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.ChannelFuture;
@@ -26,6 +30,7 @@ import java.net.SocketAddress;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
+import java.security.KeyPair;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -90,6 +95,22 @@ class NetherNetClientChannelTest {
             peer.gatheringComplete(gathered);
             h.pump();
             assertEquals(List.of("CONNECTREQUEST " + h.connectionId() + " " + gathered), h.signaling.sent);
+        }
+    }
+
+    @Test
+    void theOfferCarriesTheClientIdentityAsAProvenKey() throws Exception {
+        try (Harness h = new Harness()) {
+            KeyPair key = OfferFixtures.CLIENT_KEY;
+            h.channel.config().setOption(NetherChannelOption.NETHER_CLIENT_IDENTITY, ClientIdentity.of(key,
+                    OfferFixtures.educationToken(OfferFixtures.educationClaims(key.getPublic()), key), ""));
+            h.connect();
+            h.start().completeOffer(OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            h.pump();
+
+            String offer = h.signaling.sent.getFirst().split(" ", 3)[2];
+            OfferCheckResult result = new OfferCheck(List.of()).check(offer);
+            assertEquals(OfferCheckResult.Level.KEY_PROVEN, result.level());
         }
     }
 

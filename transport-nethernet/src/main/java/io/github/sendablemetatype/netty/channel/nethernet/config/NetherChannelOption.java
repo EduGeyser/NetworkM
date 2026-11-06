@@ -6,6 +6,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.AdvertisedAddresses;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
+import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
 import io.netty.channel.ChannelOption;
@@ -169,6 +170,14 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      */
     public static final ChannelOption<Integer> NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS");
+
+    /**
+     * The identity a client channel presents in its offer, or null (the default) for an offer
+     * without one, which vanilla BDS and this library's servers refuse. Tokens expire, so set a
+     * fresh identity per connection.
+     */
+    public static final ChannelOption<ClientIdentity> NETHER_CLIENT_IDENTITY =
+            valueOf(NetherChannelOption.class, "NETHER_CLIENT_IDENTITY");
 
      /**
      * The timeout in seconds for completing the WebRTC handshake on the server side before automatically closing the connection.

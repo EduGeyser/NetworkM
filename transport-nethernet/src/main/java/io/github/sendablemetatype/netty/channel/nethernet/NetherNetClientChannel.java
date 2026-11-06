@@ -13,10 +13,12 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import org.jose4j.lang.JoseException;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -328,9 +330,16 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 return;
             }
             mid = NetherNetConstants.applicationMid(offer);
+            String signed;
+            try {
+                signed = signed(offer);
+            } catch (JoseException | IllegalArgumentException e) {
+                failHandshake(gen, "Could not sign the offer with the client identity", e);
+                return;
+            }
             try {
                 signaling.sendSignal(targetNetworkId,
-                        NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, offer));
+                        NetherNetConstants.buildSignalConnectRequest(attemptConnectionId, signed));
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
                 resetAndRetryHandshake();
@@ -345,6 +354,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 }
             }
         }));
+    }
+
+    /** The offer with the configured identity's assertion, or as it is without one. */
+    private String signed(String offer) throws JoseException {
+        ClientIdentity identity = config().getOption(NetherChannelOption.NETHER_CLIENT_IDENTITY);
+        return identity == null ? offer : identity.withAssertion(offer);
     }
 
     private boolean sendLocalCandidate(long attemptConnectionId, String candidate) {
