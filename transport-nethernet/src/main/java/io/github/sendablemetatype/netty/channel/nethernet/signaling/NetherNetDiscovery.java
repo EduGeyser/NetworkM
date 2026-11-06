@@ -38,7 +38,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private static final int MAX_SERVER_DATA_BYTES = 32_723;
 
     private final long networkId;
-    private final Map<String, SignalHandler> signalHandlers = new ConcurrentHashMap<>();
+    private final Map<String, ClientHandler> signalHandlers = new ConcurrentHashMap<>();
     private final Map<JoinKey, JoinRoute> joins = new ConcurrentHashMap<>();
     private final DiscoveryPeerRegistry peerAddresses;
     private final Object lifecycleLock = new Object();
@@ -227,15 +227,25 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }
     }
 
-    public void registerSignalHandler(String connectionId, SignalHandler handler) {
+    /**
+     * @param connectionId    the client attempt's connection ID
+     * @param remoteNetworkId the server's Network ID; signals with this connection ID from any other
+     *                        sender do not reach the handler
+     * @param handler         receives the attempt's signals
+     */
+    public void registerSignalHandler(String connectionId, long remoteNetworkId, SignalHandler handler) {
         Objects.requireNonNull(handler, "handler");
         synchronized (lifecycleLock) {
             if (closed) {
                 throw new IllegalStateException("Discovery is closed");
             }
-            this.signalHandlers.put(connectionId, handler);
+            this.signalHandlers.put(connectionId, new ClientHandler(remoteNetworkId, handler));
             this.peerAddresses.register(connectionId);
         }
+    }
+
+    /** A client attempt's handler and the Network ID its signals must come from. */
+    private record ClientHandler(long remoteNetworkId, SignalHandler handler) {
     }
 
     public void unregisterSignalHandler(String connectionId) {
@@ -467,10 +477,12 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             return;
         }
         String connectionId = signal.connectionId();
-        SignalHandler handler = signalHandlers.get(connectionId);
-        if (handler != null) {
+        // A signal with a client attempt's ID from another sender is not that attempt's; it may still
+        // be an offer of its own, so it goes on to join routing.
+        ClientHandler client = signalHandlers.get(connectionId);
+        if (client != null && client.remoteNetworkId() == senderId) {
             if (rememberPeer(senderId, sender, connectionId)) {
-                handler.onSignal(signal);
+                client.handler().onSignal(signal);
             }
             return;
         }

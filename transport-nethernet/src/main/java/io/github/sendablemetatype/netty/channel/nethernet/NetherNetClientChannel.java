@@ -195,7 +195,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         try {
             signaling.setNotFoundHandler(reason -> executeForAttempt(gen, () ->
                     failHandshake(gen, "Target Network ID " + this.targetNetworkId + " not found or offline", null)));
-            signaling.setSignalHandler(this.connectionId, new NetherNetSignaling.SignalHandler() {
+            signaling.setSignalHandler(this.connectionId, this.targetNetworkId, new NetherNetSignaling.SignalHandler() {
                 @Override
                 public void onSignal(Signal signal) {
                     if (isCurrentAttempt(gen)) {

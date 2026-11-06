@@ -94,7 +94,7 @@ class NetherNetXboxRpcSignalingTest {
         EmbeddedChannel first = connect(turnResult(0));
         loop.advanceTimeBy(SignalingSupervisor.STABLE_AFTER.toSeconds(), TimeUnit.SECONDS);
         AtomicInteger handlerCalls = new AtomicInteger();
-        signaling.setSignalHandler("7", signal -> handlerCalls.incrementAndGet());
+        signaling.setSignalHandler("7", "peer", signal -> handlerCalls.incrementAndGet());
 
         first.writeInbound(new CloseWebSocketFrame(1001, "Signaling server instance is shutting down."));
         run();
@@ -340,7 +340,7 @@ class NetherNetXboxRpcSignalingTest {
     void webRtcMessagesReachTheirHandlerAndGetAReceipt(boolean batched) {
         EmbeddedChannel socket = connect(turnResult(0));
         AtomicReference<Signal> received = new AtomicReference<>();
-        signaling.setSignalHandler("42", received::set);
+        signaling.setSignalHandler("42", "peer", received::set);
 
         receiveWebRtc(socket, "CANDIDATEADD 42 candidate", batched);
 
@@ -351,6 +351,20 @@ class NetherNetXboxRpcSignalingTest {
         JsonObject receipt = sent.get(1);
         assertEquals(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE, receipt.get("method").getAsString());
         assertEquals(NetherNetConstants.XBOX_RPC_INNER_METHOD_DELIVERY, innerMethod(receipt));
+    }
+
+    @Test
+    void aClientAttemptTakesSignalsOnlyFromThePeerItsOfferWentTo() {
+        EmbeddedChannel socket = connect(turnResult(0));
+        AtomicReference<Signal> received = new AtomicReference<>();
+        signaling.setSignalHandler("42", "peer", received::set);
+
+        receive(socket, "other", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC, webRtcParams("CONNECTERROR 42 1"),
+                true, false);
+        assertNull(received.get(), "A third party that knows the connection ID must not fail the attempt");
+
+        receiveWebRtc(socket, "CONNECTERROR 42 1", false);
+        assertEquals(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1"), received.get());
     }
 
     @Test

@@ -340,8 +340,14 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     }
 
     @Override
-    public void setSignalHandler(String connectionId, SignalHandler handler) {
-        this.discovery.registerSignalHandler(connectionId, handler);
+    public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        long remote;
+        try {
+            remote = Long.parseUnsignedLong(remoteNetworkId);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("A LAN Network ID is an unsigned 64-bit decimal number", e);
+        }
+        this.discovery.registerSignalHandler(connectionId, remote, handler);
     }
 
     @Override

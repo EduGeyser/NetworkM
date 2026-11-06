@@ -318,7 +318,8 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     @Override
-    public void setSignalHandler(String connectionId, SignalHandler handler) {
+    public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        // The answer is the response to our own request to one server, so there is no sender to check.
         handlers.put(connectionId, Objects.requireNonNull(handler, "handler"));
     }
 

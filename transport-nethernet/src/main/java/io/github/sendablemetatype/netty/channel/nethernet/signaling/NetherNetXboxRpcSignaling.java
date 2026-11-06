@@ -192,7 +192,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private final EventLoopGroup eventLoopGroup;
     private final SignalingSupervisor supervisor;
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final Map<String, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<String, ClientHandler> handlers = new ConcurrentHashMap<>();
     private final Map<JoinKey, XboxJoin> joins = new ConcurrentHashMap<>();
 
     private volatile String token;
@@ -329,8 +329,13 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     @Override
-    public void setSignalHandler(String connectionId, SignalHandler handler) {
-        handlers.put(connectionId, handler);
+    public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        handlers.put(connectionId, new ClientHandler(Objects.requireNonNull(remoteNetworkId, "remoteNetworkId"),
+                Objects.requireNonNull(handler, "handler")));
+    }
+
+    /** A client attempt's handler and the peer its signals must come from. */
+    private record ClientHandler(String remoteNetworkId, SignalHandler handler) {
     }
 
     @Override
@@ -1020,9 +1025,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             }
             String connectionId = signal.connectionId();
 
-            SignalHandler handler = handlers.get(connectionId);
-            if (handler != null) {
-                handler.onSignal(signal);
+            // A signal with a client attempt's ID from another sender is not that attempt's; it may
+            // still be an offer of its own, so it goes on to join routing.
+            ClientHandler client = handlers.get(connectionId);
+            if (client != null && client.remoteNetworkId().equals(sender)) {
+                client.handler().onSignal(signal);
                 return;
             }
 

@@ -141,7 +141,7 @@ class NetherNetHttpClientSignalingTest {
 
     private NetherNetHttpClientSignaling connected(HttpClientSettings settings) throws Exception {
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(settings, group, "client-1");
-        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.setSignalHandler(CONNECTION_ID, "server", signals::add);
         client.connect(address).get(15, TimeUnit.SECONDS);
         return client;
     }
@@ -341,7 +341,7 @@ class NetherNetHttpClientSignalingTest {
         BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(
                 trusting().withScheme(Scheme.HTTP), group, "client-1");
-        client.setSignalHandler(CONNECTION_ID, new NetherNetSignaling.SignalHandler() {
+        client.setSignalHandler(CONNECTION_ID, "server", new NetherNetSignaling.SignalHandler() {
             @Override
             public void onSignal(Signal signal) {
                 signals.add(signal);
@@ -448,7 +448,7 @@ class NetherNetHttpClientSignalingTest {
         assertInstanceOf(ConnectException.class, probe.getCause());
 
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(plain, stopped, "client-1");
-        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.setSignalHandler(CONNECTION_ID, "server", signals::add);
         client.connect(nowhere).get(5, TimeUnit.SECONDS);
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
         assertEquals(connectError(JoinRefusal.INTERNAL), nextSignal());
@@ -460,7 +460,7 @@ class NetherNetHttpClientSignalingTest {
         try (StallingResolver.Stall lookup = StallingResolver.stall()) {
             NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT
                     .withScheme(Scheme.HTTP).withAnswerTimeout(Duration.ofSeconds(1)), stopping, "client-1");
-            client.setSignalHandler(CONNECTION_ID, signals::add);
+            client.setSignalHandler(CONNECTION_ID, "server", signals::add);
             client.connect(InetSocketAddress.createUnresolved(lookup.name(), 80)).get(5, TimeUnit.SECONDS);
             client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
             lookup.awaitLookup();

@@ -30,7 +30,7 @@ class NetherNetDiscoveryProtocolTest {
     void receivesACompleteLargeUdpSignalWithVanillasUnderstatedLength() throws Exception {
         try (Discovery discovery = new Discovery()) {
             CompletableFuture<Signal> received = new CompletableFuture<>();
-            discovery.value.registerSignalHandler("42", received::complete);
+            discovery.value.registerSignalHandler("42", 20, received::complete);
             String answer = "v=0\r\na=padding:" + "x".repeat(6000);
             String signal = "CONNECTRESPONSE 42 " + answer;
             byte[] encrypted = encrypt(message(20, 1, 1140, signal));
@@ -45,10 +45,25 @@ class NetherNetDiscoveryProtocolTest {
     }
 
     @Test
+    void aClientAttemptTakesSignalsOnlyFromTheServerItsOfferWentTo() throws Exception {
+        try (Discovery discovery = new Discovery()) {
+            List<Signal> received = new ArrayList<>();
+            discovery.value.registerSignalHandler("42", 20, received::add);
+
+            discovery.receive(message(21, 1, 0, "CONNECTERROR 42 1"));
+            assertEquals(List.of(), received, "A third party that knows the connection ID must not fail the attempt");
+            assertNull(discovery.peers.get(21));
+
+            discovery.receive(message(20, 1, 0, "CONNECTERROR 42 1"));
+            assertEquals(List.of(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, "42", "1")), received);
+        }
+    }
+
+    @Test
     void malformedUnknownAndWrongRecipientMessagesDoNotTeachRoutes() throws Exception {
         try (Discovery discovery = new Discovery()) {
             AtomicInteger received = new AtomicInteger();
-            discovery.value.registerSignalHandler("42", signal -> received.incrementAndGet());
+            discovery.value.registerSignalHandler("42", 20, signal -> received.incrementAndGet());
             String valid = "CONNECTRESPONSE 42 v=0";
             List<ByteBuf> invalid = new ArrayList<>();
             invalid.add(header(NetherNetConstants.ID_DISCOVERY_MESSAGE, 20));
