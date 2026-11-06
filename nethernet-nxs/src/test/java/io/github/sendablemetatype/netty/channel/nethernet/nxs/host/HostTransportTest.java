@@ -10,6 +10,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionKey;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.AdmissionPrincipal;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.StatelessAdmissionCodec;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.admission.TicketId;
@@ -31,10 +32,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.net.InetSocketAddress;
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -70,6 +75,46 @@ class HostTransportTest {
         fixture.transport.close().toCompletableFuture().get(5, TimeUnit.SECONDS);
         assertFalse(fixture.endpoint.holdsChecks());
         assertEquals(Set.of(), fixture.endpoint.derivedKeys().keySet(), "closing revokes the keys");
+    }
+
+    @Test
+    void anInstallationThatRacesCloseInstallsNothing() throws Exception {
+        fixture.start(HostFixture.fixed());
+        CountDownLatch copying = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        // Copying the snapshot is where an installation stalls here, as the client's thread could anywhere
+        List<AdmissionKey> keys = new AbstractList<>() {
+            @Override
+            public AdmissionKey get(int index) {
+                return new AdmissionKey(HostFixture.KEY_ID, HostFixture.SECRET);
+            }
+
+            @Override
+            public int size() {
+                return 1;
+            }
+
+            @Override
+            public Object[] toArray() {
+                copying.countDown();
+                try {
+                    closed.await();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
+                return super.toArray();
+            }
+        };
+        CompletableFuture<CompletionStage<Void>> installing =
+                CompletableFuture.supplyAsync(() -> fixture.transport.installAdmissionKeys(keys));
+        assertTrue(copying.await(5, TimeUnit.SECONDS));
+        fixture.transport.close().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        closed.countDown();
+
+        CompletableFuture<Void> installed = installing.get(5, TimeUnit.SECONDS).toCompletableFuture();
+        assertTrue(installed.handle((ignored, failure) -> failure != null).get(5, TimeUnit.SECONDS),
+                "a closed transport takes no keys");
+        assertEquals(Set.of(), fixture.transport.installedKeyIds(), "no key material outlives close");
     }
 
     @Test

@@ -248,7 +248,12 @@ public final class HostTransport implements ProviderTransport {
     private volatile SignalingHealth health = new SignalingHealth(SignalingState.NEW, 0, null, null);
     private volatile List<Epoch> epochs = List.of();
     private volatile boolean draining;
+    /**
+     * Set once, under {@link #lifecycle}, which key installation holds too: an installation either finishes before
+     * close wipes the keys or installs nothing.
+     */
     private volatile boolean closing;
+    private final Object lifecycle = new Object();
     /** Changes with the candidate material, read by guards on any thread. */
     private volatile long candidateRevision = 1;
     private volatile long publicationVersion;
@@ -306,6 +311,11 @@ public final class HostTransport implements ProviderTransport {
 
     TicketLedger.Stats ledgerStats() {
         return ledger.stats();
+    }
+
+    /** The IDs of the admission keys the validator holds. */
+    Set<String> installedKeyIds() {
+        return validator.keyIds();
     }
 
     // ---- Join source ----
@@ -899,17 +909,25 @@ public final class HostTransport implements ProviderTransport {
 
     @Override
     public CompletionStage<Void> installAdmissionKeys(List<AdmissionKey> keys) {
-        if (closing) {
-            return CompletableFuture.failedFuture(new IllegalStateException("The NXS host transport is closed"));
-        }
+        List<AdmissionKey> snapshot;
         try {
-            List<AdmissionKey> snapshot = List.copyOf(keys);
-            validator.installKeys(snapshot);
-            epochs = snapshot.stream().map(key -> new Epoch(key.keyId(), key.retireAfter())).toList();
-            validator.retireKeys(millis.getAsLong());
-            return CompletableFuture.completedFuture(null);
+            // Outside the guard: copying runs the caller's list code
+            snapshot = List.copyOf(keys);
         } catch (RuntimeException invalid) {
             return CompletableFuture.failedFuture(invalid);
+        }
+        synchronized (lifecycle) {
+            if (closing) {
+                return CompletableFuture.failedFuture(new IllegalStateException("The NXS host transport is closed"));
+            }
+            try {
+                validator.installKeys(snapshot);
+                epochs = snapshot.stream().map(key -> new Epoch(key.keyId(), key.retireAfter())).toList();
+                validator.retireKeys(millis.getAsLong());
+                return CompletableFuture.completedFuture(null);
+            } catch (RuntimeException invalid) {
+                return CompletableFuture.failedFuture(invalid);
+            }
         }
     }
 
@@ -1132,13 +1150,16 @@ public final class HostTransport implements ProviderTransport {
      */
     @Override
     public CompletionStage<Void> close() {
-        if (!closing) {
+        synchronized (lifecycle) {
+            if (closing) {
+                return closed.minimalCompletionStage();
+            }
             closing = true;
             draining = true;
             validator.clear();
             epochs = List.of();
-            onLoop(this::closeOnLoop, () -> closed.complete(null));
         }
+        onLoop(this::closeOnLoop, () -> closed.complete(null));
         return closed.minimalCompletionStage();
     }
 
