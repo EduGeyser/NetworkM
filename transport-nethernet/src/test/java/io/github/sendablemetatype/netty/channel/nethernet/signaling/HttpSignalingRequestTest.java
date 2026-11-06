@@ -460,12 +460,12 @@ class HttpSignalingRequestTest {
     }
 
     @Test
-    void emptyOfferIsRefused() {
+    void emptyOfferIsRefusedAsABadOffer() {
         EmbeddedHttp http = connect();
 
         http.send(post("42", ""));
 
-        assertEquals(400, http.response().status());
+        assertEquals(JoinRefusal.BAD_OFFER.httpStatus(), http.response().status());
         assertTrue(sink.joins.isEmpty());
     }
 

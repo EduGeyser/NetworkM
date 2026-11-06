@@ -17,15 +17,20 @@ When HTTP signaling refuses an offer, the client picks the reason from the statu
 | 503 | ServerFull (25) |
 
 This status table is upstream's record for 1.26.50. NetworkM has not confirmed it with a
-capture yet. NetworkM's `JoinRefusal` statuses fit it as follows:
+capture yet. NetworkM's `JoinRefusal` statuses fit it as follows. Over Xbox RPC and LAN the
+refusal goes out as a `CONNECTERROR` signal with the NetherNet error code instead (positions in
+the client's signaling error enumeration, as go-nethernet's `signal.go` lists them); which reason
+the client shows for each code is not recorded either.
 
-| `JoinRefusal` | Status | Client reason by the table above |
-|---|---|---|
-| `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) |
-| `HOST_REFUSED` | 403 | NotAllowed (45) |
-| `CAPACITY` | 503 | ServerFull (25), also when the endpoint is not ready, is closing or the source was removed |
-| `TRUST_SOURCE_UNREACHABLE`, `INTERNAL` | 500 | not recorded |
-| `NO_ANSWER_IN_TIME` | 504 | not recorded |
+| `JoinRefusal` | Status | Client reason by the table above | Error code |
+|---|---|---|---|
+| `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) | 16, IncomingConnectionIgnored |
+| `HOST_REFUSED` | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored |
+| `CAPACITY` | 503 | ServerFull (25), also when the endpoint is not ready, is closing or the source was removed | 16, IncomingConnectionIgnored |
+| `BAD_OFFER` | 400 | not recorded | 13, FailedToSetRemoteDescription |
+| `TRUST_SOURCE_UNREACHABLE` | 500 | not recorded | 35, GenericFailure |
+| `INTERNAL` | 500 | not recorded | 11, FailedToCreateAnswer |
+| `NO_ANSWER_IN_TIME` | 504 | not recorded | 2, NegotiationTimeout |
 
 Rows 0 to 149 were last updated for 1.26.50. Rows 150 to 158 come from bedrock-protocol-docs
 alone: reason 150 is in 1.26.60 and later (commit `f8d1496b`, 1.26.62), reasons 151 to 158 only

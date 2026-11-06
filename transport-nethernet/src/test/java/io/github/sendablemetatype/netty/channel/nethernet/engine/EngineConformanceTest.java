@@ -41,6 +41,7 @@ import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -271,14 +272,16 @@ public abstract class EngineConformanceTest {
     }
 
     @Test
-    void anUnreadableOfferFailsTheNegotiation() throws Exception {
+    void anUnreadableOfferIsRejectedAsTheRemoteSidesFault() throws Exception {
         Side server = new Side("server");
         Peer answerer = engine.createPeer(answererConfig(), server);
 
         CompletableFuture<String> answer = answerer.answer("this is no session description").toCompletableFuture();
 
-        assertThrows(ExecutionException.class, () -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS));
-        assertEquals(CloseCause.NEGOTIATION_FAILED, server.closed.get(WAIT_SECONDS, TimeUnit.SECONDS));
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> answer.get(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertInstanceOf(RemoteDescriptionRejectedException.class, failure.getCause());
+        assertEquals(CloseCause.REMOTE_DESCRIPTION_REJECTED, server.closed.get(WAIT_SECONDS, TimeUnit.SECONDS));
         await(answerer.close());
     }
 

@@ -5,8 +5,13 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine;
  * {@link io.github.sendablemetatype.netty.channel.TransportDisconnectReason}.
  */
 public enum CloseCause {
-    /** Creating the peer or applying a description failed. */
+    /** Creating the peer, creating a description or applying the local one failed. */
     NEGOTIATION_FAILED,
+    /**
+     * The engine refused the remote description: the remote side's offer or answer is unusable,
+     * for example unparseable or missing what a data channel session needs.
+     */
+    REMOTE_DESCRIPTION_REJECTED,
     /** The remote peer closed the data link in an orderly way. */
     REMOTE_CLOSED,
     /** The remote peer aborted the SCTP association. */

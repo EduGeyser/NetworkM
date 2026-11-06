@@ -805,7 +805,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 maxMessageSize = NetherNetConstants.parseMaxMessageSize(join.offer());
             } catch (IllegalArgumentException e) {
                 log.debug("Refusing join {}: {}", id, e.getMessage());
-                fail(JoinRefusal.INTERNAL);
+                fail(JoinRefusal.BAD_OFFER);
                 return;
             }
             if (join.authenticated() != null) {
@@ -870,7 +870,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 // Diagnostics hold no token, and their text is sanitized for logs.
                 log.info("Refused join {} from {}: {} ({}, {})", id, join.source().address(), refused.get(),
                         result.reason(), result.diagnostics());
-                fail(refusalOf(refused.get()));
+                fail(refusalOf(refused.get(), result));
                 return;
             }
             if (!open || from.removed) {
@@ -960,7 +960,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
-    private static JoinRefusal refusalOf(IdentityRefusal refusal) {
+    /**
+     * The refusal for an offer the source's policy turned away. An SDP the check could not read
+     * is a bad offer whatever the policy wanted of its identity.
+     */
+    private static JoinRefusal refusalOf(IdentityRefusal refusal, OfferCheckResult result) {
+        if (result.reason() == OfferCheckResult.Reason.MALFORMED_SDP) {
+            return JoinRefusal.BAD_OFFER;
+        }
         return switch (refusal) {
             case IDENTITY_MISSING -> JoinRefusal.IDENTITY_MISSING;
             case IDENTITY_INVALID, NOT_ATTESTED -> JoinRefusal.IDENTITY_INVALID;
@@ -988,7 +995,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         RemoteCandidateIntake intake = relayed ? RemoteCandidateIntake.relayed() : RemoteCandidateIntake.server();
         AdmissionGate.Reservation reservation = admission.reservation;
         ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake,
-                announcement(join, settings, advertised), reservation::handshakeDone);
+                announcement(join, settings, advertised), reservation::handshakeDone,
+                refusal -> serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus())));
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);

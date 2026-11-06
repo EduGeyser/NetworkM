@@ -377,7 +377,8 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
             case REMOTE_CLOSED -> TransportDisconnectReason.CLOSED_BY_REMOTE_PEER;
             case REMOTE_ABORTED -> TransportDisconnectReason.ABORTED_BY_REMOTE_PEER;
             case ICE_FAILED -> TransportDisconnectReason.CONNECTION_LOST;
-            case TRANSPORT_FAILED, NEGOTIATION_FAILED -> TransportDisconnectReason.TRANSPORT_FAILED;
+            case TRANSPORT_FAILED, NEGOTIATION_FAILED, REMOTE_DESCRIPTION_REJECTED ->
+                    TransportDisconnectReason.TRANSPORT_FAILED;
             // A data channel that closed while its peer did not fail was closed
             // by the remote; a peer that ended without saying why failed.
             case UNKNOWN -> reliableChannel ? TransportDisconnectReason.CLOSED_BY_REMOTE_PEER
@@ -404,7 +405,7 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
 
     static NetherConnectionFailure failureOf(CloseCause cause) {
         return switch (cause) {
-            case NEGOTIATION_FAILED -> NetherConnectionFailure.NEGOTIATION_FAILED;
+            case NEGOTIATION_FAILED, REMOTE_DESCRIPTION_REJECTED -> NetherConnectionFailure.NEGOTIATION_FAILED;
             case REMOTE_CLOSED, REMOTE_ABORTED -> NetherConnectionFailure.PEER_CLOSED;
             case ICE_FAILED, TRANSPORT_FAILED, UNKNOWN -> NetherConnectionFailure.PEER_FAILED;
         };

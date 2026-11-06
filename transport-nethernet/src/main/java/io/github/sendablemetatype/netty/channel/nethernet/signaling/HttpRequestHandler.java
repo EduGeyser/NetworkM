@@ -187,7 +187,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         }
         String offer = request.content().toString(StandardCharsets.UTF_8);
         if (offer.isEmpty()) {
-            respond(HttpResponseStatus.BAD_REQUEST, false);
+            refuse(JoinRefusal.BAD_OFFER);
             return;
         }
         InetSocketAddress peer = peer();
@@ -270,6 +270,11 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
 
     private InetSocketAddress peer() {
         return (InetSocketAddress) ctx.channel().remoteAddress();
+    }
+
+    /** Refuses an offer this source turned away itself, before it reached the endpoint. */
+    private void refuse(JoinRefusal refusal) {
+        respond(HttpResponseStatus.valueOf(refusal.httpStatus()), false);
     }
 
     private ChannelFuture respond(HttpResponseStatus status, boolean keep) {

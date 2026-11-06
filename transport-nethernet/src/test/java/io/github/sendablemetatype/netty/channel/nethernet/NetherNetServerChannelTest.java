@@ -15,6 +15,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -25,6 +26,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.BindException;
 import java.net.DatagramSocket;
@@ -298,6 +301,35 @@ class NetherNetServerChannelTest {
         reply.assertRefused(JoinRefusal.INTERNAL);
         assertEquals(List.of(), reply.drain());
         assertEquals(1, peer.closeCalls());
+        assertEquals(1, reply.finished.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void anOfferTheEngineRefusesIsABadOffer(boolean closedFirst) throws Exception {
+        List<Integer> refused = new CopyOnWriteArrayList<>();
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_METRICS, new NetherServerMetrics() {
+            @Override
+            public void joinRefused(int httpStatus) {
+                refused.add(httpStatus);
+            }
+        });
+        harness.bind();
+        FakeJoinSource.Reply reply = harness.source(true).offer(4, OFFER);
+        FakePeer peer = harness.negotiating();
+        if (closedFirst) {
+            peer.closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
+        }
+        peer.failAnswer(new RemoteDescriptionRejectedException("SetRemoteDescription failed: no data channel"));
+        if (!closedFirst) {
+            harness.sync();
+            peer.closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
+        }
+        harness.sync();
+
+        reply.assertRefused(JoinRefusal.BAD_OFFER);
+        assertEquals(List.of(), reply.drain());
+        assertEquals(List.of(400), refused, "a refusal after the child exists is reported too");
         assertEquals(1, reply.finished.get());
     }
 

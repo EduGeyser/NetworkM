@@ -100,8 +100,8 @@ public final class FakePeer implements Peer {
             post(() -> {
                 Optional<FakePeer> offerer = describedPeer(remoteOffer, PeerConfig.Role.OFFERER);
                 if (offerer.isEmpty()) {
-                    answer.completeExceptionally(new IllegalArgumentException("Not an offer of this engine"));
-                    closed(CloseCause.NEGOTIATION_FAILED);
+                    answer.completeExceptionally(new RemoteDescriptionRejectedException("Not an offer of this engine"));
+                    closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
                     return;
                 }
                 remote = offerer.get();
@@ -142,8 +142,8 @@ public final class FakePeer implements Peer {
                 Optional<FakePeer> answerer = describedPeer(remoteAnswer, PeerConfig.Role.ANSWERER)
                         .filter(peer -> peer.remote == this);
                 if (answerer.isEmpty()) {
-                    applied.completeExceptionally(new IllegalArgumentException("Not an answer to this peer's offer"));
-                    closed(CloseCause.NEGOTIATION_FAILED);
+                    applied.completeExceptionally(new RemoteDescriptionRejectedException("Not an answer to this peer's offer"));
+                    closed(CloseCause.REMOTE_DESCRIPTION_REJECTED);
                     return;
                 }
                 remote = answerer.get();

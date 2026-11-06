@@ -25,11 +25,18 @@ public enum JoinRefusal {
     TRUST_SOURCE_UNREACHABLE(500, JoinRefusal.GENERIC_FAILURE),
     /** No answer was ready in time. */
     NO_ANSWER_IN_TIME(504, JoinRefusal.NEGOTIATION_TIMEOUT),
+    /**
+     * The offer is unusable: empty, an SDP the identity check could not read, an unusable
+     * {@code a=max-message-size}, or a description the engine refused. The client's input is at
+     * fault, not the server.
+     */
+    BAD_OFFER(400, JoinRefusal.FAILED_TO_SET_REMOTE_DESCRIPTION),
     /** Something failed on the server while answering. */
     INTERNAL(500, JoinRefusal.FAILED_TO_CREATE_ANSWER);
 
     private static final int NEGOTIATION_TIMEOUT = 2;
     private static final int FAILED_TO_CREATE_ANSWER = 11;
+    private static final int FAILED_TO_SET_REMOTE_DESCRIPTION = 13;
     private static final int INCOMING_CONNECTION_IGNORED = 16;
     private static final int GENERIC_FAILURE = 35;
 

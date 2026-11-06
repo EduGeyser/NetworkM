@@ -161,10 +161,24 @@ class NetherNetServerAdmissionTest {
     @Test
     void anUnusableOfferIsRefusedBeforeItsCheck() throws Exception {
         useManualChecks();
+        reportRefusals();
         harness.bind();
         harness.source(true).offer(1, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n")
-                .assertRefused(JoinRefusal.INTERNAL);
+                .assertRefused(JoinRefusal.BAD_OFFER);
         assertTrue(checks.tasks.isEmpty());
+        assertTrue(harness.engine.peers().isEmpty());
+        assertEquals(List.of(400), refusedStatuses);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void anSdpTheCheckCannotReadIsABadOfferWhateverThePolicy(boolean attested) throws Exception {
+        harness.bind();
+        FakeJoinSource source = new FakeJoinSource(true);
+        harness.server.addSource(source, attested ? OfferPolicy.REQUIRE_ATTESTED : OfferPolicy.REQUIRE_KEY_PROVEN);
+
+        source.offer(1, educationOffer() + "not an sdp line\r\n").assertRefused(JoinRefusal.BAD_OFFER);
+        source.offer(2, educationOffer().replace(DIGEST, OTHER_DIGEST)).assertRefused(JoinRefusal.IDENTITY_INVALID);
         assertTrue(harness.engine.peers().isEmpty());
     }
 

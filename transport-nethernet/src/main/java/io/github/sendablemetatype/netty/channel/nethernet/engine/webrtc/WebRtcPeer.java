@@ -9,6 +9,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig.Role;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.RemoteDescriptionRejectedException;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
 import io.github.sendablemetatype.webrtc.AddIceCandidateObserver;
 import io.github.sendablemetatype.webrtc.CreateSessionDescriptionObserver;
@@ -621,7 +622,10 @@ final class WebRtcPeer implements Peer {
             // Teardown fails the open stages; libwebrtc discards pending steps then.
             return;
         }
-        IllegalStateException cause = new IllegalStateException(operation + " failed: " + error);
+        // A remote description is the remote side's input; the other steps are ours.
+        boolean remote = operation.equals("SetRemoteDescription");
+        Exception cause = remote ? new RemoteDescriptionRejectedException(operation + " failed: " + error)
+                : new IllegalStateException(operation + " failed: " + error);
         List<CompletableFuture<?>> stages;
         synchronized (lock) {
             if (failure != null) {
@@ -630,15 +634,14 @@ final class WebRtcPeer implements Peer {
             failure = cause;
             stages = List.copyOf(openStages);
         }
-        // A remote description is the remote side's input; the other steps are ours.
-        if (operation.equals("SetRemoteDescription")) {
+        if (remote) {
             log.debug("{} failed: {}", operation, error);
         } else {
             log.warn("{} failed: {}", operation, error);
         }
         stages.forEach(stage -> stage.completeExceptionally(cause));
         gathered.completeExceptionally(cause);
-        reportClosed(CloseCause.NEGOTIATION_FAILED);
+        reportClosed(remote ? CloseCause.REMOTE_DESCRIPTION_REJECTED : CloseCause.NEGOTIATION_FAILED);
     }
 
     private void reportClosed(CloseCause cause) {
