@@ -57,11 +57,12 @@ final class ChildFixture {
                 RemoteCandidateIntake.server(), null);
     }
 
-    /** The client opens both data channels and the reliable one opens, which activates the child. */
+    /** The client opens both data channels and both open, which activates the child. */
     ChildFixture openLinks() {
         reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
         unreliable = peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
         peer.open(reliable);
+        peer.open(unreliable);
         return this;
     }
 

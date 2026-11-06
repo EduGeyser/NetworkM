@@ -251,6 +251,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         return reliableLink;
     }
 
+    final DataLink unreliableLink() {
+        return unreliableLink;
+    }
+
     private void unbindLinks() {
         NetherNetMessageAssembler previous = assembler;
         assembler = null;

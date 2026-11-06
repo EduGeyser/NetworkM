@@ -315,6 +315,7 @@ public final class FakePeer implements Peer {
     }
 
     public void open(FakeDataLink link) {
+        link.markOpen();
         fire(() -> listener.onChannelOpen(link));
     }
 

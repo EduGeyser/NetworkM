@@ -37,6 +37,8 @@ final class FakeNative {
     static final class ManualExecutor implements Executor {
         private final Queue<Runnable> tasks = new ArrayDeque<>();
         boolean shutdown;
+        // How many tasks ran, so a test can wait for one handed over by a timer.
+        private volatile int ran;
 
         @Override
         public synchronized void execute(Runnable task) {
@@ -50,7 +52,12 @@ final class FakeNative {
             Runnable task;
             while ((task = poll()) != null) {
                 task.run();
+                ran++;
             }
+        }
+
+        int ran() {
+            return ran;
         }
 
         synchronized int pending() {

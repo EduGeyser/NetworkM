@@ -18,8 +18,9 @@ class FakeDataLinkTest {
     @Test
     @Timeout(10)
     void theCloseStageWaitsForASendCompletionStillRunning() throws Exception {
-        Peer peer = new FakeEngine().createPeer(OFFERER, new SilentListener());
+        FakePeer peer = (FakePeer) new FakeEngine().createPeer(OFFERER, new SilentListener());
         FakeDataLink link = (FakeDataLink) peer.openChannel(ChannelParameters.reliable("ReliableDataChannel"));
+        peer.open(link);
         CompletableFuture<Void> running = new CompletableFuture<>();
         CompletableFuture<Void> release = new CompletableFuture<>();
         link.send(ByteBuffer.allocate(1), cause -> {

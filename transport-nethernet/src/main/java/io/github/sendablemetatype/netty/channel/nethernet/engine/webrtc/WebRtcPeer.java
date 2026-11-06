@@ -71,11 +71,27 @@ final class WebRtcPeer implements Peer {
      */
     private static final Duration SEND_SETTLE_TIMEOUT = Duration.ofSeconds(10);
 
+    /**
+     * How long a data channel may stay CLOSING before it counts as closed by
+     * the remote peer. An abrupt close passes CLOSING and CLOSED in one call
+     * ({@code SctpDataChannel::CloseAbruptlyWithError}). When the remote peer
+     * resets its stream, libwebrtc resets ours and reports CLOSED once the
+     * peer acknowledged that: one round trip, and dcSCTP sends the reset again
+     * every RTO, at least 400 ms ({@code rto_min}), with no limit in WebRTC. A
+     * peer that denies the reset leaves the channel CLOSING for good: dcSCTP
+     * reports the denial ({@code StreamResetHandler::HandleResponse}) and
+     * WebRTC only logs it ({@code DcSctpTransport::OnStreamsResetFailed}).
+     * Five seconds give a healthy close several resends, and end a stuck one,
+     * whose remote peer is leaving, soon after.
+     */
+    static final Duration CLOSING_TIMEOUT = Duration.ofSeconds(5);
+
     private final Role role;
     private final PeerListener listener;
     private final Executor control;
     private final IceCredentials localCredentials;
     private final Duration sendSettleTimeout;
+    private final Duration closingTimeout;
 
     private final AtomicBoolean closeRequested = new AtomicBoolean();
     private volatile boolean listening = true;
@@ -102,16 +118,17 @@ final class WebRtcPeer implements Peer {
     private final List<WebRtcLink> links = new ArrayList<>();
 
     WebRtcPeer(Role role, PeerListener listener, Executor control, IceCredentials localCredentials) {
-        this(role, listener, control, localCredentials, SEND_SETTLE_TIMEOUT);
+        this(role, listener, control, localCredentials, SEND_SETTLE_TIMEOUT, CLOSING_TIMEOUT);
     }
 
     WebRtcPeer(Role role, PeerListener listener, Executor control, IceCredentials localCredentials,
-               Duration sendSettleTimeout) {
+               Duration sendSettleTimeout, Duration closingTimeout) {
         this.role = Objects.requireNonNull(role, "role");
         this.listener = Objects.requireNonNull(listener, "listener");
         this.control = Objects.requireNonNull(control, "control");
         this.localCredentials = localCredentials;
         this.sendSettleTimeout = Objects.requireNonNull(sendSettleTimeout, "sendSettleTimeout");
+        this.closingTimeout = Objects.requireNonNull(closingTimeout, "closingTimeout");
     }
 
     /**
@@ -462,6 +479,15 @@ final class WebRtcPeer implements Peer {
         } catch (RuntimeException e) {
             log.warn("A NetherNet peer listener failed", e);
         }
+    }
+
+    /**
+     * Runs a task on the control thread once the closing timeout ({@link #CLOSING_TIMEOUT}) passed.
+     * The JDK's delay thread, which teardown's settle timeout uses too, hands it over. Dropped if
+     * the engine stopped the control thread meanwhile.
+     */
+    void afterClosingTimeout(Runnable task) {
+        CompletableFuture.delayedExecutor(closingTimeout.toNanos(), TimeUnit.NANOSECONDS, this::execute).execute(task);
     }
 
     /** Why a data channel that libwebrtc reports CLOSED ended; a local close never reaches here. */

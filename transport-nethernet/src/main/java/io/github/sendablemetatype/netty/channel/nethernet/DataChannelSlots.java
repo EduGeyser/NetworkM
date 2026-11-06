@@ -50,10 +50,6 @@ final class DataChannelSlots {
         return unreliable;
     }
 
-    synchronized boolean complete() {
-        return reliable != null && unreliable != null;
-    }
-
     /** Refuses every channel from now on. */
     synchronized void stopAccepting() {
         closed = true;

@@ -553,6 +553,9 @@ public class NetherNetClientChannel extends NetherNetChannel {
     /** One attempt's peer events; events of an older attempt are dropped. */
     private final class Events extends PeerEvents {
         private final int generation;
+        // Event loop only: what this attempt's links reported.
+        private boolean reliableOpen;
+        private boolean unreliableSettled;
 
         private Events(int generation) {
             this.generation = generation;
@@ -594,16 +597,43 @@ public class NetherNetClientChannel extends NetherNetChannel {
         @Override
         public void onChannelOpen(DataLink link) {
             executeForAttempt(generation, () -> {
-                if (link == reliableLink() && isCurrentHandshake(generation)) {
-                    handshakeComplete = true;
-                    cancelHandshakeTimeout();
-                    markTransportOpen();
-                    if (connectPromise != null) {
-                        connectPromise.trySuccess();
-                    }
-                    fireChannelActiveIfReady();
+                if (link == reliableLink()) {
+                    reliableOpen = true;
+                } else if (link == unreliableLink()) {
+                    unreliableSettled = true;
+                }
+                connectIfReady();
+            });
+        }
+
+        /** The connection carries on without the unreliable channel, so its close does not hold up the connect. */
+        @Override
+        public void onChannelClosed(DataLink link, CloseCause cause) {
+            super.onChannelClosed(link, cause);
+            executeForAttempt(generation, () -> {
+                if (link == unreliableLink()) {
+                    unreliableSettled = true;
+                    connectIfReady();
                 }
             });
+        }
+
+        /**
+         * Connects once the reliable channel is open and the unreliable one opened or closed, so
+         * no write meets a channel that is still connecting, which an engine may refuse. libwebrtc
+         * opens the offerer's channels together, once SCTP is up
+         * ({@code DataChannelController::OnReadyToSend}).
+         */
+        private void connectIfReady() {
+            if (reliableOpen && unreliableSettled && isCurrentHandshake(generation)) {
+                handshakeComplete = true;
+                cancelHandshakeTimeout();
+                markTransportOpen();
+                if (connectPromise != null) {
+                    connectPromise.trySuccess();
+                }
+                fireChannelActiveIfReady();
+            }
         }
 
         @Override

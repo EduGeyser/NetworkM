@@ -24,6 +24,7 @@ import io.github.sendablemetatype.webrtc.RTCTransportMetrics;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
@@ -280,7 +281,8 @@ class WebRtcPeerTest {
 
     @Test
     void teardownFailsASendWithoutResultOnceAndDropsTheLateResult() throws InterruptedException {
-        WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null, Duration.ZERO);
+        WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null, Duration.ZERO,
+                WebRtcPeer.CLOSING_TIMEOUT);
         peer.start(observer -> connection);
         control.runAll();
         FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
@@ -375,7 +377,7 @@ class WebRtcPeerTest {
     @ValueSource(strings = {"[INVALID_STATE] ", WebRtcLink.DISCARDED})
     void aSendRefusedBeforeTheCloseFailsAfterItWithTheClosesCause(String refusal) {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -393,7 +395,7 @@ class WebRtcPeerTest {
     @Test
     void aSendRefusedAfterTheCloseFailsAtOnceWithTheClosesCause() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -412,7 +414,7 @@ class WebRtcPeerTest {
     @Test
     void aSendRefusedWhileTheRemoteClosesTheChannelFailsAsClosedByTheRemote() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         link.send(ByteBuffer.allocate(40), result -> listener.events.add("send failed " + closeCauseOf(result)));
 
@@ -425,6 +427,80 @@ class WebRtcPeerTest {
         assertEquals(List.of("channel closed ReliableDataChannel REMOTE_CLOSED", "send failed REMOTE_CLOSED"),
                 listener.snapshot());
         assertEquals(40, link.queuedBytes(), "libwebrtc tried it, so its next decrease reports it");
+    }
+
+    /**
+     * libwebrtc refuses a send on a channel that still connects with the same bare INVALID_STATE
+     * ({@code SctpDataChannel::SendImpl}), and no close need follow. A send made before the
+     * listener heard the open fails at once, also when the open is reported before its refusal.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aSendMadeBeforeTheOpenFailsAtOnceWhenRefused(boolean openReportedFirst) {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link unreliable = remoteLink(peer, ChannelParameters.unreliable("UnreliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        List<Throwable> results = new ArrayList<>();
+        link.send(ByteBuffer.allocate(4), results::add);
+
+        if (openReportedFirst) {
+            unreliable.changeState(RTCDataChannelState.OPEN);
+        }
+        unreliable.send(0).onFailure("[INVALID_STATE] ");
+
+        assertEquals(1, results.size());
+        assertEquals(IOException.class, results.getFirst().getClass());
+    }
+
+    /** Whether a send is refused while the channel closes, and whether before CLOSING is reported. */
+    private enum Refusal {
+        NONE, AFTER_CLOSING, BEFORE_CLOSING
+    }
+
+    /**
+     * A remote peer that resets its stream and then denies our reset leaves the channel CLOSING for
+     * good: dcSCTP reports the denial and WebRTC only logs it. Once the closing timeout passed, the
+     * channel counts as closed by the remote peer, with or without a refusal waiting. Natives that
+     * post data channel events to the signaling thread can report CLOSING after a refusal.
+     */
+    @ParameterizedTest
+    @EnumSource(Refusal.class)
+    void aChannelLeftClosingCountsAsClosedByTheRemoteAfterTheTimeout(Refusal refusal) throws InterruptedException {
+        WebRtcPeer peer = peer(Duration.ZERO);
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        DataLink link = listener.remoteLinks.getFirst();
+        if (refusal != Refusal.NONE) {
+            link.send(ByteBuffer.allocate(4), result -> listener.events.add("send failed " + closeCauseOf(result)));
+        }
+
+        if (refusal == Refusal.BEFORE_CLOSING) {
+            reliable.send(0).onFailure("[INVALID_STATE] ");
+        }
+        reliable.changeState(RTCDataChannelState.CLOSING);
+        if (refusal == Refusal.AFTER_CLOSING) {
+            reliable.send(0).onFailure("[INVALID_STATE] ");
+        }
+        assertEquals(List.of(), listener.snapshot());
+        runControlUntil(() -> !listener.snapshot().isEmpty());
+
+        assertEquals(refusal == Refusal.NONE ? List.of("channel closed ReliableDataChannel REMOTE_CLOSED")
+                        : List.of("channel closed ReliableDataChannel REMOTE_CLOSED", "send failed REMOTE_CLOSED"),
+                listener.snapshot());
+    }
+
+    /** An abrupt close passes CLOSING and CLOSED at once; the timeout that follows changes nothing. */
+    @Test
+    void aChannelThatClosesInTimeIsReportedOnce() throws InterruptedException {
+        WebRtcPeer peer = peer(Duration.ZERO);
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+
+        reliable.changeState(RTCDataChannelState.CLOSING);
+        reliable.error = USER_INITIATED_ABORT;
+        reliable.changeState(RTCDataChannelState.CLOSED);
+        int ran = control.ran();
+        runControlUntil(() -> control.ran() > ran);
+
+        assertEquals(List.of("channel closed ReliableDataChannel REMOTE_ABORTED"), listener.snapshot());
     }
 
     @Test
@@ -445,7 +521,7 @@ class WebRtcPeerTest {
     @Test
     void aRefusalWaitingForTheCloseFailsAtTeardown() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
-        FakeNative.Link reliable = remoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
+        FakeNative.Link reliable = openRemoteLink(peer, ChannelParameters.reliable("ReliableDataChannel"));
         DataLink link = listener.remoteLinks.getFirst();
         List<Throwable> results = new ArrayList<>();
         link.send(ByteBuffer.allocate(4), results::add);
@@ -741,6 +817,22 @@ class WebRtcPeerTest {
             Thread.sleep(1);
             control.runAll();
         }
+    }
+
+    /** An answerer whose closing data channels count as closed once this timeout passed. */
+    private WebRtcPeer peer(Duration closingTimeout) {
+        WebRtcPeer peer = new WebRtcPeer(Role.ANSWERER, listener, control, null, Duration.ofSeconds(10), closingTimeout);
+        peer.start(observer -> connection);
+        control.runAll();
+        return peer;
+    }
+
+    /** A remote link that opened, as a link is once the transport may send on it. */
+    private FakeNative.Link openRemoteLink(WebRtcPeer peer, ChannelParameters parameters) {
+        FakeNative.Link channel = remoteLink(peer, parameters);
+        channel.changeState(RTCDataChannelState.OPEN);
+        listener.events.clear();
+        return channel;
     }
 
     private FakeNative.Link remoteLink(WebRtcPeer peer, ChannelParameters parameters) {
