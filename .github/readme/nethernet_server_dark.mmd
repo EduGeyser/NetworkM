@@ -5,20 +5,23 @@ config:
 ---
 flowchart LR
     Client(("Bedrock client"))
+    Provider(("NXS provider"))
+    Prober(("Diagnostic prober"))
 
  subgraph Sources["<b>Join sources</b>"]
     Http["<b>NetherNetHttpSignaling</b><br><i>HTTP on TCP</i>"]
     Xbox["<b>NetherNetXboxRpcSignaling</b><br><i>Xbox Live WebSocket</i>"]
     Lan["<b>NetherNetDiscoverySignaling</b><br><i>LAN discovery on UDP</i>"]
-    Nxs["<b>NXS host</b><br><i>nethernet-nxs module</i>"]
+    Nxs["<b>NXS host</b><br><i>nethernet-nxs: stateless and assisted joins, diagnostics</i>"]
  end
  subgraph Endpoint["<b>NetherNetServerChannel</b>"]
-    Admission["<b>Admission stage</b><br><i>Throttle, budget, OfferCheck, OfferPolicy</i>"]
+    Admission["<b>Admission stage</b><br><i>Duplicate rule, throttle, budget, OfferCheck, OfferPolicy, join filter</i>"]
     Child["<b>NetherNetChildChannel</b><br><i>One per admitted join</i>"]
  end
  subgraph Engine["<b>NetherNetEngine</b><br><i>WebRtcEngine: libwebrtc through webrtc-java</i>"]
-    Ice["<b>IceEndpoint</b><br><i>Shared ICE port on UDP</i>"]
+    Ice["<b>IceEndpoint</b><br><i>Shared ICE port on UDP, holds checks for unknown ufrags</i>"]
     Peer["<b>Peer</b><br><i>One per child</i>"]
+    DiagPeer["<b>Diagnostic peer</b><br><i>SharedIcePort.openPeer: no child</i>"]
     Reliable["<b>ReliableDataChannel</b>"]
     Unreliable["<b>UnreliableDataChannel</b>"]
  end
@@ -28,15 +31,21 @@ flowchart LR
 
     %% Signaling
     Client <-. Offer, answer, candidates .-> Sources
+    Client <-. Admission token .-> Provider
+    Nxs <-. Heartbeats, assisted joins, outcomes .-> Provider
+    Ice -. Held check with an NXS1 token .-> Nxs
     Sources -. Join with ReplyPath .-> Admission
     Sources <-. JoinRefusal .- Admission
     Admission -. Admitted .-> Child
     Sources <-. Signed answer, candidates .- Child
     Peer <-. Creates .- Child
+    Nxs -. Opens for each check .-> DiagPeer
 
     %% Data
     Client <== DTLS and SCTP over UDP ==> Ice
+    Prober <== PING and PONG ==> Ice
     Ice <==> Peer
+    Ice <==> DiagPeer
     Peer <== Segments ==> Reliable
     Peer <== Segments ==> Unreliable
     Reliable <== Segments ==> Child
@@ -48,10 +57,11 @@ flowchart LR
     Child:::shared
     Ice:::shared
     Peer:::shared
+    DiagPeer:::shared
     Reliable:::shared
     Unreliable:::shared
 
     classDef shared fill:#e67e22,stroke:#333,stroke-width:2px
 
-    linkStyle 0,1,2,3,4,5 stroke:#9b59b6,stroke-width:2px,color:#9b59b6
-    linkStyle 6,7,8,9,10,11,12 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
+    linkStyle 0,1,2,3,4,5,6,7,8,9 stroke:#9b59b6,stroke-width:2px,color:#9b59b6
+    linkStyle 10,11,12,13,14,15,16,17,18 stroke:#2ecc71,stroke-width:4px,color:#2ecc71
