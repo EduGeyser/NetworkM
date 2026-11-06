@@ -262,10 +262,10 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
         }
 
         @Override
-        CompletionStage<Void> send(String message) {
+        CompletionStage<Void> send(Signal signal) {
             CompletableFuture<Void> sent = new CompletableFuture<>();
             try {
-                ChannelFuture write = discovery.sendSignal(sender, senderId, message);
+                ChannelFuture write = discovery.sendSignal(sender, senderId, signal);
                 write.addListener(done -> {
                     if (done.isSuccess()) {
                         sent.complete(null);
@@ -343,7 +343,23 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     }
 
     @Override
-    public void sendSignal(String targetNetworkId, String data) {
+    public void sendSignal(String targetNetworkId, Signal signal) {
+        send(targetNetworkId, signal.wire());
+    }
+
+    /**
+     * Sends LAN discovery's keep-alive {@code "Ping"}, which refreshes this peer's address at the
+     * target. It is a discovery message, not a NetherNet signal, so it has no place in
+     * {@link #sendSignal}.
+     *
+     * @param targetNetworkId the target's network ID, or {@code "0"} for the server discovery found
+     */
+    public void sendPing(String targetNetworkId) {
+        send(targetNetworkId, NetherNetDiscovery.PING);
+    }
+
+    /** Sends one discovery message to a target named as in {@link #sendSignal}. */
+    private void send(String targetNetworkId, String message) {
         String actualIdStr = targetNetworkId;
 
         // If '0' is passed, try to use the discovered ID (Client Mode)
@@ -356,19 +372,16 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
             return;
         }
 
+        long id;
         try {
-            long id = Long.parseUnsignedLong(actualIdStr);
-
-            // If we have an explicit remote address (Client Mode), use it directly
-            if (remoteAddress != null) {
-                this.discovery.sendSignal(remoteAddress, id, data);
-            } else {
-                // Server Mode: Use the ID to find the address in the Discovery map
-                this.discovery.sendSignal(id, data);
-            }
+            id = Long.parseUnsignedLong(actualIdStr);
         } catch (NumberFormatException e) {
             log.error("Cannot send LAN signal to non-numeric Network ID: {}", actualIdStr);
+            return;
         }
+        // Client Mode has the server's address; Server Mode finds the client's by its ID
+        InetSocketAddress remote = remoteAddress;
+        discovery.sendMessage(remote != null ? remote : discovery.recipientOf(id), id, message);
     }
 
     @Override

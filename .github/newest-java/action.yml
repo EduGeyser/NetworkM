@@ -1,0 +1,18 @@
+name: newest-java
+description: Read the newest JDK, newestJavaVersion in gradle.properties, from the checked-out repository.
+outputs:
+  version:
+    description: The JDK's major version.
+    value: ${{ steps.read.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: read
+      shell: bash
+      run: |
+        version=$(sed -n 's/^newestJavaVersion=//p' gradle.properties | tr -d '[:space:]')
+        if [[ ! "$version" =~ ^[0-9]+$ ]]; then
+          echo "gradle.properties needs newestJavaVersion=<major version>, found '$version'." >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"

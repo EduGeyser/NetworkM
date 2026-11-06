@@ -929,7 +929,7 @@ class NetherNetClientChannelTest {
         }
 
         @Override public void setNotFoundHandler(NotFoundHandler handler) { notFoundHandlers.add(handler); }
-        @Override public void sendSignal(String targetNetworkId, String data) { sent.add(data); }
+        @Override public void sendSignal(String targetNetworkId, Signal signal) { sent.add(signal.wire()); }
         @Override public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) { signalHandlers.add(handler); }
         @Override
         public void removeSignalHandler(String connectionId) {

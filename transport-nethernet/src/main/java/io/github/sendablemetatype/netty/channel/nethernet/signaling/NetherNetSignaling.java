@@ -3,12 +3,12 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 public interface NetherNetSignaling extends AutoCloseable {
 
     /**
-     * Sends a signaling message to the remote peer.
+     * Sends a NetherNet signal to the remote peer.
      *
      * @param targetNetworkId The destination's opaque Network ID. LAN discovery requires a uint64 decimal string.
-     * @param data            The raw signaling payload.
+     * @param signal          The signal.
      */
-    void sendSignal(String targetNetworkId, String data);
+    void sendSignal(String targetNetworkId, Signal signal);
 
     /**
      * Sets a handler for the signals of one connection ID from one remote peer. A signal with that

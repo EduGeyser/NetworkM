@@ -40,6 +40,11 @@ import java.util.function.Supplier;
 
 public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPacket> {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetDiscovery.class);
+    /**
+     * The keep-alive discovery message, sent through {@link NetherNetDiscoverySignaling#sendPing}; a
+     * peer that receives it refreshes the sender's address.
+     */
+    static final String PING = "Ping";
 
     private final long networkId;
     private final Map<String, ClientHandler> signalHandlers = new ConcurrentHashMap<>();
@@ -311,24 +316,52 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         this.offerHandler = handler;
     }
 
-    // Offers carry the client's identity token, so logs name a signal by its type only.
-    private static String signalType(String signal) {
-        int space = signal.indexOf(' ');
-        return space < 0 ? "malformed" : signal.substring(0, Math.min(space, 16));
-    }
-
     /**
      * Sends a signal immediately and schedules it to be resent periodically
      * until the returned ScheduledFuture is cancelled.
      */
-    public ScheduledFuture<?> sendSignalRetrying(InetSocketAddress recipient, long targetNetworkId, String data, long delayMs) {
+    public ScheduledFuture<?> sendSignalRetrying(InetSocketAddress recipient, long targetNetworkId, Signal signal, long delayMs) {
         return channel.eventLoop().scheduleAtFixedRate(() -> {
-            log.debug("Resending a {} signal to {}", signalType(data), recipient);
-            sendSignal(recipient, targetNetworkId, data);
+            // Offers carry the client's identity token, so the line names the signal by its type only.
+            log.debug("Resending a {} signal to {}", signal.type().wireName(), recipient);
+            sendSignal(recipient, targetNetworkId, signal);
         }, 0, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    public ChannelFuture sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
+    /**
+     * Sends a NetherNet signal to a peer.
+     *
+     * @param recipient       the peer's address
+     * @param targetNetworkId the peer's network ID
+     * @param signal          the signal
+     * @return completes when the datagram is written
+     */
+    public ChannelFuture sendSignal(InetSocketAddress recipient, long targetNetworkId, Signal signal) {
+        return sendMessage(recipient, targetNetworkId, signal.wire());
+    }
+
+    /**
+     * Sends a NetherNet signal to a peer whose address discovery knows.
+     *
+     * @param targetNetworkId the peer's network ID
+     * @param signal          the signal
+     * @throws IllegalArgumentException if discovery knows no address for the peer
+     */
+    public void sendSignal(long targetNetworkId, Signal signal) {
+        sendMessage(recipientOf(targetNetworkId), targetNetworkId, signal.wire());
+    }
+
+    /** @throws IllegalArgumentException if discovery knows no address for the peer */
+    InetSocketAddress recipientOf(long targetNetworkId) {
+        InetSocketAddress recipient = peerAddresses.get(targetNetworkId);
+        if (recipient == null) {
+            throw new IllegalArgumentException("Attempted to send signal to unknown peer: " + targetNetworkId);
+        }
+        return recipient;
+    }
+
+    /** Writes one discovery message, a signal's wire form or {@code "Ping"}. */
+    ChannelFuture sendMessage(InetSocketAddress recipient, long targetNetworkId, String data) {
         byte[] dataBytes = data.getBytes(StandardCharsets.UTF_8);
         ByteBuf buf = Unpooled.buffer();
         buf.writeShortLE(NetherNetConstants.ID_DISCOVERY_MESSAGE);
@@ -340,16 +373,6 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         buf.writeBytes(dataBytes);
 
         return sendPacket(buf, recipient);
-    }
-
-    // New sendSignal looking up Address from ID
-    public void sendSignal(long targetNetworkId, String data) {
-        InetSocketAddress recipient = peerAddresses.get(targetNetworkId);
-        if (recipient != null) {
-            sendSignal(recipient, targetNetworkId, data);
-        } else {
-            throw new IllegalArgumentException("Attempted to send signal to unknown peer: " + targetNetworkId);
-        }
     }
 
     private ChannelFuture sendPacket(ByteBuf packetData, InetSocketAddress target) {
@@ -482,7 +505,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
 
         // Vanilla can understate this inner length; the outer envelope already bounds the full datagram.
         String messageData = data.readCharSequence(data.readableBytes(), StandardCharsets.UTF_8).toString();
-        if ("Ping".equals(messageData)) {
+        if (PING.equals(messageData)) {
             rememberPeer(senderId, sender, null);
             return;
         }

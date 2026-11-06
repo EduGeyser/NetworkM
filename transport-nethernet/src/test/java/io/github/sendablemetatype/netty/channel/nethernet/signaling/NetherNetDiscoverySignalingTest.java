@@ -12,6 +12,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -109,7 +110,7 @@ class NetherNetDiscoverySignalingTest {
             replacement.get(2, TimeUnit.SECONDS);
             assertEquals(0, payload.refCnt());
             assertNull(discovery.callback.get());
-            signaling.sendSignal("0", "Ping");
+            signaling.sendPing("0");
             assertEquals(42, discovery.lastTargetId);
             assertFalse(signaling.connect(REMOTE).isDone());
             assertEquals(3, discovery.requests, "A new handshake must rediscover a restarted server's ID");
@@ -168,7 +169,7 @@ class NetherNetDiscoverySignalingTest {
 
                 respond(secondServer, secondRequest, 22);
                 second.get(2, TimeUnit.SECONDS);
-                signaling.sendSignal("0", "Ping");
+                signaling.sendPing("0");
                 DatagramPacket signal = receive(secondServer);
                 ByteBuf encrypted = Unpooled.wrappedBuffer(signal.getData(), signal.getOffset(), signal.getLength());
                 ByteBuf decrypted = null;
@@ -186,6 +187,43 @@ class NetherNetDiscoverySignalingTest {
             } finally {
                 signaling.close();
             }
+        }
+    }
+
+    @Test
+    void signalsLeaveInTheirWireFormAndThePingAsItsOwnMessage() throws Exception {
+        try (DatagramSocket server = new DatagramSocket(new InetSocketAddress("127.0.0.1", 0))) {
+            server.setSoTimeout(2000);
+            NetherNetDiscoverySignaling signaling = new NetherNetDiscoverySignaling(1,
+                    new InetSocketAddress("127.0.0.1", 0), new NetherNetDiscovery(1), 10_000);
+            try {
+                CompletableFuture<?> connected = signaling.connect(server.getLocalSocketAddress());
+                respond(server, receive(server), 22);
+                connected.get(2, TimeUnit.SECONDS);
+
+                signaling.sendSignal("0", new Signal(SignalType.CANDIDATE_ADD, "7", "candidate:1 1 udp 1 10.0.0.1 1 typ host"));
+                assertEquals("CANDIDATEADD 7 candidate:1 1 udp 1 10.0.0.1 1 typ host", messageTo(22, receive(server)));
+                signaling.sendPing("0");
+                assertEquals("Ping", messageTo(22, receive(server)));
+            } finally {
+                signaling.close();
+            }
+        }
+    }
+
+    /** The text of a discovery message, checked to be addressed to the network ID. */
+    private static String messageTo(long networkId, DatagramPacket packet) throws Exception {
+        ByteBuf encrypted = Unpooled.wrappedBuffer(packet.getData(), packet.getOffset(), packet.getLength());
+        ByteBuf decrypted = NetherNetConstants.decryptDiscoveryPacket(encrypted);
+        try {
+            assertEquals(NetherNetConstants.ID_DISCOVERY_MESSAGE, decrypted.readUnsignedShortLE());
+            decrypted.skipBytes(16);
+            assertEquals(networkId, decrypted.readLongLE());
+            int length = decrypted.readIntLE();
+            return decrypted.readCharSequence(length, StandardCharsets.UTF_8).toString();
+        } finally {
+            decrypted.release();
+            encrypted.release();
         }
     }
 
@@ -252,7 +290,7 @@ class NetherNetDiscoverySignalingTest {
         }
 
         @Override
-        public ChannelFuture sendSignal(InetSocketAddress recipient, long targetNetworkId, String data) {
+        ChannelFuture sendMessage(InetSocketAddress recipient, long targetNetworkId, String data) {
             lastTargetId = targetNetworkId;
             return null;
         }

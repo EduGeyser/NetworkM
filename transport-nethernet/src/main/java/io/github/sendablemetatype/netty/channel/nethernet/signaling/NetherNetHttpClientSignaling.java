@@ -244,11 +244,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
      * carries nothing after the offer.
      */
     @Override
-    public void sendSignal(String targetNetworkId, String data) {
-        Signal signal = Signal.parse(data).orElse(null);
-        if (signal == null) {
-            return;
-        }
+    public void sendSignal(String targetNetworkId, Signal signal) {
         if (signal.type() != SignalType.CONNECT_REQUEST) {
             log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type().wireName());
             return;

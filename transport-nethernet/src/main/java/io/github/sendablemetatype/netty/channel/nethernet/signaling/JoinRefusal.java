@@ -3,8 +3,10 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 /**
  * Why the endpoint did not let a client join, with how each kind of source tells the client: an
  * HTTP status for HTTP signaling, and a NetherNet error code in a {@code CONNECTERROR} signal for
- * Xbox RPC, LAN and NXS. Never a success status: a 2xx would leave the client parsing an answer
- * that was never written.
+ * Xbox RPC and LAN. Never a success status: a 2xx would leave the client parsing an answer that
+ * was never written. NXS sends neither: a refused stateless join's held check is dropped
+ * unanswered, and a refused assisted join goes back to the provider as a result without an answer
+ * ({@code accepted} false).
  *
  * <p>The statuses follow the initial table of ruling E-7, with {@link #BAD_OFFER} and
  * {@link #DUPLICATE} added by the later endpoint and HTTP rulings. The error codes are positions

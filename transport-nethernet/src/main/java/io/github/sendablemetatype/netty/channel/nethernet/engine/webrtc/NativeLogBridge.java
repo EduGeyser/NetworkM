@@ -73,10 +73,15 @@ final class NativeLogBridge {
 
     /**
      * libwebrtc's INFO is debugging detail and its VERBOSE diagnostic detail
-     * (see {@link Severity}), so they map one level down.
+     * (see {@link Severity}), so they map one level down. Errors and warnings
+     * that report routine events ({@link RoutineNativeLine}) log at DEBUG.
      */
-    private static void log(Severity severity, String message) {
+    static void log(Severity severity, String message) {
         String line = message.stripTrailing();
+        if ((severity == Severity.ERROR || severity == Severity.WARNING) && RoutineNativeLine.matches(line)) {
+            NATIVE.debug(line);
+            return;
+        }
         switch (severity) {
             case ERROR -> NATIVE.error(line);
             case WARNING -> NATIVE.warn(line);

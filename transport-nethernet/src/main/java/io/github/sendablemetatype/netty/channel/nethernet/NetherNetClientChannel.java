@@ -422,8 +422,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 return;
             }
             try {
-                signaling.sendSignal(targetNetworkId,
-                        new Signal(SignalType.CONNECT_REQUEST, attemptConnectionId, signed).wire());
+                signaling.sendSignal(targetNetworkId, new Signal(SignalType.CONNECT_REQUEST, attemptConnectionId, signed));
             } catch (Exception e) {
                 log.debug("Failed to send connect request", e);
                 retryOrFail("Could not send the offer");
@@ -462,8 +461,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     private boolean sendLocalCandidate(String attemptConnectionId, String candidate) {
         try {
-            signaling.sendSignal(targetNetworkId,
-                    new Signal(SignalType.CANDIDATE_ADD, attemptConnectionId, candidate).wire());
+            signaling.sendSignal(targetNetworkId, new Signal(SignalType.CANDIDATE_ADD, attemptConnectionId, candidate));
             return true;
         } catch (Exception e) {
             log.debug("Failed to send ICE candidate", e);

@@ -42,9 +42,10 @@ use the compatible handshake. The mode defaults to false.
 
 The normal handshake, bounded transient-denial retries, stateless cookie modes,
 HAProxy support, and per-channel/server metrics remain available. A
-`RakServerMetrics` hook that throws is logged as a warning and ignored, so it
-never breaks the handshake or packet handling. Channel factories accept either a
-datagram channel class or a `ChannelFactory`.
+`RakServerMetrics` or `RakChannelMetrics` hook that throws is logged and ignored,
+so it never breaks the handshake or packet handling. The first failure of each
+hook logs as a warning and later ones at debug, since most hooks run per packet.
+Channel factories accept either a datagram channel class or a `ChannelFactory`.
 
 Cookie signatures now match SipHash-2-4 for IPv6 addresses. IPv4 signatures are
 unchanged. An IPv6 `OFFLOADED_PSK` deployment must update the offloader and server

@@ -32,6 +32,7 @@ import io.github.sendablemetatype.netty.channel.raknet.config.RakServerMetrics;
 import io.github.sendablemetatype.netty.channel.raknet.packet.EncapsulatedPacket;
 import io.github.sendablemetatype.netty.channel.raknet.packet.RakMessage;
 import io.github.sendablemetatype.netty.handler.codec.raknet.common.RakSessionCodec;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 import io.github.sendablemetatype.netty.util.RakUtils;
 
 import java.net.Inet6Address;
@@ -59,11 +60,11 @@ public class RakServerOnlineInitialHandler extends SimpleChannelInboundHandler<E
 
         switch (packetId) {
             case ID_CONNECTION_REQUEST:
-                if (metrics != null) metrics.connectionInitPacket(this.channel.remoteAddress(), ID_CONNECTION_REQUEST);
+                this.reportConnectionInitPacket(metrics, ID_CONNECTION_REQUEST);
                 this.onConnectionRequest(ctx, buf);
                 break;
             case ID_NEW_INCOMING_CONNECTION:
-                if (metrics != null) metrics.connectionInitPacket(this.channel.remoteAddress(), ID_NEW_INCOMING_CONNECTION);
+                this.reportConnectionInitPacket(metrics, ID_NEW_INCOMING_CONNECTION);
 
                 buf.skipBytes(1);
                 // We have connected and no longer need this handler
@@ -76,6 +77,16 @@ public class RakServerOnlineInitialHandler extends SimpleChannelInboundHandler<E
             default:
                 ctx.fireChannelRead(message.retain());
                 break;
+        }
+    }
+
+    private void reportConnectionInitPacket(RakServerMetrics metrics, int packetId) {
+        if (metrics != null) {
+            try {
+                metrics.connectionInitPacket(this.channel.remoteAddress(), packetId);
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, "RakServerMetrics.connectionInitPacket", this.channel.remoteAddress(), cause);
+            }
         }
     }
 

@@ -5,26 +5,20 @@
     // Keeps actions pinned by commit, with the full version in the trailing comment
     'helpers:pinGitHubActionDigestsToSemver',
   ],
+  // config:recommended allows only LTS Java releases; the build follows the newest release
+  ignorePresets: ['workarounds:javaLTSVersions'],
   packageRules: [
     {
       groupName: 'GitHub Actions',
       matchManagers: ['github-actions'],
     },
     {
-      // The github-actions manager reads the node-version and java-version inputs itself (depType
-      // uses-with), so no custom manager is needed. A runtime bump can break the build, so it does
-      // not hold up the action updates.
+      // The github-actions manager reads the node-version input itself (depType uses-with), so no
+      // custom manager is needed. A runtime bump can break the build, so it does not hold up the
+      // action updates.
       groupName: 'CI runtimes',
       matchManagers: ['github-actions'],
       matchDepTypes: ['uses-with'],
-    },
-    {
-      // config:recommended allows only LTS Java releases (workarounds:javaLTSVersions); the CI JDK
-      // follows the newest release, as the Gradle toolchain does
-      matchManagers: ['github-actions'],
-      matchDepTypes: ['uses-with'],
-      matchPackageNames: ['java-jdk'],
-      allowedVersions: '/.*/',
     },
     {
       groupName: 'Gradle dependencies',
@@ -45,10 +39,20 @@
   ],
   customManagers: [
     {
+      // The newest JDK, which the Gradle toolchains and the CI read; its own pull request, as a JDK
+      // release can break the build. semver-partial keeps the major-only form.
+      customType: 'regex',
+      managerFilePatterns: ['/^gradle\\.properties$/'],
+      matchStrings: ['newestJavaVersion=(?<currentValue>\\d+)'],
+      depNameTemplate: 'java-jdk',
+      datasourceTemplate: 'java-version',
+      versioningTemplate: 'semver-partial',
+    },
+    {
       // The root build hands this catalog version to the JaCoCo plugin, so no library references it
       customType: 'regex',
       managerFilePatterns: ['/(^|/)gradle/libs\\.versions\\.toml$/'],
-      matchStrings: ['jacoco ="(?<currentValue>[^"]+)"'],
+      matchStrings: ['jacoco = "(?<currentValue>[^"]+)"'],
       depNameTemplate: 'org.jacoco:org.jacoco.agent',
       datasourceTemplate: 'maven',
     },

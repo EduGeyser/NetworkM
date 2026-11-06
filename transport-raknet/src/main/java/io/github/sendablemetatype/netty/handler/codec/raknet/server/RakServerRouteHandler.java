@@ -20,11 +20,16 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.raknet.RakChildChannel;
 import io.github.sendablemetatype.netty.channel.raknet.RakServerChannel;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 
 public class RakServerRouteHandler extends ChannelDuplexHandler {
+    private static final InternalLogger log = InternalLoggerFactory.getInstance(RakServerRouteHandler.class);
+
 
     public static final String NAME = "rak-server-route-handler";
     private final RakServerChannel parent;
@@ -51,7 +56,11 @@ public class RakServerRouteHandler extends ChannelDuplexHandler {
 
             RakChannelMetrics metrics = channel.config().getMetrics();
             if (metrics != null) {
-                metrics.bytesIn(packet.content().readableBytes());
+                try {
+                    metrics.bytesIn(packet.content().readableBytes());
+                } catch (RuntimeException cause) {
+                    MetricsFailureLog.failed(log, "RakChannelMetrics.bytesIn", packet.sender(), cause);
+                }
             }
 
             // In this case remote address is already known from ChannelHandlerContext

@@ -24,6 +24,7 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
 import io.github.sendablemetatype.netty.util.IntRange;
+import io.github.sendablemetatype.netty.util.MetricsFailureLog;
 
 import java.util.Queue;
 
@@ -81,10 +82,15 @@ public class RakAcknowledgeHandler extends SimpleChannelInboundHandler<ByteBuf> 
 
         RakChannelMetrics metrics = this.sessionCodec.getMetrics();
         if (metrics != null) {
-            if (nack) {
-                metrics.nackIn(entriesCount);
-            } else {
-                metrics.ackIn(entriesCount);
+            try {
+                if (nack) {
+                    metrics.nackIn(entriesCount);
+                } else {
+                    metrics.ackIn(entriesCount);
+                }
+            } catch (RuntimeException cause) {
+                MetricsFailureLog.failed(log, nack ? "RakChannelMetrics.nackIn" : "RakChannelMetrics.ackIn",
+                        this.sessionCodec.getChannel().remoteAddress(), cause);
             }
         }
         // Apply them now rather than at the next flush, so a NACK is answered and a widened window is used at once.
