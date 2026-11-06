@@ -163,6 +163,6 @@ final class Assistance implements ProviderWebSocket.AssistedJoins {
         Wire.SavedRegistration registration = runtime.registration();
         return new Authority(registration.instanceId(), runtime.keeper.state().generation(), snapshot,
                 sentNanos + TimeUnit.MILLISECONDS.toNanos(AUTHORITY_MILLIS), sentMillis + AUTHORITY_MILLIS,
-                sentMillis + runtime.clockOffsetMillis() + AUTHORITY_MILLIS);
+                sentMillis + runtime.measuredOffsetMillis() + AUTHORITY_MILLIS);
     }
 }

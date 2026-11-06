@@ -62,6 +62,13 @@ final class ProviderWebSocket implements AutoCloseable {
     private static final Gson JSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
     static final Duration PING_INTERVAL = Duration.ofSeconds(20);
+    /** The longest a player's assisted attempt may take, on the provider's clock. */
+    static final long MAX_PLAYER_ATTEMPT_MILLIS = 30_000;
+    /**
+     * How far past the longest attempt a join's deadline may seem. The clock offset comes from a reply that spent time
+     * in transit, so a full-length attempt can look up to that much longer than it is.
+     */
+    static final long DEADLINE_TOLERANCE_MILLIS = 2000;
     /**
      * One operation, every assisted result that can be in flight and a ping fit at once, so a burst of results
      * never fails the ping or the operation for want of room.
@@ -280,16 +287,16 @@ final class ProviderWebSocket implements AutoCloseable {
 
     private void assistedJoin(Connection connection, AssistedJoin join) {
         long remaining = join.expiresAt() - (clock.millis() + providerOffsetMillis.getAsLong());
-        long longest = join.diagnostic() ? DiagnosticAdmissionCodec.MAX_ATTEMPT_MILLIS : 30_000;
+        long longest = join.diagnostic() ? DiagnosticAdmissionCodec.MAX_ATTEMPT_MILLIS : MAX_PLAYER_ATTEMPT_MILLIS;
         if (assisted == null
                 || assistedInFlight >= MAX_ASSISTED_IN_FLIGHT
                 || !connection.binding.equals(join.instanceId() + ":" + join.generation())
                 || remaining <= 0
-                || remaining > longest) {
+                || remaining > longest + DEADLINE_TOLERANCE_MILLIS) {
             refuse(connection, join);
             return;
         }
-        long deadline = clock.nanos() + TimeUnit.MILLISECONDS.toNanos(remaining);
+        long deadline = clock.nanos() + TimeUnit.MILLISECONDS.toNanos(Math.min(remaining, longest));
         boolean[] reported = {false};
         Runnable failed = () -> {
             if (!reported[0]) {

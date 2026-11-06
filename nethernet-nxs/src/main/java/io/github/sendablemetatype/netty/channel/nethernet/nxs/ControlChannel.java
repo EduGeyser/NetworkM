@@ -63,7 +63,7 @@ final class ControlChannel {
             group = environment.eventLoops().get();
         }
         socket = new ProviderWebSocket(endpoint, group, environment.tls(), runtime.executor, runtime.clock,
-                runtime::clockOffsetMillis, runtime.config.assistedJoins() ? assistance : null, this::reconnect);
+                runtime::measuredOffsetMillis, runtime.config.assistedJoins() ? assistance : null, this::reconnect);
     }
 
     /** Signs the upgrade: {@code GET} on the control path, carrying the routing hint while assisting. */

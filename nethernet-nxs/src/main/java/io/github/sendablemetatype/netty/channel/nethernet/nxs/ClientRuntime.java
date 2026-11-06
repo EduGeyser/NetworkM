@@ -49,8 +49,13 @@ final class ClientRuntime {
     /** Stops the client; set by the client once it exists. */
     Runnable stop = () -> {
     };
-    /** The provider's clock minus this machine's, from its replies; positive when this machine is behind. */
+    /**
+     * The provider's clock minus this machine's, from its replies; positive when this machine is behind. Zero within
+     * the tolerance, and moved only by a change past it, so it is what the operator is told.
+     */
     private volatile long clockOffsetMillis;
+    /** The same as the latest reply measured it, unrounded, which assisted deadlines are read through. */
+    private volatile long measuredOffsetMillis;
     private long warnedClockOffsetMillis;
     private volatile ControlCarrier lastCarrier = ControlCarrier.NONE;
 
@@ -69,9 +74,12 @@ final class ClientRuntime {
         return clockOffsetMillis;
     }
 
-    /** The provider's clock now, as this machine estimates it. */
-    long providerMillis() {
-        return clock.millis() + clockOffsetMillis;
+    /**
+     * The latest measured offset. A provider sets an assisted join's deadline on its own clock, and a host only a
+     * second behind would otherwise see a full-length attempt as longer than any may be.
+     */
+    long measuredOffsetMillis() {
+        return measuredOffsetMillis;
     }
 
     ControlCarrier lastCarrier() {
@@ -88,6 +96,7 @@ final class ClientRuntime {
             return;
         }
         long offset = providerMillis - receivedMillis;
+        measuredOffsetMillis = offset;
         if (Math.abs(offset) < CLOCK_TOLERANCE_MILLIS) {
             offset = 0;
         }

@@ -95,7 +95,8 @@ public interface ProviderTransport {
      * the endpoint's server identity (see {@link AnswerSigner}); a diagnostic answer must carry none. The client has
      * already checked the join's frame, its owner and its deadline.
      *
-     * @param deadlineNanos When the join's deadline passes, already corrected for the provider's clock offset
+     * @param deadlineNanos When the join's deadline passes, already corrected for the provider's clock offset and
+     *                      never later than the longest attempt the join's kind allows
      * @param guard         Holds while the provider authority behind the join holds; check it before creating the
      *                      peer and again before completing, and let the peer's login binding consult it
      * @return The answer; completes exceptionally to refuse the join, which the client answers with

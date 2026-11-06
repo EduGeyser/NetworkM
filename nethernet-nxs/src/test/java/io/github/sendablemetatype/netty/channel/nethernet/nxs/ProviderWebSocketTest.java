@@ -427,9 +427,10 @@ class ProviderWebSocketTest {
             push(h, otherGeneration.toString());
             assertFalse(result(h).get("accepted").getAsBoolean(), "Joins for another lease are refused");
 
-            JsonObject tooLate = join(h, "02".repeat(16), 31000);
+            JsonObject tooLate = join(h, "02".repeat(16), 33000);
             push(h, tooLate.toString());
-            assertFalse(result(h).get("accepted").getAsBoolean(), "A deadline beyond 30 seconds is refused");
+            assertFalse(result(h).get("accepted").getAsBoolean(),
+                    "A deadline beyond 30 seconds and the clock tolerance is refused");
 
             JsonObject otherKey = join(h, "03".repeat(16), 14000);
             otherKey.addProperty("keyId", "Z999");
@@ -550,6 +551,32 @@ class ProviderWebSocketTest {
             push(h, join(h, "ab".repeat(16), 14000).toString());
             assertTrue(result(h).get("accepted").getAsBoolean());
             assertEquals(14, TimeUnit.NANOSECONDS.toSeconds(deadlines.getFirst() + 999_999_999));
+        }
+    }
+
+    @Test
+    void aFullLengthJoinIsServedThoughThisHostIsASecondBehind(@TempDir Path directory) throws Exception {
+        try (var h = harness()) {
+            h.stub.clockOffsetMillis = 1000;
+            var deadlines = new CopyOnWriteArrayList<Long>();
+            var transport = new FakeTransport() {
+                @Override
+                public CompletionStage<AssistedAnswer> assistedJoin(AssistedJoin join, long deadlineNanos,
+                                                                    OwnershipGuard guard) {
+                    deadlines.add(deadlineNanos - h.scheduler.nanos());
+                    return CompletableFuture.completedFuture(ANSWER);
+                }
+            };
+            var client = assisted(h, directory, transport);
+            h.await(client.start());
+            assertEquals(0, client.clockOffsetMillis(), "Too small a difference to report");
+            push(h, join(h, "ab".repeat(16), 30000).toString());
+            assertTrue(result(h).get("accepted").getAsBoolean(), "The provider's full 30 seconds");
+            assertEquals(TimeUnit.SECONDS.toNanos(30), deadlines.getFirst());
+            // A measuring reply slower than the join's frame makes the attempt look a little longer than it is
+            push(h, join(h, "cd".repeat(16), 31500).toString());
+            assertTrue(result(h).get("accepted").getAsBoolean());
+            assertEquals(TimeUnit.SECONDS.toNanos(30), deadlines.get(1), "Never waited out past 30 seconds");
         }
     }
 

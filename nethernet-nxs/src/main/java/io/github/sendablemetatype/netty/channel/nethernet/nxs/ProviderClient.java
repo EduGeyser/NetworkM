@@ -580,8 +580,9 @@ public final class ProviderClient implements AutoCloseable {
     /**
      * How far this machine's clock is from the provider's, as its replies tell it: positive when this machine is
      * behind. Zero until a reply says otherwise, or while the difference is within tolerance. Requests stay signed
-     * with this machine's clock, so one too far off has them refused; the difference is measured and warned about,
-     * and corrects only the deadlines of assisted joins, which the provider sets on its own clock.
+     * with this machine's clock, so one too far off has them refused; the difference is measured and warned about.
+     * Only the deadlines of assisted joins, which the provider sets on its own clock, are corrected, by the latest
+     * measurement even when it is within tolerance.
      */
     public long clockOffsetMillis() {
         return runtime.clockOffsetMillis();
