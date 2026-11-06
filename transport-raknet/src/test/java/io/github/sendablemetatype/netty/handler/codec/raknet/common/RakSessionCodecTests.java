@@ -732,6 +732,25 @@ class RakSessionCodecTests {
     }
 
     @Test
+    void aDatagramNumberThatComesRoundMovesToTheNewDatagram() throws Exception {
+        try (Session s = new Session(false, 60000)) {
+            ByteBuf earlier = s.write(100, RakPriority.IMMEDIATE);
+            Sent original = s.readData().get(0);
+            // A full wrap of datagram numbers before the earlier datagram was resent
+            setField(s.codec, "datagramWriteIndex", original.sequence + (1L << 24));
+            ByteBuf later = s.write(100, RakPriority.IMMEDIATE);
+            Sent reused = s.readData().get(0);
+            assertEquals(original.sequence, reused.sequence);
+            s.ack(reused.sequence, false);
+            assertEquals(0, later.refCnt(), "The ACK names the datagram that used the number last");
+            assertEquals(1, earlier.refCnt());
+            s.transport.close();
+            assertEquals(0, earlier.refCnt(), "Closing must release a datagram whose number came round");
+            s.transport.checkException();
+        }
+    }
+
+    @Test
     void ackOfEarliestDatagramPreservesTheNextDeadline() {
         try (Session s = new Session(false, 10000)) {
             s.write(100, RakPriority.IMMEDIATE);
