@@ -117,6 +117,8 @@ final class FakeJoinSource implements JoinSource {
         final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         final AtomicInteger finished = new AtomicInteger();
         final AtomicInteger connected = new AtomicInteger();
+        /** What {@link #answer} returns: completed by default, or a stage the test completes as the write. */
+        volatile CompletableFuture<Void> answerSent = CompletableFuture.completedFuture(null);
 
         Reply(boolean trickles) {
             this.trickles = trickles;
@@ -130,7 +132,7 @@ final class FakeJoinSource implements JoinSource {
         @Override
         public CompletionStage<Void> answer(String sdp) {
             sent.add("answer " + sdp);
-            return CompletableFuture.completedFuture(null);
+            return answerSent;
         }
 
         @Override

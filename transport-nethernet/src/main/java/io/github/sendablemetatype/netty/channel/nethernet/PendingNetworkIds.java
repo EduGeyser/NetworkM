@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /**
  * The network IDs of one endpoint's pending joins from sources that take one join per network ID
  * ({@link JoinSource#oneJoinPerNetworkId()}), shared by all of them. A join holds its ID until its
- * answer is handed to its source or it ends without one, also after its source was removed: a
+ * source sent its answer or it ends without one, also after its source was removed: a
  * source added in its place must not admit a second join for the same client meanwhile. Safe to
  * use from any thread.
  */
@@ -53,14 +53,16 @@ final class PendingNetworkIds {
         }
 
         /**
-         * Gives the ID back as the answer goes out, as upstream does: from here the client has what
-         * it asked for, and an offer it sends later for the same ID is a new connect, not a
-         * duplicate, even if this answer never arrives.
+         * Gives the ID back once the source sent the answer (its stage completed): from then on the
+         * client has what it asked for, and an offer it sends later for the same ID is a new connect,
+         * not a duplicate. Until then, a second offer is still a duplicate, even if the source writes
+         * the answer on another thread. A failed answer gives the ID back too; the join then ends.
          */
         @Override
         public CompletionStage<Void> answer(String sdp) {
-            release();
-            return reply.answer(sdp);
+            CompletionStage<Void> sent = reply.answer(sdp);
+            sent.whenComplete((ignored, failure) -> release());
+            return sent;
         }
 
         @Override

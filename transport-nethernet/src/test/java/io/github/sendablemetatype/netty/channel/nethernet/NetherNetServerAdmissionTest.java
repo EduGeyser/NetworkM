@@ -658,6 +658,28 @@ class NetherNetServerAdmissionTest {
     }
 
     @Test
+    void aNetworkIdStaysHeldUntilItsSourceSentTheAnswer() throws Exception {
+        harness.bind();
+        FakeJoinSource source = new FakeJoinSource(false, true);
+        harness.server.addSource(source, EndpointHarness.ADMIT_ALL);
+        FakeJoinSource.Reply first = source.offerFrom("42", "1", OFFER);
+        CompletableFuture<Void> written = new CompletableFuture<>();
+        first.answerSent = written;
+        harness.child();
+        FakePeer peer = harness.negotiating();
+        peer.completeAnswer(ANSWER);
+        peer.gatheringComplete(ANSWER);
+        first.answer();
+
+        // The answer was handed to the source, which has not written it yet
+        source.offerFrom("42", "2", OFFER).assertRefused(JoinRefusal.DUPLICATE);
+
+        written.complete(null);
+        source.offerFrom("42", "3", OFFER);
+        harness.child();
+    }
+
+    @Test
     void sourcesThatTrickleTakeSeveralJoinsForOneNetworkId() throws Exception {
         harness.bind();
         FakeJoinSource source = harness.source(true);
