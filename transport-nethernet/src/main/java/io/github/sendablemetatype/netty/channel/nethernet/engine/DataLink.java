@@ -28,10 +28,12 @@ public interface DataLink {
 
     /**
      * Bytes passed to {@link #send} and not yet handed to the network, counted
-     * from the moment {@code send} returns, before its completion runs, and
-     * dropped again for a message the engine refused. Cheap to read: no call
-     * into the engine's threads. The transport paces its sends on this, so a
-     * burst of sends must show here at once.
+     * from the moment {@code send} returns, before its completion runs. A
+     * message the engine refused leaves the count too, though possibly only with
+     * the engine's next report of what it sent; a refusal ends the connection,
+     * so the transport does not pace on it. Cheap to read: no call into the
+     * engine's threads. The transport paces its sends on this, so a burst of
+     * sends must show here at once.
      */
     long queuedBytes();
 
