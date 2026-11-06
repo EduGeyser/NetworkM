@@ -11,6 +11,22 @@
       matchManagers: ['github-actions'],
     },
     {
+      // The github-actions manager reads the node-version and java-version inputs itself (depType
+      // uses-with), so no custom manager is needed. A runtime bump can break the build, so it does
+      // not hold up the action updates.
+      groupName: 'CI runtimes',
+      matchManagers: ['github-actions'],
+      matchDepTypes: ['uses-with'],
+    },
+    {
+      // config:recommended allows only LTS Java releases (workarounds:javaLTSVersions); the CI JDK
+      // follows the newest release, as the Gradle toolchain does
+      matchManagers: ['github-actions'],
+      matchDepTypes: ['uses-with'],
+      matchPackageNames: ['java-jdk'],
+      allowedVersions: '/.*/',
+    },
+    {
       groupName: 'Gradle dependencies',
       matchManagers: ['gradle', 'custom.regex'],
       matchUpdateTypes: ['minor', 'patch'],
