@@ -66,28 +66,38 @@ public final class FakeIceEndpoint implements IceEndpoint {
     }
 
     @Override
-    public Optional<InetSocketAddress> relayOf(InetSocketAddress client) {
-        return Optional.empty();
+    public CompletionStage<Optional<InetSocketAddress>> relayOf(InetSocketAddress client) {
+        return CompletableFuture.completedFuture(Optional.empty());
     }
 
     @Override
-    public StunMonitor monitorStun(InetSocketAddress server) {
+    public CompletionStage<StunMonitor> monitorStun(InetSocketAddress server) {
+        if (closed) {
+            return CompletableFuture.failedFuture(new IllegalStateException("The endpoint is closed"));
+        }
         InetSocketAddress local = new InetSocketAddress(port);
-        return new StunMonitor() {
+        return CompletableFuture.completedFuture(new StunMonitor() {
+            private volatile boolean stopped;
+
             @Override
-            public StunReading read() {
-                return new StunReading(server, local, null, StunReading.State.PENDING, 0, 0, 0, Optional.empty());
+            public CompletionStage<StunReading> read() {
+                if (stopped || closed) {
+                    return CompletableFuture.failedFuture(new IllegalStateException("The monitor is closed"));
+                }
+                return CompletableFuture.completedFuture(
+                        new StunReading(server, local, null, StunReading.State.PENDING, 0, 0, 0, Optional.empty()));
             }
 
             @Override
             public void close() {
+                stopped = true;
             }
-        };
+        });
     }
 
     @Override
-    public Stats stats() {
-        return new Stats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    public CompletionStage<Stats> stats() {
+        return CompletableFuture.completedFuture(new Stats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
     }
 
     @Override
