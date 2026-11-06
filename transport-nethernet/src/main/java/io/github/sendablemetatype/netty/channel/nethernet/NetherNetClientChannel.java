@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherClientChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
@@ -11,6 +13,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.NetherNetEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
@@ -30,6 +33,7 @@ import java.nio.channels.ConnectionPendingException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
@@ -56,6 +60,11 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
     private volatile long connectionId; // Session ID (Long)
     private volatile String targetNetworkId; // Peer ID (String, for Realms)
+
+    // Where the client dialed, and the newest selected pair's remote side (event loop writes).
+    private volatile SourcedAddress signaled = SourcedAddress.unknown();
+    private volatile SourcedAddress media;
+    private InetSocketAddress dialed; // event loop
 
     private volatile boolean handshakeComplete = false;
 
@@ -174,8 +183,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 NetherNetClientChannel.this.setTargetNetworkId(address.getNetworkId());
                 NetherNetClientChannel.this.remoteAddress = remote;
             } else if (remote instanceof InetSocketAddress address) {
+                dialed = address;
                 NetherNetClientChannel.this.remoteAddress = address;
                 NetherNetClientChannel.this.setTargetNetworkId("0"); // "0" triggers auto-discovery in signaling
+                if (!address.isUnresolved()) {
+                    signaled = new SourcedAddress(address, AddressSource.SIGNALING, null);
+                }
             } else {
                 promise.setFailure(new IllegalArgumentException("Unsupported address: " + remote.getClass()));
                 return;
@@ -341,6 +354,11 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
         try {
             retirePeer();
+            // The next attempt finds its own pair.
+            media = null;
+            if (dialed != null) {
+                remoteAddress = dialed;
+            }
             signaling.removeSignalHandler(this.connectionId);
             this.cycleConnectionId();
             offerSent = false;
@@ -574,6 +592,51 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 }
             });
         }
+    }
+
+    /**
+     * Follows the newest selected pair: a client that dialed an IP address or a name reports the
+     * pair's remote side as its remote address; one that dialed a network ID keeps it.
+     */
+    @Override
+    void followPath(TransportPath path) {
+        InetSocketAddress remote = path.remote();
+        media = new SourcedAddress(remote, path.remoteType() == TransportPath.CandidateType.RELAY
+                ? AddressSource.TURN : AddressSource.ICE, null);
+        if (remoteAddress instanceof InetSocketAddress && !remote.equals(remoteAddress)) {
+            remoteAddress = remote;
+        }
+    }
+
+    /**
+     * The address this client dialed, as {@link AddressSource#SIGNALING}. A network ID, a name
+     * that is not resolved yet, or no connect at all give a unique placeholder as
+     * {@link AddressSource#UNKNOWN}.
+     */
+    @Override
+    public SourcedAddress signaledAddress() {
+        return signaled;
+    }
+
+    /**
+     * The server side of the newest selected pair, as {@link AddressSource#ICE}, or
+     * {@link AddressSource#TURN} when the server answered through a TURN relay. Each attempt starts
+     * empty.
+     */
+    @Override
+    public Optional<SourcedAddress> mediaAddress() {
+        return Optional.ofNullable(media);
+    }
+
+    /**
+     * The media address once ICE selected a pair, else the signaled address. A client that dialed
+     * an IP address or a name reports the same address from {@link #remoteAddress()}; one that
+     * dialed a network ID keeps that there, and this says where the server turned out to be.
+     */
+    @Override
+    public SourcedAddress reportedAddress() {
+        SourcedAddress current = media;
+        return current != null ? current : signaled;
     }
 
     private long cycleConnectionId() {

@@ -1,6 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
+import io.github.sendablemetatype.netty.channel.nethernet.address.RemoteAddressChangedEvent;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
@@ -269,7 +270,8 @@ class NetherNetDisconnectReasonTest {
             h.fixture.reliable(0, 9);
             h.run();
             assertEquals(List.of("ice CONNECTED", "peer CONNECTED", "path HOST PEER_REFLEXIVE"), seen);
-            assertEquals(List.of("active", "read:9"), h.events);
+            assertEquals(List.of("active", "read:9"), h.events.stream()
+                    .filter(event -> !event.startsWith(RemoteAddressChangedEvent.class.getSimpleName())).toList());
         }
     }
 

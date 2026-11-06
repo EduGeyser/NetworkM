@@ -2,6 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.TransportChannel;
 import io.github.sendablemetatype.netty.channel.TransportDisconnectReason;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.DefaultNetherChannelConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
@@ -12,7 +13,9 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.IceState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufHolder;
@@ -40,6 +43,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -49,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
@@ -84,6 +89,15 @@ import java.util.stream.Stream;
  * ends the connection, one {@link TransportDisconnectReason} is fired as a user
  * event on the event loop just before the close, and only if
  * {@code channelActive} fired; closing from the application fires nothing.
+ *
+ * <p><b>Statistics.</b> {@link #transportMetrics()} reads the ICE round trip
+ * time and the SCTP association's counters from the engine,
+ * {@link #selectedPath()} is the candidate pair ICE selected, and
+ * {@link #signaledAddress()}, {@link #mediaAddress()} and
+ * {@link #reportedAddress()} say where the peer is and how that is known.
+ * Each may be read from any thread. After the channel closed, the metrics are
+ * {@link TransportMetrics#NONE}, since the peer is gone, while the path and
+ * the addresses keep their last values, as a record of the connection.
  */
 public abstract class NetherNetChannel extends AbstractChannel implements TransportChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetChannel.class);
@@ -152,7 +166,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     private volatile long resumeMark;
 
     private volatile boolean transportOpen;
+    // The newest pair the engine reported, handed to the event loop.
     private volatile TransportPath latestPath;
+    // The newest pair the event loop took in, in step with the remote address.
+    private volatile TransportPath selectedPath;
 
     // Latest ICE round trip time in milliseconds, sampled while the channel is
     // active; negative until the first measurement. Failed samples keep the
@@ -210,6 +227,8 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
      */
     final void retirePeer() {
         unbindLinks();
+        latestPath = null;
+        selectedPath = null;
         synchronized (peerLock) {
             if (peer != null) {
                 retiredPeers = CompletableFuture.allOf(retiredPeers, closeQuietly(peer));
@@ -439,27 +458,102 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
             return;
         }
         TransportPath path = latestPath;
-        InetSocketAddress remote = path == null ? null : path.remote();
-        if (!isOpen() || remote == null || remote.isUnresolved()) {
+        if (!isOpen() || path == null) {
             return;
         }
-        followPath(path);
+        selectedPath = path;
+        InetSocketAddress remote = path.remote();
+        if (remote != null && !remote.isUnresolved()) {
+            followPath(path);
+        }
     }
 
     /**
      * Event loop: the newest selected pair, whose remote side is a resolved
-     * address. Moves {@link #remoteAddress()} to it. For a relayed pair that
-     * is the TURN relay, the transport peer actually connected to us, never
-     * the address the client declared behind it. A client that dialed a
-     * network ID keeps that as its remote address. A server's child reports
-     * through its address tracker instead.
+     * address. For a relayed pair that is the TURN relay, the transport peer
+     * actually connected to us, never the address the client declared behind
+     * it.
      */
-    void followPath(TransportPath path) {
-        InetSocketAddress remote = path.remote();
-        if (remoteAddress instanceof InetSocketAddress && !remote.equals(remoteAddress)) {
-            remoteAddress = remote;
+    abstract void followPath(TransportPath path);
+
+    /** Only whether the pair is relayed matters to the address source. */
+    static CandidateType candidateType(TransportPath.CandidateType type) {
+        return switch (type) {
+            case HOST -> CandidateType.HOST;
+            case SERVER_REFLEXIVE -> CandidateType.SERVER_REFLEXIVE;
+            case PEER_REFLEXIVE, UNKNOWN -> CandidateType.PEER_REFLEXIVE;
+            case RELAY -> CandidateType.RELAY;
+        };
+    }
+
+    // ---- Statistics ----
+
+    /**
+     * Reads the connection's transport metrics from the engine: the selected
+     * pair's ICE round trip time and the SCTP association's counters. The
+     * engine answers on its own thread, so the stage may complete on any
+     * thread; do not block an event loop on it.
+     *
+     * <p>Before the channel has a peer (a client before it connects, or
+     * between two attempts) and after it closed, the stage completes at once
+     * with {@link TransportMetrics#NONE}. Before activation each part is empty
+     * until it exists: the round trip time until ICE measured one, the SCTP
+     * metrics until the association is up.
+     *
+     * @return the metrics; fails only if the engine failed to read them
+     */
+    public CompletionStage<TransportMetrics> transportMetrics() {
+        Peer current = peer();
+        if (current == null) {
+            return CompletableFuture.completedStage(TransportMetrics.NONE);
+        }
+        try {
+            // A dependent stage, so a caller cannot complete the engine's own.
+            return current.metrics().thenApply(Function.identity());
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedStage(e);
         }
     }
+
+    /**
+     * The candidate pair ICE selected last, both ends with their candidate
+     * types; either address is null when the engine does not report it.
+     * Empty until ICE selected a pair, which can be before activation; a
+     * client's next attempt starts empty again. After close, the last pair.
+     * Taken in on the event loop, in step with {@link #remoteAddress()}.
+     *
+     * @return the selected pair, or empty before there is one
+     */
+    public Optional<TransportPath> selectedPath() {
+        return Optional.ofNullable(selectedPath);
+    }
+
+    /**
+     * Where signaling met the peer, fixed for the channel's life. Its
+     * address is a unique placeholder, with source
+     * {@link io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource#UNKNOWN},
+     * when signaling did not say.
+     *
+     * @return the signaled address
+     */
+    public abstract SourcedAddress signaledAddress();
+
+    /**
+     * The remote side of the newest selected pair: where the media flows. A
+     * relayed pair has the TURN relay here, the transport peer actually
+     * connected, never the address the peer claims behind it.
+     *
+     * @return the media address, or empty before ICE selected a pair with a
+     *         known remote address
+     */
+    public abstract Optional<SourcedAddress> mediaAddress();
+
+    /**
+     * The address this channel reports, with where it came from.
+     *
+     * @return the reported address
+     */
+    public abstract SourcedAddress reportedAddress();
 
     // ---- Message size ----
 

@@ -15,7 +15,6 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
-import io.github.sendablemetatype.netty.channel.nethernet.ice.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateIntake;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
@@ -43,7 +42,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * open.
  *
  * <p>Its remote address is where signaling met the client until it goes
- * active, then the selected ICE pair, see {@link #reportedAddress()}.
+ * active, then the selected ICE pair, with a {@link RemoteAddressChangedEvent}
+ * for each later move; see {@link #reportedAddress()}.
  */
 public class NetherNetChildChannel extends NetherNetChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetChildChannel.class);
@@ -64,13 +64,19 @@ public class NetherNetChildChannel extends NetherNetChannel {
     private final AtomicBoolean activationReported = new AtomicBoolean();
     private volatile boolean reliableOpen;
 
-    // Set before registration; the tracker itself is event loop only.
-    private Addressing addressing;
+    private final Addressing addressing;
     private boolean addressActivated;
 
-    NetherNetChildChannel(Channel parent, InetSocketAddress remote, InetSocketAddress local, Negotiation negotiation) {
-        super(parent, remote, local);
+    /**
+     * @param tracker the join's address tracker, seeded with where signaling met the client
+     * @param intake the join's candidate intake, which knows the client's TURN relays
+     * @param relays the shared ICE endpoint when PROXY protocol relays front it, else null
+     */
+    NetherNetChildChannel(Channel parent, InetSocketAddress local, Negotiation negotiation,
+                          RemoteAddressTracker tracker, RemoteCandidateIntake intake, IceEndpoint relays) {
+        super(parent, tracker.reported().address(), local);
         this.negotiation = Objects.requireNonNull(negotiation, "negotiation");
+        this.addressing = new Addressing(tracker, intake, relays);
         this.config = new DefaultNetherChannelConfig(this);
     }
 
@@ -113,26 +119,33 @@ public class NetherNetChildChannel extends NetherNetChannel {
     }
 
     /**
-     * Reports the remote address through the tracker from now on: the signaled address until the
-     * child goes active, then the selected pair, with a {@link RemoteAddressChangedEvent} for each
-     * later move. Call before registration.
-     *
-     * @param tracker the join's tracker, seeded with where signaling met the client
-     * @param intake the join's candidate intake, which knows the client's TURN relays
-     * @param relays the shared ICE endpoint when PROXY protocol relays front it, else null
+     * How the join arrived: the HTTP connection, a trusted proxy's declaration, the LAN datagram,
+     * the NXS admission, or {@link io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource#UNKNOWN}
+     * for Xbox joins, which carry no address. Per-address limits count the join under it.
      */
-    void trackAddress(RemoteAddressTracker tracker, RemoteCandidateIntake intake, IceEndpoint relays) {
-        this.addressing = new Addressing(tracker, intake, relays);
-        this.remoteAddress = tracker.reported().address();
+    @Override
+    public SourcedAddress signaledAddress() {
+        return addressing.tracker.signaled();
     }
 
     /**
-     * Where the reported remote address came from. Null for a child the
-     * server did not set up, which only tests create.
+     * The remote side of the newest selected pair, whose source says whether it is the client, a
+     * TURN relay or a PROXY protocol relay's client; taken in before activation too.
      */
+    @Override
+    public Optional<SourcedAddress> mediaAddress() {
+        return addressing.tracker.media();
+    }
+
+    /**
+     * What {@link #remoteAddress()} reports, with its source: the signaled address until the child
+     * goes active, then the media address (or, with
+     * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_SERVER_PREFER_PROXIED_ADDRESS},
+     * a trusted proxy's declaration).
+     */
+    @Override
     public SourcedAddress reportedAddress() {
-        Addressing current = addressing;
-        return current == null ? null : current.tracker.reported();
+        return addressing.tracker.reported();
     }
 
     /**
@@ -227,22 +240,16 @@ public class NetherNetChildChannel extends NetherNetChannel {
     protected void fireChannelActiveIfReady() {
         // Right before channelActive, on the loop: consumers read the address when the channel
         // goes active, so the switch to the selected pair fires no event.
-        Addressing current = addressing;
-        if (current != null && !addressActivated && isRegistered() && isActive() && eventLoop().inEventLoop()) {
+        if (!addressActivated && isRegistered() && isActive() && eventLoop().inEventLoop()) {
             addressActivated = true;
-            remoteAddress = current.tracker.activate().address();
+            remoteAddress = addressing.tracker.activate().address();
         }
         super.fireChannelActiveIfReady();
     }
 
     @Override
     void followPath(TransportPath path) {
-        Addressing current = addressing;
-        if (current == null) {
-            super.followPath(path);
-        } else {
-            current.selected(path);
-        }
+        addressing.selected(path);
     }
 
     /** The child's address reporting, fed on the event loop. */
@@ -289,7 +296,7 @@ public class NetherNetChildChannel extends NetherNetChannel {
         }
 
         private void apply(TransportPath path, InetSocketAddress relay) {
-            SourcedAddress pair = SourcedAddress.selectedPair(path.remote(), typeOf(path.remoteType()),
+            SourcedAddress pair = SourcedAddress.selectedPair(path.remote(), candidateType(path.remoteType()),
                     intake.isPeerRelay(path.remote()), relay);
             Optional<RemoteAddressChangedEvent> change = tracker.selectedPair(pair);
             if (change.isPresent()) {
@@ -297,16 +304,6 @@ public class NetherNetChildChannel extends NetherNetChannel {
                 pipeline().fireUserEventTriggered(change.get());
             }
         }
-    }
-
-    /** Only whether the pair is relayed matters to the address source. */
-    private static CandidateType typeOf(TransportPath.CandidateType type) {
-        return switch (type) {
-            case HOST -> CandidateType.HOST;
-            case SERVER_REFLEXIVE -> CandidateType.SERVER_REFLEXIVE;
-            case PEER_REFLEXIVE, UNKNOWN -> CandidateType.PEER_REFLEXIVE;
-            case RELAY -> CandidateType.RELAY;
-        };
     }
 
     @Override

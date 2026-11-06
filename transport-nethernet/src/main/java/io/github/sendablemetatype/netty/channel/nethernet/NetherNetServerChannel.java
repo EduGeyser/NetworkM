@@ -991,7 +991,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 announcement(join, settings, advertised), reservation::handshakeDone);
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
-        NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);
+        NetherNetChildChannel child = new NetherNetChildChannel(this, localAddress, negotiation, tracker, intake,
+                relayed ? settings.iceEndpoint() : null);
         child.setMaxOutboundMessageSize(admission.maxMessageSize);
         child.attr(NetherNetChildChannel.CONNECTION_ID).set(negotiation.id());
         Join.Authenticated authenticated = join.authenticated();
@@ -1000,7 +1001,6 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         } else {
             child.installBinding(authenticated.binding());
         }
-        child.trackAddress(tracker, intake, relayed ? settings.iceEndpoint() : null);
         live.add(child);
         child.closeFuture().addListener(future -> negotiation.closed());
         // Capacity follows the peer's teardown, not the close call: a handshake that closes stays

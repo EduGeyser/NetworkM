@@ -1,5 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
+import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelMetrics;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
@@ -11,6 +13,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportMetrics;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
@@ -29,6 +33,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.ConnectException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
@@ -37,6 +42,7 @@ import java.security.KeyPair;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -545,6 +551,55 @@ class NetherNetClientChannelTest {
             assertEquals(List.of("active", "CONNECTION_LOST", "inactive"), h.events);
             assertFalse(h.channel.isOpen());
             assertEquals(1, h.signaling.connections.size(), "no retry once connected");
+        }
+    }
+
+    @Test
+    void aClientReportsWhereItDialedAndWhereEachAttemptConnected() {
+        try (Harness h = new Harness()) {
+            assertSame(TransportMetrics.NONE, h.channel.transportMetrics().toCompletableFuture().join(),
+                    "no peer before the connect");
+            InetSocketAddress server = new InetSocketAddress("192.0.2.10", 19132);
+            h.channel.connect(server);
+            h.pump();
+            assertEquals(new SourcedAddress(server, AddressSource.SIGNALING, null), h.channel.signaledAddress());
+
+            FakePeer peer = h.start();
+            InetSocketAddress media = new InetSocketAddress("192.0.2.11", 50000);
+            TransportPath path = new TransportPath(null, TransportPath.CandidateType.HOST, media,
+                    TransportPath.CandidateType.SERVER_REFLEXIVE);
+            peer.path(path);
+            h.pump();
+            assertEquals(Optional.of(path), h.channel.selectedPath());
+            assertEquals(new SourcedAddress(media, AddressSource.ICE, null), h.channel.reportedAddress());
+            assertEquals(media, h.channel.remoteAddress());
+
+            // The attempt times out; the next one has neither a pair nor, until its signaling connects, a peer.
+            h.advance(100);
+            assertEquals(2, h.signaling.connections.size());
+            assertEquals(Optional.empty(), h.channel.selectedPath());
+            assertEquals(Optional.empty(), h.channel.mediaAddress());
+            assertEquals(server, h.channel.remoteAddress());
+            assertSame(TransportMetrics.NONE, h.channel.transportMetrics().toCompletableFuture().join());
+        }
+    }
+
+    @Test
+    void aClientThatDialedANetworkIdKeepsItAndReportsWhereTheServerWas() {
+        try (Harness h = new Harness()) {
+            h.connect();
+            assertEquals(AddressSource.UNKNOWN, h.channel.signaledAddress().source());
+            FakePeer peer = h.start();
+            TransportMetrics metrics = new TransportMetrics(Optional.of(Duration.ofMillis(9)), Optional.empty());
+            peer.setMetrics(metrics);
+            assertSame(metrics, h.channel.transportMetrics().toCompletableFuture().join());
+
+            InetSocketAddress relay = new InetSocketAddress("198.51.100.4", 3478);
+            peer.path(new TransportPath(null, TransportPath.CandidateType.HOST, relay,
+                    TransportPath.CandidateType.RELAY));
+            h.pump();
+            assertEquals(new SourcedAddress(relay, AddressSource.TURN, null), h.channel.reportedAddress());
+            assertEquals(new NetherNetAddress("target"), h.channel.remoteAddress());
         }
     }
 
