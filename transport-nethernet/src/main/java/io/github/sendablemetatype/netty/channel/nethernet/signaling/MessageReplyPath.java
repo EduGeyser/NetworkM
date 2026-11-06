@@ -33,11 +33,11 @@ abstract class MessageReplyPath implements ReplyPath {
     }
 
     /**
-     * Sends one signaling message to the joining client.
+     * Sends one signal to the joining client.
      *
      * @return completes when the source handed it on
      */
-    abstract CompletionStage<Void> send(String message);
+    abstract CompletionStage<Void> send(Signal signal);
 
     /** Drops what the source keeps for this join. Called once. */
     abstract void release();
@@ -49,17 +49,17 @@ abstract class MessageReplyPath implements ReplyPath {
 
     @Override
     public CompletionStage<Void> answer(String sdp) {
-        return send(new Signal(SignalType.CONNECT_RESPONSE, connectionId, sdp).wire());
+        return send(new Signal(SignalType.CONNECT_RESPONSE, connectionId, sdp));
     }
 
     @Override
     public CompletionStage<Void> candidate(String candidate) {
-        return send(new Signal(SignalType.CANDIDATE_ADD, connectionId, candidate).wire());
+        return send(new Signal(SignalType.CANDIDATE_ADD, connectionId, candidate));
     }
 
     @Override
     public CompletionStage<Void> refuse(JoinRefusal refusal) {
-        return send(new Signal(SignalType.CONNECT_ERROR, connectionId, Integer.toString(refusal.errorCode())).wire());
+        return send(new Signal(SignalType.CONNECT_ERROR, connectionId, Integer.toString(refusal.errorCode())));
     }
 
     @Override

@@ -344,24 +344,24 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     @Override
-    public void sendSignal(String targetNetworkId, String data) {
+    public void sendSignal(String targetNetworkId, Signal signal) {
         Channel current = currentChannel();
         if (current == null || !current.isActive()) {
             throw new IllegalStateException("Signaling channel is not active");
         }
-        sendMessage(targetNetworkId, data);
+        sendMessage(targetNetworkId, signal);
     }
 
     /**
-     * Sends a signaling message to a player.
+     * Sends a signal to a player.
      *
      * @return completes once the service accepted the message, or exceptionally when it refused
      *         it, did not answer in time, or no socket is up
      */
-    private CompletableFuture<Void> sendMessage(String targetPlayerId, String data) {
+    private CompletableFuture<Void> sendMessage(String targetPlayerId, Signal signal) {
         JsonObject innerParams = new JsonObject();
         innerParams.addProperty("netherNetId", localNetworkId);
-        innerParams.addProperty("message", data);
+        innerParams.addProperty("message", signal.wire());
 
         JsonObject innerMsg = new JsonObject();
         innerMsg.add("params", innerParams);
@@ -382,8 +382,8 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
 
         @Override
-        CompletionStage<Void> send(String message) {
-            return sendMessage(key.sender(), message);
+        CompletionStage<Void> send(Signal signal) {
+            return sendMessage(key.sender(), signal);
         }
 
         @Override

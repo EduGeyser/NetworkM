@@ -195,13 +195,13 @@ class NetherNetDiscoveryProtocolTest {
             discovery.now.set(100);
             assertEquals(0, discovery.peers.passiveSize());
 
-            discovery.value.sendSignal(20, "Ping");
+            discovery.value.sendSignal(20, new Signal(SignalType.CANDIDATE_ADD, "42", "candidate"));
             DatagramPacket signal = new DatagramPacket(new byte[65535], 65535);
             discovery.client.receive(signal);
             assertTrue(signal.getLength() > 0);
             discovery.value.unregisterJoin(20, "42");
             discovery.now.set(111);
-            assertThrows(IllegalArgumentException.class, () -> discovery.value.sendSignal(20, "Ping"));
+            assertThrows(IllegalArgumentException.class, () -> discovery.value.sendSignal(20, new Signal(SignalType.CANDIDATE_ADD, "42", "candidate")));
             discovery.value.close();
             assertEquals(0, discovery.peers.passiveSize());
         }
