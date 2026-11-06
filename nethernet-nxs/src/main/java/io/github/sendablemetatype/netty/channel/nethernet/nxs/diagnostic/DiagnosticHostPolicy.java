@@ -100,11 +100,13 @@ public record DiagnosticHostPolicy(
         }
     }
 
-    Key key(String id) {
+    /** The key with this ID, or null when the policy has none. */
+    public Key key(String id) {
         return keys.stream().filter(key -> key.keyId().equals(id)).findFirst().orElse(null);
     }
 
-    long endpointExpiry(Endpoint endpoint) {
+    /** When the endpoint's authorization ends, epoch milliseconds; 0 for an endpoint the policy does not list. */
+    public long endpointExpiry(Endpoint endpoint) {
         return endpointExpiries.getOrDefault(endpoint, 0L);
     }
 
