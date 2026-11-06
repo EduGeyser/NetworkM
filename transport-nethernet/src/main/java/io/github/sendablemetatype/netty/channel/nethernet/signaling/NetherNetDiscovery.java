@@ -45,6 +45,13 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
      * peer that receives it refreshes the sender's address.
      */
     static final String PING = "Ping";
+    /**
+     * The longest a signal's length is declared, by clients and BDS alike: a longer one, such as an
+     * offer listing many candidates, follows in full all the same and runs to the end of the packet.
+     * Reported by upstream CloudburstMC/Network for 1.26.51 clients, whose offers run to about 2,000
+     * bytes, and BDS. The reader here takes the rest of the packet whatever is declared.
+     */
+    private static final int MAX_DECLARED_SIGNAL_LENGTH = 1140;
 
     private final long networkId;
     private final Map<String, ClientHandler> signalHandlers = new ConcurrentHashMap<>();
@@ -369,7 +376,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         buf.writeZero(8); // Padding
 
         buf.writeLongLE(targetNetworkId); // Recipient ID
-        buf.writeIntLE(dataBytes.length);
+        buf.writeIntLE(Math.min(dataBytes.length, MAX_DECLARED_SIGNAL_LENGTH));
         buf.writeBytes(dataBytes);
 
         return sendPacket(buf, recipient);

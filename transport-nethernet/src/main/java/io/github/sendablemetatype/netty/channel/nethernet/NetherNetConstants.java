@@ -53,6 +53,14 @@ public class NetherNetConstants {
     private static final SecretKeySpec ENCRYPTION_KEY;
     private static final SecretKeySpec INTEGRITY_KEY;
     private static final int SIGNATURE_SIZE = 32;
+    /**
+     * The longest a discovery packet's length is declared, by clients and BDS alike, with the whole
+     * packet following anyway: a message whose signal is declared at the 1,140 bytes signals are
+     * capped at, plus the 32 bytes before the signal (this length, the packet ID, sender, padding,
+     * recipient and signal length). Reported by upstream CloudburstMC/Network for 1.26.51 clients
+     * and BDS. Vanilla's reader rejects a packet only when it is shorter than it declares.
+     */
+    private static final int MAX_DECLARED_PACKET_LENGTH = 1172;
     private static final FastThreadLocal<DiscoveryCrypto> DISCOVERY_CRYPTO = new FastThreadLocal<>() {
         @Override
         protected DiscoveryCrypto initialValue() throws Exception {
@@ -85,12 +93,13 @@ public class NetherNetConstants {
      */
     public static byte[] encryptDiscoveryPacket(ByteBuf packet) throws Exception {
         if (packet.readableBytes() > 0xffff - 2) {
-            throw new IllegalArgumentException("Discovery payload exceeds its 16-bit length field");
+            throw new IllegalArgumentException("Discovery payload is too long for one packet");
         }
         int len = packet.readableBytes() + 2;
+        int declared = Math.min(len, MAX_DECLARED_PACKET_LENGTH);
         byte[] payload = new byte[len];
-        payload[0] = (byte) len;
-        payload[1] = (byte) (len >>> 8);
+        payload[0] = (byte) declared;
+        payload[1] = (byte) (declared >>> 8);
         packet.readBytes(payload, 2, len - 2);
 
         DiscoveryCrypto crypto = DISCOVERY_CRYPTO.get();

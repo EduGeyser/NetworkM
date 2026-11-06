@@ -176,6 +176,12 @@ What follows from this:
 - A 1.26.51 client lists a LAN server that answers only in an older version but
   never sends it an offer (Reported: upstream CloudburstMC/Network,
   `ServerData.java`).
+- Clients and BDS declare a LAN signal's length as at most 1,140 bytes and the
+  discovery packet's as at most 1,172 (a 1,140-byte signal plus the 32 bytes
+  before it), then send the whole signal; a 1.26.51 client's offers run to about
+  2,000 bytes (Reported: upstream CloudburstMC/Network, `7c2354b7`). The client
+  rejects a discovery packet only when it is shorter than its declared length
+  (Decompiled, 2026-09-06).
 - Client and BDS both link Google's libwebrtc statically, with dcsctp for SCTP
   and OpenSSL 1.1.1n for DTLS (Decompiled: client 1.26.45 and 1.26.6022, BDS
   1.26.45.1 and 1.26.60.21).

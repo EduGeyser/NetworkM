@@ -45,6 +45,29 @@ class NetherNetDiscoveryProtocolTest {
         }
     }
 
+    /** Vanilla caps a signal's declared length at 1,140 bytes and sends the whole signal after it. */
+    @Test
+    void aSignalDeclaresItsLengthAsVanillaDoesAndIsSentWhole() throws Exception {
+        try (Discovery discovery = new Discovery()) {
+            String shortSignal = "CONNECTERROR 42 1";
+            String longSignal = "CONNECTRESPONSE 42 v=0\r\na=padding:" + "x".repeat(6000);
+            for (String signal : List.of(shortSignal, longSignal)) {
+                discovery.value.sendMessage(discovery.sender(), 20, signal).sync();
+                DatagramPacket packet = new DatagramPacket(new byte[65535], 65535);
+                discovery.client.receive(packet);
+                ByteBuf data = NetherNetConstants.decryptDiscoveryPacket(
+                        Unpooled.wrappedBuffer(packet.getData(), 0, packet.getLength()));
+                try {
+                    data.skipBytes(2 + 8 + 8 + 8); // Packet ID, sender, padding, recipient
+                    assertEquals(Math.min(signal.length(), 1140), data.readIntLE());
+                    assertEquals(signal, data.toString(StandardCharsets.UTF_8));
+                } finally {
+                    data.release();
+                }
+            }
+        }
+    }
+
     /**
      * A client that dials an address registers its attempt for target "0", the server discovery
      * finds, before discovery runs: no sender is that server until discovery found it, and then
