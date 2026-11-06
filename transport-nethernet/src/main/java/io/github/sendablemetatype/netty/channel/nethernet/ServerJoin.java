@@ -60,7 +60,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     private final CandidateAnnouncement announcement;
     private final TrickledAnswerCandidates trickled;
     private final Runnable handshakeDone;
-    private final Consumer<JoinRefusal> onRefused;
+    private final Consumer<JoinRefusal> refuser;
     private volatile NetherNetChildChannel child;
     private volatile JoinProgress progress = JoinProgress.NONE;
     private volatile boolean answerHandedOn;
@@ -75,10 +75,10 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
 
     /**
      * @param handshakeDone gives the join's pending handshake back, once it went active
-     * @param onRefused told about the refusal this join sends, if it sends one
+     * @param refuser sends the join's refusal and reports it, if the join sends one
      */
     ServerJoin(Join join, Settings settings, RemoteCandidateIntake intake, CandidateAnnouncement announcement,
-               Runnable handshakeDone, Consumer<JoinRefusal> onRefused) {
+               Runnable handshakeDone, Consumer<JoinRefusal> refuser) {
         this.join = join;
         this.id = join.connectionId();
         this.settings = settings;
@@ -89,7 +89,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         this.announcement = announcement;
         this.trickled = join.reply().trickles() ? AnswerCandidates.trickled(announcement) : null;
         this.handshakeDone = handshakeDone;
-        this.onRefused = onRefused;
+        this.refuser = refuser;
     }
 
     String id() {
@@ -281,12 +281,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
         if (!refused.compareAndSet(false, true) || (trickled == null && answerHandedOn)) {
             return;
         }
-        onRefused.accept(refusal);
-        try {
-            sent(join.reply().refuse(refusal), "refusal");
-        } catch (RuntimeException e) {
-            log.debug("Could not refuse join {}: {}", id, e.toString());
-        }
+        refuser.accept(refusal);
     }
 
     @Override

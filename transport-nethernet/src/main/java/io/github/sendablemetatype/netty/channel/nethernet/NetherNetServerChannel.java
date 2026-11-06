@@ -27,6 +27,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.ice.RemoteCandidateInt
 import io.github.sendablemetatype.netty.channel.nethernet.ice.StunObserver;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinAlreadySettledException;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSource;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
@@ -904,18 +905,34 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     /** Refuses a join that never became a child. */
     private void refuse(Join join, JoinRefusal refusal) {
-        serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+        sendRefusal(join, refusal);
+        join.reply().finished();
+    }
+
+    /**
+     * Sends a join its refusal and reports it once the source took it, unless the join was
+     * settled before: whoever settled it reported that, so one join counts once.
+     */
+    private void sendRefusal(Join join, JoinRefusal refusal) {
+        CompletionStage<Void> sent;
         try {
-            join.reply().refuse(refusal).whenComplete((ignored, failure) -> {
-                if (failure != null) {
-                    log.debug("Could not refuse join {}: {}", join.connectionId(),
-                            failure.toString());
-                }
-            });
+            sent = join.reply().refuse(refusal);
         } catch (RuntimeException e) {
             log.debug("Could not refuse join {}: {}", join.connectionId(), e.toString());
+            serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+            return;
         }
-        join.reply().finished();
+        sent.whenComplete((ignored, failure) -> {
+            if (JoinAlreadySettledException.settledBefore(failure)) {
+                log.debug("Did not refuse join {}: it was settled before ({})", join.connectionId(),
+                        failure.toString());
+                return;
+            }
+            serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+            if (failure != null) {
+                log.debug("Could not refuse join {}: {}", join.connectionId(), failure.toString());
+            }
+        });
     }
 
     /**
@@ -1240,7 +1257,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         AdmissionGate.Reservation reservation = admission.reservation;
         ServerJoin negotiation = new ServerJoin(join, settings.answers(), intake,
                 announcement(join, settings, advertised), reservation::handshakeDone,
-                refusal -> serverMetrics(metrics -> metrics.joinRefused(refusal.httpStatus())));
+                refusal -> sendRefusal(join, refusal));
         RemoteAddressTracker tracker = new RemoteAddressTracker(join.source(), config.isPreferProxiedAddress());
 
         NetherNetChildChannel child = new NetherNetChildChannel(this, localAddress, negotiation, tracker, intake,

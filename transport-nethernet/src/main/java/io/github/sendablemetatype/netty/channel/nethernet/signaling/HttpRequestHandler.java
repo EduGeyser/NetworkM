@@ -214,8 +214,11 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             sink.join(join);
         } catch (RuntimeException e) {
             NetherNetHttpSignaling.log.warn("The endpoint failed to take a join", e);
-            signaling.joinRefused(JoinRefusal.INTERNAL);
-            exchange.refuse(JoinRefusal.INTERNAL);
+            exchange.refuse(JoinRefusal.INTERNAL).whenComplete((ignored, failure) -> {
+                if (!JoinAlreadySettledException.settledBefore(failure)) {
+                    signaling.joinRefused(JoinRefusal.INTERNAL);
+                }
+            });
         }
     }
 
@@ -401,7 +404,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             CompletableFuture<Void> result = new CompletableFuture<>();
             Runnable task = () -> {
                 if (state != State.PENDING) {
-                    result.completeExceptionally(new IllegalStateException(
+                    result.completeExceptionally(new JoinAlreadySettledException(
                             "The HTTP request is no longer waiting for a reply: " + state));
                     return;
                 }

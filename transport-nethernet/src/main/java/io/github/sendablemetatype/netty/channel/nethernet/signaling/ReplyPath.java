@@ -36,10 +36,14 @@ public interface ReplyPath {
 
     /**
      * Refuses the join, or fails it after it was admitted. Called at most once, and never after a
-     * successful {@link #answer} on a path that does not trickle.
+     * successful {@link #answer} on a path that does not trickle. The endpoint reports a refusal
+     * to its metrics once this completes, unless it fails with a
+     * {@link JoinAlreadySettledException}: a source that settles joins on its own, as HTTP
+     * signaling does at its deadline, fails a refusal that comes after that and reports its own.
      *
      * @param refusal why
-     * @return completes when the source handed the refusal on
+     * @return completes when the source handed the refusal on; fails with a
+     *         {@link JoinAlreadySettledException} when the join was settled before
      */
     CompletionStage<Void> refuse(JoinRefusal refusal);
 
