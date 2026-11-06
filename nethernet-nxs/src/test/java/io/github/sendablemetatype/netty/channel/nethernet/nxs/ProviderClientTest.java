@@ -256,4 +256,289 @@ class ProviderClientTest {
             assertEquals(generation, h.stub.generation);
         }
     }
+
+    @Test
+    void usesProviderNeutralBearerAuthorizationWithoutPowOrPersistingTheToken(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var config = h.configuration().label("Hosted customer").authorizationToken("independent-provider-token")
+                    .build();
+            var client = h.client(config, path, new FakeTransport(), () -> null,
+                    () -> new Health(true, 10, SOFTWARE, h.connected(0)));
+            assertEquals("example-machine-1", h.await(client.start()).instanceId());
+            assertEquals("Bearer independent-provider-token", h.stub.challengeAuthorization);
+            assertEquals(0, h.stub.challengeDifficulty);
+            assertFalse(Files.readString(path.resolve("provider-state.json")).contains("independent-provider-token"));
+            assertFalse(config.toString().contains("independent-provider-token"));
+        }
+    }
+
+    @Test
+    void optionalExtensionsRemainOpaqueAndExplicit(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            h.stub.extensionMetadata = JsonParser.parseString("{\"org.example.operator\":{\"version\":1,"
+                    + "\"critical\":false,\"data\":{\"message\":\"optional\",\"operations\":{\"inspect\":\""
+                    + h.stub.origin + "/example/extension\"}}}}").getAsJsonObject();
+            var client = h.client(h.configuration().build(), path, new FakeTransport(), () -> null,
+                    () -> new Health(true, 10, null, h.connected(0)));
+            var extensions = Map.of("org.example.location", new ProtocolExtension(1, false, "{\"location\":null}"));
+            h.await(client.updateHeartbeatExtensions(extensions));
+            h.await(client.start());
+            assertEquals(JsonParser.parseString("{\"org.example.location\":{\"version\":1,\"critical\":false,"
+                            + "\"data\":{\"location\":null}}}"), h.stub.lastHeartbeat.getAsJsonObject("extensions"),
+                    "Explicit null in opaque extension data must survive wire serialization");
+            assertFalse(h.stub.lastHeartbeat.has("software"), "Unspecified optional health fields stay omitted");
+            var registered = h.await(client.extensions()).get("org.example.operator");
+            assertEquals(JsonParser.parseString(registered.data()), h.stub.extensionMetadata
+                    .getAsJsonObject("org.example.operator").get("data"));
+            assertFalse(Files.readString(path.resolve("provider-state.json")).contains("org.example.operator"));
+            assertEquals(0, h.stub.extensionRequests);
+            assertTrue(h.await(client.readiness()).routable());
+            h.await(client.extensionRequest("org.example.operator", "inspect", "POST", "{}"));
+            assertEquals(1, h.stub.extensionRequests);
+            assertThrows(IllegalArgumentException.class, () -> client.updateHeartbeatExtensions(Map.of(
+                    Wire.CONNECTIVITY, new ProtocolExtension(1, false, "{}"))), "The client owns connectivity");
+        }
+    }
+
+    @Test
+    void followsTheProviderScheduleWithoutIdlePollingAndWakesForPlayers(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            h.stub.checkInMillis = 900000;
+            var players = new AtomicInteger(0);
+            var client = h.client(h.configuration().build(), path, new FakeTransport(),
+                    () -> new ServerStatus("Scheduled", "world", 40, 0),
+                    () -> new Health(true, 40, SOFTWARE, h.connected(players.get())));
+            h.await(client.start());
+            h.run(Duration.ofSeconds(3));
+            assertEquals(1, h.stub.heartbeats);
+            for (int i = 0; i < 100; i++) {
+                client.requestStatusRefresh();
+            }
+            h.run(Duration.ofSeconds(2));
+            assertEquals(1, h.stub.heartbeats, "Unchanged local refreshes must not send requests");
+            players.set(1);
+            client.requestStatusRefresh();
+            h.settle();
+            assertEquals(1, h.stub.lastHeartbeat.getAsJsonObject("connectedPlayers").get("count").getAsInt());
+            int before = h.stub.heartbeats;
+            h.run(Duration.ofMinutes(14));
+            assertEquals(before, h.stub.heartbeats, "Nothing until the schedule");
+            h.run(Duration.ofMinutes(2));
+            assertEquals(before + 1, h.stub.heartbeats);
+            h.stop(client);
+            assertTrue(h.stub.draining, "Orderly shutdown still reports the drain while the timer is asleep");
+            int beforeRestart = h.stub.heartbeats;
+            var resumed = h.client(h.configuration().build(), path, new FakeTransport(),
+                    () -> new ServerStatus("Restarted", "world", 40, 0),
+                    () -> new Health(true, 40, SOFTWARE, h.connected(0)));
+            h.await(resumed.start());
+            assertEquals(2, h.stub.generation);
+            assertEquals(beforeRestart + 1, h.stub.heartbeats, "A restart publishes at once despite the old schedule");
+            assertEquals("Restarted", h.stub.lastHeartbeat.getAsJsonObject("serverStatus").get("name").getAsString());
+        }
+    }
+
+    @Test
+    void registrationRefreshRotationAndRestart(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var players = new AtomicInteger(2);
+            var renamed = new AtomicReference<ServerStatus>();
+            var transport = new FakeTransport();
+            var client = h.client(h.configuration().build(), path, transport,
+                    () -> renamed.get() != null ? renamed.get() : new ServerStatus("Example", "", 40, 0),
+                    () -> new Health(true, 100, SOFTWARE, h.connected(players.get())));
+            assertEquals("example-machine-1", h.await(client.start()).instanceId());
+            assertEquals(1, transport.installs.size());
+            assertEquals(100, h.stub.lastHeartbeat.get("capacity").getAsInt());
+            assertEquals(40, h.stub.lastHeartbeat.getAsJsonObject("serverStatus").get("maxPlayerCount").getAsInt());
+            players.set(7);
+            h.run(Duration.ofSeconds(2));
+            assertEquals(7, h.stub.lastHeartbeat.getAsJsonObject("connectedPlayers").get("count").getAsInt());
+            renamed.set(new ServerStatus("Renamed", "World", 30, 2));
+            h.advance(Duration.ofSeconds(1));
+            client.requestStatusRefresh();
+            h.settle();
+            assertEquals("Renamed", h.stub.lastHeartbeat.getAsJsonObject("serverStatus").get("name").getAsString());
+            String oldKey = h.stub.registration.get("keyId").getAsString();
+            var rotated = h.await(client.rotateMachineKey());
+            assertNotEquals(oldKey, rotated.keyId());
+            assertFalse(h.stub.keys.containsKey(oldKey), "The old machine key was retired");
+            assertTrue(h.await(client.readiness()).routable(), "Signed with the replacement key");
+            h.await(client.drain());
+            assertTrue(h.stub.draining);
+            h.stop(client);
+            var resumed = h.client(h.configuration().build(), path, new FakeTransport(),
+                    () -> new ServerStatus("Restarted", "", 50, 1), () -> new Health(true, 100, SOFTWARE, h.connected(0)));
+            assertEquals("example-machine-1", h.await(resumed.start()).instanceId());
+            assertEquals(1, h.stub.registrations);
+            assertEquals(2, h.stub.generation);
+        }
+    }
+
+    @Test
+    void retirementRepliesAndRestartNeverExtendTheSavedCutoff(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            h.stub.checkInMillis = 3_600_000;
+            var first = new FakeTransport();
+            var client = h.client(path, first);
+            h.await(client.start());
+            long cutoff = h.scheduler.millis() + 300_000;
+            JsonObject retirement = new JsonObject();
+            retirement.addProperty("keyId", "T001");
+            retirement.addProperty("retireAfter", cutoff);
+            h.stub.heartbeatRetirements = new JsonArray();
+            h.stub.heartbeatRetirements.add(retirement);
+            h.await(client.rotateAdmissionKey());
+            var latest = first.installs.getLast();
+            assertEquals(List.of("T001", "T002"), latest.stream().map(k -> k.keyId()).toList());
+            assertEquals(cutoff, latest.getFirst().retireAfter());
+            assertEquals(Long.MAX_VALUE, latest.get(1).retireAfter());
+            // Even a provider that rebases a later reply cannot extend the original bound
+            h.await(client.readiness());
+            JsonArray later = h.stub.heartbeatRetirements.deepCopy();
+            later.get(0).getAsJsonObject().addProperty("retireAfter", cutoff + 300_000);
+            h.stub.heartbeatRetirements = later;
+            h.await(client.readiness());
+            assertEquals(cutoff, first.installs.getLast().getFirst().retireAfter());
+            h.stop(client);
+            var saved = JsonParser.parseString(Files.readString(path.resolve("provider-state.json"))).getAsJsonObject()
+                    .getAsJsonArray("ticketKeys");
+            assertEquals(cutoff, saved.get(0).getAsJsonObject().get("retireAfter").getAsLong());
+            var restarted = new FakeTransport();
+            var resumed = h.client(path, restarted);
+            h.await(resumed.start());
+            h.await(resumed.readiness());
+            for (var snapshot : restarted.installs) {
+                assertEquals(List.of("T001", "T002"), snapshot.stream().map(k -> k.keyId()).toList());
+                assertEquals(cutoff, snapshot.getFirst().retireAfter(), "The first install after a restart keeps it");
+            }
+            h.advance(Duration.ofMinutes(5));
+            h.await(resumed.readiness());
+            assertEquals(List.of("T002"), restarted.installs.getLast().stream().map(k -> k.keyId()).toList(),
+                    "A retired epoch is installed no more");
+        }
+    }
+
+    @Test
+    void aFailedRefreshRetriesAndBurstsCoalesce(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var players = new AtomicInteger(2);
+            var client = h.client(h.configuration().build(), path, new FakeTransport(), () -> {
+                if (players.get() < 0) {
+                    throw new IllegalStateException("query unavailable");
+                }
+                return new ServerStatus("Example", "", 40, 0);
+            }, () -> new Health(true, 100, SOFTWARE, h.connected(Math.max(0, players.get()))));
+            h.await(client.start());
+            players.set(-1);
+            h.run(Duration.ofSeconds(2));
+            assertFalse(h.stub.lastHeartbeat.has("serverStatus"));
+            int before = h.stub.heartbeats;
+            players.set(5);
+            h.stub.failHeartbeats = 1;
+            for (int i = 0; i < 500; i++) {
+                client.requestStatusRefresh();
+            }
+            h.run(Duration.ofSeconds(3));
+            assertTrue(h.stub.lastHeartbeat.has("serverStatus"));
+            assertEquals(5, h.stub.lastHeartbeat.getAsJsonObject("connectedPlayers").get("count").getAsInt());
+            assertTrue(h.stub.heartbeats - before <= 3, "A burst coalesces within the heartbeat cadence");
+        }
+    }
+
+    @Test
+    void reportsTheEndpointsTheProviderAcknowledged(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var client = h.client(path, new FakeTransport());
+            assertTrue(client.publishedEndpoints().isEmpty());
+            h.await(client.start());
+            var published = client.publishedEndpoints().orElseThrow();
+            assertEquals(List.of(new InetSocketAddress("127.0.0.1", 19133)), published.endpoints());
+            assertTrue(published.assistedFamilies().isEmpty());
+            h.await(client.drain());
+            assertTrue(client.publishedEndpoints().isEmpty(), "A draining host offers nothing");
+        }
+    }
+
+    @Test
+    void republishesTheProfileWhenTheProviderHoldsNone(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var client = h.client(path, new FakeTransport());
+            h.await(client.start());
+            h.await(client.readiness());
+            assertFalse(h.stub.lastHeartbeat.has("hostProfile"));
+            int published = h.stub.profileRevision;
+            h.stub.forgetProfile = true;
+            h.await(client.readiness());
+            assertEquals(published + 1, h.stub.profileRevision, "The forgotten profile is sent again at once");
+            assertEquals(List.of(new InetSocketAddress("127.0.0.1", 19133)),
+                    client.publishedEndpoints().orElseThrow().endpoints(), "Known again once republished");
+        }
+    }
+
+    @Test
+    void bedrockProtocolsGoWithEachProfileOnlyWhenConfigured(@TempDir Path path) throws Exception {
+        String member = "\"bedrockProtocols\":{\"accepted\":[818,819,2225],\"version\":\"26.60\"}";
+        try (var h = new ClientHarness()) {
+            var client = h.client(h.configuration().bedrockProtocols(new BedrockProtocols(List.of(818, 819, 2225),
+                            "26.60")).build(), path.resolve("configured"), new FakeTransport(),
+                    () -> new ServerStatus("Example", "", 40, 0), () -> new Health(true, 10, SOFTWARE, h.connected(0)));
+            h.await(client.start());
+            String initial = lastProfileHeartbeat(h.stub);
+            assertTrue(initial.contains("\"location\":null," + member + ",\"serverStatus\":"), initial);
+            h.await(client.readiness());
+            assertFalse(h.stub.lastHeartbeat.has("bedrockProtocols"), "Acknowledged protocols are not repeated");
+            h.stub.forgetProfile = true;
+            h.await(client.readiness());
+            assertTrue(lastProfileHeartbeat(h.stub).contains(member), "A new profile carries them again");
+        }
+        try (var h = new ClientHarness()) {
+            var client = h.client(h.configuration().build(), path.resolve("unconfigured"), new FakeTransport(),
+                    () -> new ServerStatus("Example", "", 40, 0), () -> new Health(true, 10, SOFTWARE, h.connected(0)));
+            h.await(client.start());
+            assertTrue(lastProfileHeartbeat(h.stub).contains("\"location\":null,\"serverStatus\":"));
+            assertTrue(h.stub.heartbeatBodies.stream().noneMatch(body -> body.contains("bedrockProtocols")));
+        }
+    }
+
+    private static String lastProfileHeartbeat(IndependentProviderStub stub) {
+        return stub.heartbeatBodies.stream().filter(body -> body.contains("\"hostProfile\":"))
+                .reduce((first, second) -> second).orElseThrow();
+    }
+
+    @Test
+    void keepsTheActiveEpochWhileDrainingWithoutAProfile(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var transport = new FakeTransport();
+            var client = h.client(path, transport);
+            h.await(client.start());
+            h.await(client.drain());
+            assertEquals("T001", h.stub.lastHeartbeat.getAsJsonArray("installedAdmissionKeyIds").get(0).getAsString());
+            h.await(client.rotateAdmissionKey());
+            assertEquals("T002", transport.installs.getLast().getLast().keyId(), "The delivered epoch is installed");
+            assertFalse(h.stub.lastHeartbeat.has("hostProfile"));
+            assertFalse(h.stub.lastHeartbeat.has("installedAdmissionKeyIds"),
+                    "A new active epoch waits for a matching profile");
+        }
+    }
+
+    @Test
+    void readinessChangesAreLoggedOncePerChangeWithTheProvidersReasons(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            var client = h.client(path, new FakeTransport());
+            h.await(client.start());
+            assertEquals(1, h.logged(ProviderDiagnostic.Level.INFO, "is routing players to this server.").size());
+            h.stub.readiness = JsonParser.parseString(
+                    "{\"routable\":false,\"reasons\":[\"lease_expired\",\"Not A Code\"]}").getAsJsonObject();
+            var readiness = h.await(client.readiness());
+            assertFalse(readiness.routable());
+            assertEquals(List.of("lease_expired"), readiness.reasons(), "Only provider codes are kept");
+            h.await(client.readiness());
+            assertEquals(1, h.logged(ProviderDiagnostic.Level.WARN, "not routing players to this server: lease_expired.")
+                    .size());
+            h.stub.readiness = null;
+            h.await(client.readiness());
+            assertEquals(1, h.logged(ProviderDiagnostic.Level.INFO, "routing players to this server again.").size());
+        }
+    }
 }

@@ -103,6 +103,36 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
         }
     }
 
+    /**
+     * Runs work until the condition holds. When nothing arrives for a moment, the work is waiting on one of its own
+     * timers, such as an in-place retry delay, so the clock moves to that timer, at most a second at a time.
+     */
+    void settle(BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + EXTERNAL_WAIT_MILLIS;
+        while (true) {
+            runReady();
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Runnable task = ready.poll(QUIET_MILLIS, TimeUnit.MILLISECONDS);
+            if (task != null) {
+                task.run();
+                continue;
+            }
+            Timer next;
+            synchronized (timers) {
+                next = timers.peek();
+            }
+            if (next == null || System.currentTimeMillis() > deadline) {
+                throw new AssertionError("Nothing happened and no timer is due");
+            }
+            advance(Duration.ofNanos(Math.max(1, Math.min(next.at - nanos, TimeUnit.SECONDS.toNanos(1)))));
+        }
+    }
+
+    /** How long without work from other threads means the work waits on a timer; loopback replies take far less. */
+    private static final long QUIET_MILLIS = 300;
+
     /** The failure a stage completes with. */
     Throwable failure(CompletionStage<?> stage) throws InterruptedException {
         CompletableFuture<?> future = stage.toCompletableFuture();

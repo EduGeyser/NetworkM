@@ -83,7 +83,7 @@ final class ClientHarness implements AutoCloseable {
 
     /** Runs what the clients started, loopback replies included, until none has an operation left. */
     void settle() throws InterruptedException {
-        scheduler.until(() -> clients.stream().allMatch(ProviderClient::idle));
+        scheduler.settle(() -> clients.stream().allMatch(ProviderClient::idle));
     }
 
     void until(BooleanSupplier condition) throws InterruptedException {

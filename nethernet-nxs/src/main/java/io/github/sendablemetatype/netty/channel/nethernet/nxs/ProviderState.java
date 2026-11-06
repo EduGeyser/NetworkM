@@ -245,7 +245,7 @@ record ProviderState(String provider, MachineKey machineKey, MachineKey pendingM
                 return java.util.Optional.empty();
             }
             String reason = event.has("reason") ? event.get("reason").getAsString() : null;
-            if ((stage == OutcomeStage.FAILED) != (reason != null)
+            if (stage == OutcomeStage.FAILED && reason == null
                     || reason != null && !TransportOutcome.REASON.matcher(reason).matches()) {
                 return java.util.Optional.empty();
             }

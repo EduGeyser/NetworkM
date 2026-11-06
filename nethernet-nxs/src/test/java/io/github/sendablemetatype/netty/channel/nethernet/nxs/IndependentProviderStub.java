@@ -193,6 +193,7 @@ final class IndependentProviderStub implements AutoCloseable {
 
     private JsonObject dispatch(String method, String path, Map<String, String> headers, String raw,
                                 boolean overWebSocket) throws Exception {
+        String signedPath = path;
         if (path.startsWith("/v1/nxs/")) {
             path = "/example/" + path.substring("/v1/nxs/".length());
         }
@@ -245,7 +246,7 @@ final class IndependentProviderStub implements AutoCloseable {
                 throw new Failure(503, "fixture_transient");
             }
         }
-        authenticate(method, path, headers, raw);
+        authenticate(method, signedPath, headers, raw);
         JsonObject ok = new JsonObject();
         switch (path) {
             case "/example/heartbeat" -> heartbeat(raw, body, ok);
@@ -510,7 +511,7 @@ final class IndependentProviderStub implements AutoCloseable {
                     || !"example-machine-1".equals(instance) || gen != generation || seq <= sequence) {
                 throw new Failure(401, "auth_invalid");
             }
-            String target = path.startsWith("/example/") ? "/v1/nxs/" + path.substring(9) : path;
+            String target = path;
             if (!ProviderCrypto.verify(keys.get(key), h.get("nxs-signature"), ProviderCrypto.request(origin, method,
                     target, timestamp, instance, key, h.get("idempotency-key"), gen, seq, raw))) {
                 throw new Failure(401, "signature_invalid");

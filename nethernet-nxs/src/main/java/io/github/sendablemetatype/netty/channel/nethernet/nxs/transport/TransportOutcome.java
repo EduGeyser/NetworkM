@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
  * What the endpoint observed about one admitted ticket. Never carries SDP, credentials or player identity.
  *
  * @param occurredAt Epoch milliseconds on this host's clock
- * @param reason     A short lowercase code, required for {@link OutcomeStage#FAILED}, otherwise null
+ * @param reason     A short lowercase code, required for {@link OutcomeStage#FAILED}, otherwise optional
  * @param remote     The selected pair's remote endpoint at transport establishment, or null when unknown; reported
  *                   only to providers that advertise connectivity observation
  */
@@ -26,7 +26,7 @@ public record TransportOutcome(TicketId ticketId, OutcomeStage stage, long occur
             throw new IllegalArgumentException("The game reports its own outcomes");
         }
         if (occurredAt < 0 || occurredAt > 9007199254740991L
-                || (stage == OutcomeStage.FAILED) != (reason != null)
+                || stage == OutcomeStage.FAILED && reason == null
                 || reason != null && !REASON.matcher(reason).matches()) {
             throw new IllegalArgumentException("Invalid transport outcome");
         }

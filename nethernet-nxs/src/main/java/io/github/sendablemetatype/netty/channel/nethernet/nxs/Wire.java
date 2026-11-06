@@ -127,7 +127,7 @@ final class Wire {
     /**
      * One outcome as queued, saved and sent.
      *
-     * @param reason Null unless the stage carries one
+     * @param reason Null when the outcome has none
      * @param remote Null when unknown
      */
     record OutcomeEvent(TicketId ticketId, OutcomeStage stage, long occurredAt, String reason,
