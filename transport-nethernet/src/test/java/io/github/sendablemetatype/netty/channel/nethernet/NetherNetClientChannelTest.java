@@ -76,6 +76,24 @@ class NetherNetClientChannelTest {
     }
 
     @Test
+    void signalingThatDoesNotTrickleGetsTheGatheredOfferAndNoCandidates() {
+        try (Harness h = new Harness()) {
+            h.signaling.trickles = false;
+            h.connect();
+            FakePeer peer = h.start();
+            peer.completeOffer(OFFER);
+            peer.localCandidate("candidate:1", "0");
+            h.pump();
+            assertTrue(h.signaling.sent.isEmpty(), "the offer waits for gathering");
+
+            String gathered = OFFER + "a=candidate:1\r\na=end-of-candidates\r\n";
+            peer.gatheringComplete(gathered);
+            h.pump();
+            assertEquals(List.of("CONNECTREQUEST " + h.connectionId() + " " + gathered), h.signaling.sent);
+        }
+    }
+
+    @Test
     void aDuplicateConnectCannotReplaceTheOriginalPromiseOrTarget() {
         try (Harness h = new Harness()) {
             ChannelFuture original = h.connect();
@@ -503,6 +521,7 @@ class NetherNetClientChannelTest {
         private RuntimeException connectFailure;
         private RuntimeException removeFailure;
         private int closes;
+        private boolean trickles = true;
 
         @Override
         public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
@@ -525,6 +544,7 @@ class NetherNetClientChannelTest {
                 throw failure;
             }
         }
+        @Override public boolean trickles() { return trickles; }
         @Override public String getLocalNetworkId() { return "local"; }
         @Override public void close() { closes++; }
     }

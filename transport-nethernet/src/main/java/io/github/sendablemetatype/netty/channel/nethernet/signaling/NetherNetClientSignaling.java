@@ -16,6 +16,18 @@ public interface NetherNetClientSignaling extends NetherNetSignaling {
     CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress);
 
     /**
+     * Whether candidates travel as signals of their own after the offer. Signaling that does not
+     * trickle, such as HTTP, carries one offer and one answer: the client channel then waits for
+     * gathering to finish and sends the offer with every candidate in it, as the server does with
+     * its answer.
+     *
+     * @return true unless the signaling carries only full descriptions
+     */
+    default boolean trickles() {
+        return true;
+    }
+
+    /**
      * Sets a handler to be called when a signaling message is received for an unknown connection ID.
      *
      * @param handler The handler to process incoming signaling messages for unknown connection IDs.

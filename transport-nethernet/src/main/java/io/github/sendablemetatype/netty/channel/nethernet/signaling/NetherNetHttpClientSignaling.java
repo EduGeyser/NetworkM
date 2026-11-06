@@ -223,6 +223,12 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         });
     }
 
+    /** False: HTTP carries one offer with every candidate in it, and one answer. */
+    @Override
+    public boolean trickles() {
+        return false;
+    }
+
     /**
      * Posts the offer of a {@code CONNECTREQUEST}. Candidate and error signals are dropped: HTTP
      * carries nothing after the offer.

@@ -27,16 +27,19 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ConnectionPendingException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * A NetherNet client: offers a connection over trickle signaling and opens
- * the two data channels. A handshake that does not finish in time is retried
- * with a new peer and connection ID; once connected, a failing peer ends the
- * connection like on the server.
+ * A NetherNet client: offers a connection over its signaling and opens the
+ * two data channels. Over signaling that trickles, candidates follow the
+ * offer one by one; otherwise the offer waits for gathering and carries them
+ * all. A handshake that does not finish in time is retried with a new peer
+ * and connection ID; once connected, a failing peer ends the connection like
+ * on the server.
  */
 public class NetherNetClientChannel extends NetherNetChannel {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetClientChannel.class);
@@ -313,7 +316,12 @@ public class NetherNetClientChannel extends NetherNetChannel {
         bindUnreliable(created.openChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL)));
 
         final long attemptConnectionId = this.connectionId;
-        created.offer().whenComplete((offer, failure) -> executeForAttempt(gen, () -> {
+        CompletionStage<String> offered = created.offer();
+        // Signaling that does not trickle carries every candidate in the offer, so it waits for
+        // gathering, as vanilla's HTTP offers do (they carry host candidates).
+        CompletionStage<String> description = signaling.trickles() ? offered
+                : offered.thenCompose(ignored -> created.gatheredLocalDescription());
+        description.whenComplete((offer, failure) -> executeForAttempt(gen, () -> {
             if (failure != null) {
                 // The handshake timeout retries.
                 log.debug("Creating the offer failed: {}", failure.toString());
@@ -431,6 +439,10 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         @Override
         public void onLocalCandidate(String candidate, String candidateMid) {
+            if (!signaling.trickles()) {
+                // The offer carries it
+                return;
+            }
             final long attemptConnectionId = connectionId;
             executeForAttempt(generation, () -> {
                 if (offerSent) {
@@ -443,7 +455,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
 
         @Override
         public void onGatheringComplete() {
-            // Trickle signaling only: every candidate went out on its own.
+            // Trickling, every candidate went out on its own; otherwise the offer waits for
+            // the gathered description.
         }
 
         @Override
