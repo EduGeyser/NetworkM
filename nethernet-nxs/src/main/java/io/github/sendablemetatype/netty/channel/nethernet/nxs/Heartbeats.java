@@ -29,9 +29,10 @@ import java.util.function.Supplier;
 /**
  * Check-ins. A heartbeat reports acceptance, capacity, the actual player count and, when it changed, the host profile
  * and installed admission keys; its reply carries the profile revision, readiness, key updates and the next
- * schedule. Changes to acceptance, the profile and key acknowledgements go out at once; listing and count changes no
- * sooner than the provider's minimum interval. A reply that needs another exchange, such as a delivered key, gets
- * one at once, up to three per heartbeat. Used on the lifecycle executor.
+ * schedule. Changes to acceptance, the profile and key acknowledgements go out at once, as the wire reference requires;
+ * listing and count changes no sooner than the provider's minimum interval, and none before a failure's backoff has
+ * passed. A reply that needs another exchange, such as a delivered key, gets one at once, up to three per heartbeat.
+ * Used on the lifecycle executor.
  */
 final class Heartbeats {
     private static final long REFRESH_NANOS = TimeUnit.SECONDS.toNanos(30);
@@ -78,6 +79,7 @@ final class Heartbeats {
     private boolean locationReported, bedrockProtocolsReported;
     private ServerStatus lastStatus;
     private Health lastHealth;
+    private boolean reportedAccepting;
     private Readiness lastReadiness = new Readiness(false, List.of());
 
     /** @param recover Settles an ambiguous WebSocket operation through ordinary recovery and reinstalls the keys */
@@ -216,7 +218,7 @@ final class Heartbeats {
                 ? keys.acknowledged()
                 : null;
         round.health = healthSupplier.get();
-        round.accepting = round.health.acceptingPlayers() && active != null && !runtime.draining;
+        round.accepting = accepting(round.health);
         round.diagnosticsAdvertised = round.diagnosticSnapshot != null && diagnostics.current(round.diagnosticSnapshot);
         WireCodec.ConnectivityReport report = null;
         CompletableFuture<Void> withdrawn = Async.done();
@@ -346,6 +348,7 @@ final class Heartbeats {
                 : intervalMillis());
         lastStatus = round.status;
         lastHealth = round.health;
+        reportedAccepting = round.accepting;
         lastGameOutcomes = runtime.config.gameOutcomes();
         locationReported |= round.sentLocation;
         bedrockProtocolsReported |= round.sentProtocols;
@@ -462,17 +465,28 @@ final class Heartbeats {
         runtime.log.failed(ProviderLog.Operation.STATUS, ProviderFailures.describe(failure));
     }
 
-    /** Whether a heartbeat is due: by schedule, for changed candidates, or for a changed listing or count. */
+    /**
+     * Whether a heartbeat is due: by schedule, at once for changed acceptance or endpoint material, and for a changed
+     * listing, count or mapping freshness once the provider's minimum interval has passed. Nothing is due before a
+     * failure's backoff has passed.
+     */
     CompletableFuture<Boolean> due() {
         if (runtime.clock.nanos() - nextHeartbeat >= 0) {
             return CompletableFuture.completedFuture(true);
         }
+        if (failures > 0) {
+            // The failure moved the next heartbeat to the end of its backoff, which no change cuts short
+            return CompletableFuture.completedFuture(false);
+        }
         return candidatesChanged().thenApply(changed -> changed || statusChanged());
     }
 
-    /** Samples the cheap local counter; replaced material bypasses freshness-only coalescing. */
+    /**
+     * Samples the cheap local counter. Replaced material goes out at once; a refresh of the same material, such as a
+     * renewed mapping, is coalesced to the refresh interval.
+     */
     private CompletableFuture<Boolean> candidatesChanged() {
-        if (runtime.clock.nanos() - nextStatusUpdate < 0 || runtime.draining) {
+        if (runtime.draining) {
             return CompletableFuture.completedFuture(false);
         }
         long version = runtime.transport.candidatePublicationVersion();
@@ -497,18 +511,25 @@ final class Heartbeats {
                     return true;
                 }
             }
-            return observedRevision != publishedRevision || runtime.clock.nanos() - nextCandidateRefresh >= 0;
+            if (observedRevision != publishedRevision) {
+                return true;
+            }
+            long now = runtime.clock.nanos();
+            return now - nextCandidateRefresh >= 0 && now - nextStatusUpdate >= 0;
         });
     }
 
-    /** Whether the listing or the count changed enough, and long enough ago, to report before the schedule. */
-    boolean statusChanged() {
-        long now = runtime.clock.nanos();
-        if (now - nextStatusUpdate < 0) {
-            return false;
+    /**
+     * Whether the reported acceptance changed, which goes out at once, or the listing or the count changed and the
+     * provider's minimum interval has passed.
+     */
+    private boolean statusChanged() {
+        Health health = healthSupplier.get();
+        if (lastHealth == null || accepting(health) != reportedAccepting) {
+            return true;
         }
-        if (!scheduledCheckIns) {
-            return now - nextHeartbeat >= 0;
+        if (!scheduledCheckIns || runtime.clock.nanos() - nextStatusUpdate < 0) {
+            return false;
         }
         ServerStatus status;
         try {
@@ -517,12 +538,15 @@ final class Heartbeats {
             // The heartbeat itself says what failed
             return true;
         }
-        Health health = healthSupplier.get();
-        return !Objects.equals(status, lastStatus) || lastHealth == null
-                || health.acceptingPlayers() != lastHealth.acceptingPlayers()
+        return !Objects.equals(status, lastStatus)
                 || health.capacity() != lastHealth.capacity()
                 || health.connectedPlayers().count() != lastHealth.connectedPlayers().count()
                 || !Objects.equals(health.software(), lastHealth.software());
+    }
+
+    /** The acceptance a heartbeat reports: the host's own, while a key is installed and nothing drains. */
+    private boolean accepting(Health health) {
+        return health.acceptingPlayers() && keys.activeKeyId() != null && !runtime.draining;
     }
 
     private long intervalMillis() {

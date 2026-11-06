@@ -698,13 +698,15 @@ public final class ProviderClient implements AutoCloseable {
         if (!runtime.closing && refreshQueued.compareAndSet(false, true)) {
             queue.submit(() -> {
                 refreshQueued.set(false);
-                if (runtime.closed || !runtime.started || !heartbeats.statusChanged()) {
+                if (runtime.closed || !runtime.started) {
                     return Async.done();
                 }
-                return heartbeats.beat().exceptionally(failure -> {
-                    heartbeats.failed(failure);
-                    return null;
-                });
+                return heartbeats.due()
+                        .thenCompose(due -> due ? heartbeats.beat() : Async.done())
+                        .exceptionally(failure -> {
+                            heartbeats.failed(failure);
+                            return null;
+                        });
             });
         }
     }

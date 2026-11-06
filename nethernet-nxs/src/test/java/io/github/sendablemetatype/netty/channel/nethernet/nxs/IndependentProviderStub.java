@@ -73,6 +73,8 @@ final class IndependentProviderStub implements AutoCloseable {
     volatile int outcomeAttempts;
     volatile boolean loseCompletionResponse;
     volatile long checkInMillis;
+    /** The schedule's minimum interval between early heartbeats. */
+    volatile long minUpdateIntervalMillis = 1000;
     final List<JsonObject> events = new CopyOnWriteArrayList<>();
     long generation, sequence;
     volatile boolean poolOnlyRegistration;
@@ -569,7 +571,7 @@ final class IndependentProviderStub implements AutoCloseable {
             JsonObject schedule = new JsonObject();
             schedule.addProperty("afterMillis", checkInMillis);
             schedule.addProperty("leaseMillis", checkInMillis + 30000);
-            schedule.addProperty("minUpdateIntervalMillis", 1000);
+            schedule.addProperty("minUpdateIntervalMillis", minUpdateIntervalMillis);
             ok.add("checkIn", schedule);
         }
     }

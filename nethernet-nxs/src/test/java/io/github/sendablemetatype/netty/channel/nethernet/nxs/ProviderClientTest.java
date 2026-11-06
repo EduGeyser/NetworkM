@@ -339,6 +339,44 @@ class ProviderClientTest {
     }
 
     @Test
+    void acceptanceAndEndpointChangesGoOutBeforeTheMinimumInterval(@TempDir Path path) throws Exception {
+        try (var h = new ClientHarness()) {
+            h.stub.checkInMillis = 900000;
+            h.stub.minUpdateIntervalMillis = 60000;
+            var accepting = new AtomicBoolean(true);
+            var players = new AtomicInteger(0);
+            var transport = new FakeTransport();
+            transport.revision = 1;
+            transport.version = 1;
+            var client = h.client(h.configuration().build(), path, transport, () -> null,
+                    () -> new Health(accepting.get(), 20, SOFTWARE, h.connected(players.get())));
+            h.await(client.start());
+            int before = h.stub.heartbeats;
+            accepting.set(false);
+            h.run(Duration.ofSeconds(2));
+            assertEquals(before + 1, h.stub.heartbeats, "A pause goes out at once");
+            assertFalse(h.stub.lastHeartbeat.get("acceptingPlayers").getAsBoolean());
+            accepting.set(true);
+            client.requestStatusRefresh();
+            h.settle();
+            assertTrue(h.stub.lastHeartbeat.get("acceptingPlayers").getAsBoolean(), "So does the resumption");
+            transport.candidates = List.of(HostCandidate.host(new InetSocketAddress("127.0.0.1", 19200)));
+            transport.revision++;
+            transport.version++;
+            h.run(Duration.ofSeconds(2));
+            assertEquals(19200, h.stub.lastHostProfile.getAsJsonArray("candidates").get(0).getAsJsonObject()
+                    .get("port").getAsInt(), "A replaced endpoint goes out at once");
+            before = h.stub.heartbeats;
+            players.set(3);
+            client.requestStatusRefresh();
+            h.run(Duration.ofSeconds(30));
+            assertEquals(before, h.stub.heartbeats, "A count waits for the provider's minimum interval");
+            h.run(Duration.ofSeconds(31));
+            assertEquals(3, h.stub.lastHeartbeat.getAsJsonObject("connectedPlayers").get("count").getAsInt());
+        }
+    }
+
+    @Test
     void registrationRefreshRotationAndRestart(@TempDir Path path) throws Exception {
         try (var h = new ClientHarness()) {
             var players = new AtomicInteger(2);
