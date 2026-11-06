@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 class SignalTest {
 
@@ -26,6 +27,17 @@ class SignalTest {
     @ValueSource(strings = {"UNKNOWN 42 data", "connectrequest 42 v=0", "CONNECTREQUEST\u0007 42 v=0", "", " 42 v=0"})
     void aSignalOfAnyOtherTypeIsDroppedAtParseTime(String raw) {
         assertEquals(Optional.empty(), Signal.parse(raw));
+    }
+
+    /** Other peers parse the ID as an unsigned 64-bit number, so no sign, no leading zero, never 0. */
+    @Test
+    void newConnectionIdsAreNonzeroDecimalUint64s() {
+        for (int i = 0; i < 1000; i++) {
+            String id = Signal.newConnectionId();
+            long value = Long.parseUnsignedLong(id);
+            assertNotEquals(0, value);
+            assertEquals(Long.toUnsignedString(value), id);
+        }
     }
 
     @Test

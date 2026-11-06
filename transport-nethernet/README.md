@@ -139,6 +139,8 @@ resolve, answers announce the literals only, and a name that does not resolve
 closes the endpoint. An address the host gathered narrows the host candidates to
 it; any other is announced as the public side of a NAT. Empty by default: answers
 carry what ICE gathered plus the address in the client's `Host` header.
+`NetherNetServerChannel.advertisedAddresses()` returns the list answers announce
+at the moment, with the names resolved.
 
 **STUN discovery.** Instead of advertised addresses, `NETHER_SERVER_STUN_SERVERS`
 lists STUN servers (each with a port; `StunObserver.parseServer` reads `stun:`
@@ -150,6 +152,8 @@ servers. A mapping on another port than the ICE port is also announced on the
 ICE port, for a router that forwards the ICE port but moves the port of outgoing
 traffic. Binding fails when STUN servers are set together with advertised
 addresses, with PROXY protocol relays, or without the shared ICE port.
+`NetherNetServerChannel.discoveredAddresses()` returns the fresh mappings with
+their ICE port twins, as answers announce them.
 
 **Candidate options.**
 
@@ -567,7 +571,9 @@ signals of one connection ID, and
 `setSignalHandler(connectionId, remoteNetworkId, handler)` registers it for the
 signals of that ID from that remote peer only. A client attempt passes the peer
 its offer went to, so a third party that learned the ID can neither answer nor
-fail the attempt. On LAN, the target `"0"` means the server discovery found.
+fail the attempt. A client that dialed an address passes the target
+`NetherNetSignaling.DIALED_SERVER` (`"0"`), which on LAN means the server
+discovery found.
 HTTP needs no such check, since the answer is the response to the client's own
 request.
 

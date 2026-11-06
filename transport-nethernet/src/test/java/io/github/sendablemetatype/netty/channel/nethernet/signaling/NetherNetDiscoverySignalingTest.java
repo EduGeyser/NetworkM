@@ -110,7 +110,7 @@ class NetherNetDiscoverySignalingTest {
             replacement.get(2, TimeUnit.SECONDS);
             assertEquals(0, payload.refCnt());
             assertNull(discovery.callback.get());
-            signaling.sendPing("0");
+            signaling.sendPing(NetherNetSignaling.DIALED_SERVER);
             assertEquals(42, discovery.lastTargetId);
             assertFalse(signaling.connect(REMOTE).isDone());
             assertEquals(3, discovery.requests, "A new handshake must rediscover a restarted server's ID");
@@ -169,7 +169,7 @@ class NetherNetDiscoverySignalingTest {
 
                 respond(secondServer, secondRequest, 22);
                 second.get(2, TimeUnit.SECONDS);
-                signaling.sendPing("0");
+                signaling.sendPing(NetherNetSignaling.DIALED_SERVER);
                 DatagramPacket signal = receive(secondServer);
                 ByteBuf encrypted = Unpooled.wrappedBuffer(signal.getData(), signal.getOffset(), signal.getLength());
                 ByteBuf decrypted = null;
@@ -201,9 +201,9 @@ class NetherNetDiscoverySignalingTest {
                 respond(server, receive(server), 22);
                 connected.get(2, TimeUnit.SECONDS);
 
-                signaling.sendSignal("0", new Signal(SignalType.CANDIDATE_ADD, "7", "candidate:1 1 udp 1 10.0.0.1 1 typ host"));
+                signaling.sendSignal(NetherNetSignaling.DIALED_SERVER, new Signal(SignalType.CANDIDATE_ADD, "7", "candidate:1 1 udp 1 10.0.0.1 1 typ host"));
                 assertEquals("CANDIDATEADD 7 candidate:1 1 udp 1 10.0.0.1 1 typ host", messageTo(22, receive(server)));
-                signaling.sendPing("0");
+                signaling.sendPing(NetherNetSignaling.DIALED_SERVER);
                 assertEquals("Ping", messageTo(22, receive(server)));
             } finally {
                 signaling.close();

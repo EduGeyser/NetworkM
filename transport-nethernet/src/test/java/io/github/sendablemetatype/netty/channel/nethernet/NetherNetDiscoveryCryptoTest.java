@@ -26,14 +26,15 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class NetherNetDiscoveryCryptoTest {
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 14, 15, 16, 17, 512, 10000, 65533})
+    @ValueSource(ints = {0, 1, 14, 15, 16, 17, 512, 1170, 1171, 10000, 65533})
     void ciphertextMatchesTheExistingFormatAndRoundTrips(int size) throws Exception {
         byte[] bytes = payload(size);
         ByteBuf source = Unpooled.directBuffer(size + 3).writeZero(3).writeBytes(bytes);
         source.skipBytes(3);
         try {
             byte[] encrypted = NetherNetConstants.encryptDiscoveryPacket(source);
-            assertArrayEquals(referencePacket(bytes, size + 2), encrypted);
+            // Declared as vanilla declares it: the true length, capped
+            assertArrayEquals(referencePacket(bytes, Math.min(size + 2, 1172)), encrypted);
             assertEquals(0, source.readableBytes());
             assertEquals(1, source.refCnt());
             assertDecoded(bytes, encrypted);

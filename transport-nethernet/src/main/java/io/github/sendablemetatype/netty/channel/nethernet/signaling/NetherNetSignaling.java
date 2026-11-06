@@ -3,9 +3,18 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 public interface NetherNetSignaling extends AutoCloseable {
 
     /**
+     * The target network ID of a client that dialed an address rather than a network ID: the
+     * server at that address. LAN discovery sends to the server it found there and takes signals
+     * only from it; HTTP signaling posts to the dialed address whatever the target. It is the unset
+     * value of the LAN packets' 64-bit ID field.
+     */
+    String DIALED_SERVER = "0";
+
+    /**
      * Sends a NetherNet signal to the remote peer.
      *
-     * @param targetNetworkId The destination's opaque Network ID. LAN discovery requires a uint64 decimal string.
+     * @param targetNetworkId The destination's opaque Network ID, or {@link #DIALED_SERVER}. LAN discovery
+     *                        requires a uint64 decimal string.
      * @param signal          The signal.
      */
     void sendSignal(String targetNetworkId, Signal signal);
@@ -16,7 +25,8 @@ public interface NetherNetSignaling extends AutoCloseable {
      * the ID can neither answer nor fail the attempt (go-nethernet's dialer filters the same way).
      *
      * @param connectionId    The connection ID to listen for.
-     * @param remoteNetworkId The Network ID the signals must come from: the one the offer was sent to.
+     * @param remoteNetworkId The Network ID the signals must come from: the one the offer was sent to, or
+     *                        {@link #DIALED_SERVER}.
      * @param handler         The handler to process incoming signaling messages.
      */
     void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler);

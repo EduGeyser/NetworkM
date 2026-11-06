@@ -109,14 +109,17 @@ class NetherNetServerAddressingTest {
             names.engine.gatherWith(GATHERED);
             names.bootstrap.option(NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES, List.of(
                     new InetSocketAddress("203.0.113.7", 0), InetSocketAddress.createUnresolved("play.example", 0)));
-            names.bind();
+            NetherNetServerChannel server = names.bind();
             FakeJoinSource source = names.source(false);
+            assertEquals(List.of(new InetSocketAddress("203.0.113.7", 0)), server.advertisedAddresses());
 
             String before = source.offer("1", OFFER).answer();
             assertTrue(before.contains(" 203.0.113.7 5000 typ srflx"), "the literal is announced at once: " + before);
             assertFalse(before.contains("203.0.113.8"), before);
 
-            lookup.complete(List.of(new InetSocketAddress("203.0.113.7", 0), new InetSocketAddress("203.0.113.8", 0)));
+            List<InetSocketAddress> resolved =
+                    List.of(new InetSocketAddress("203.0.113.7", 0), new InetSocketAddress("203.0.113.8", 0));
+            lookup.complete(resolved);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             String after;
             long connectionId = 2;
@@ -125,7 +128,18 @@ class NetherNetServerAddressingTest {
             } while (!after.contains("203.0.113.8") && System.nanoTime() < deadline);
             assertTrue(after.contains(" 203.0.113.8 5000 typ srflx"), after);
             assertTrue(after.contains(" 203.0.113.7 5000 typ srflx"), after);
+            assertEquals(resolved, server.advertisedAddresses());
+
+            server.close().sync();
+            assertEquals(List.of(), server.advertisedAddresses(), "a closed endpoint announces nothing");
         }
+    }
+
+    @Test
+    void nothingIsAnnouncedBeforeBind() {
+        NetherNetServerChannel server = new NetherNetServerChannel();
+        assertEquals(List.of(), server.advertisedAddresses());
+        assertEquals(List.of(), server.discoveredAddresses());
     }
 
     @Test

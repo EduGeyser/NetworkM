@@ -568,6 +568,40 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
+    // ---- Announced addresses ----
+
+    /**
+     * The advertised addresses answers announce, as resolved at bind: the IP literals of
+     * {@link NetherChannelOption#NETHER_SERVER_ADVERTISED_ADDRESSES} from bind on, then every entry
+     * once its names resolved. Ports stay as configured, so port 0 still stands for the media port.
+     * Unlike the option, this never holds an unresolved name. Safe to call from any thread.
+     *
+     * @return an immutable snapshot, empty before bind, once the endpoint is closed, and when no
+     *         addresses are configured
+     */
+    public List<InetSocketAddress> advertisedAddresses() {
+        return open ? advertised : List.of();
+    }
+
+    /**
+     * The public addresses STUN discovery currently finds
+     * ({@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS}), as answers announce them. A mapping
+     * on another port than the shared ICE port is followed by its address on the ICE port, the twin
+     * answers announce too. Refreshed once per second; a mapping drops out after
+     * {@link NetherChannelOption#NETHER_SERVER_STUN_MAX_AGE} without an answer. Safe to call from any
+     * thread.
+     *
+     * @return an immutable snapshot, empty without discovery, before the ICE port is open and a
+     *         server answered, and once the endpoint is closed
+     */
+    public List<InetSocketAddress> discoveredAddresses() {
+        Bound settings = bound;
+        if (!open || settings == null || settings.discovery() == null) {
+            return List.of();
+        }
+        return settings.discovery().fresh();
+    }
+
     // ---- Bind and close ----
 
     @Override
@@ -733,7 +767,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             close();
             return;
         }
-        advertised = resolved;
+        // A copy, so advertisedAddresses() hands out an immutable list whatever the lookup returned.
+        advertised = List.copyOf(resolved);
     }
 
     /** The shared ICE port opened, or failed to, after bind returned. Event loop. */

@@ -206,7 +206,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             } else if (remote instanceof InetSocketAddress address) {
                 dialed = address;
                 NetherNetClientChannel.this.remoteAddress = address;
-                NetherNetClientChannel.this.setTargetNetworkId("0"); // "0" triggers auto-discovery in signaling
+                NetherNetClientChannel.this.setTargetNetworkId(NetherNetSignaling.DIALED_SERVER);
                 if (!address.isUnresolved()) {
                     signaled = new SourcedAddress(address, AddressSource.SIGNALING, null);
                 }

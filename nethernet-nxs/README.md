@@ -71,6 +71,20 @@ its fixtures define them. The Java API is NetworkM's own.
   a value without the prefix that names an existing file or directory, or starts
   with a Windows drive, is refused rather than sent as the secret.
 
+## Behind PROXY protocol relays
+
+When UDP relays front the gameplay port and the endpoint reads their PROXY
+protocol v2 headers (the PROXY protocol list of `NETHER_SERVER_TRUSTED_PROXIES`),
+build the settings with `relayed(true)`. The host profile then publishes only
+`advertiseAddresses`, which must name the relays: capturing the profile fails
+when there are none or one is this host's own gameplay endpoint. STUN discovery
+and assisted joins stay off whatever their setting, since both reach around the
+relays. An NXS child's `signaledAddress()` (`AddressSource.NXS_ADMISSION`) is the
+client address the relay's header declared for the admitted check. From
+activation on, `remoteAddress()` is the remote side of the selected pair as the
+relay declared it (`AddressSource.ICE_PROXY_PROTOCOL`), or the TURN relay for a
+TURN pair, and the outcome report carries that address.
+
 ## Tests
 
 `./gradlew :nethernet-nxs:test` also runs the specification's Node.js verifiers
