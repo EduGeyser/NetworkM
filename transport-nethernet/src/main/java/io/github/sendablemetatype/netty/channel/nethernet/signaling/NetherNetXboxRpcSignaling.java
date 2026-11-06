@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -169,7 +170,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
     }
 
-    private record TurnCredentials(List<IceServerInfo> servers, long expirationSeconds) {
+    private record TurnCredentials(List<IceServer> servers, long expirationSeconds) {
     }
 
     private record HeldSignal(String sender, String message) {
@@ -184,11 +185,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private volatile String token;
     private volatile NewConnectionHandler newConnectionHandler;
     private volatile NotFoundHandler notFoundHandler;
-    private volatile List<IceServerInfo> iceServers = List.of();
+    private volatile List<IceServer> iceServers = List.of();
 
     // Guarded by this. The current socket and the credential exchange that makes it usable.
     private Channel channel;
-    private CompletableFuture<List<IceServerInfo>> connectFuture;
+    private CompletableFuture<List<IceServer>> connectFuture;
     private boolean closed;
     // Signals from the current socket that arrived before its first TURN credentials. A join
     // created then would get no TURN servers, and Xbox offers trickle every candidate, so the
@@ -295,12 +296,12 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      * @return the ICE servers once connected; fails if the next connection attempt fails
      */
     @Override
-    public CompletableFuture<List<IceServerInfo>> connect(SocketAddress remoteAddress) {
+    public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
         return supervisor.nextConnection().thenApply(ignored -> iceServers);
     }
 
     @Override
-    public List<IceServerInfo> getIceServers() {
+    public List<IceServer> getIceServers() {
         return iceServers;
     }
 
@@ -351,7 +352,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     @Override
     public void close() {
         Channel current;
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             if (closed) {
                 return;
@@ -383,8 +384,8 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      *
      * @return completes with the ICE servers once the handshake and the TURN exchange are done
      */
-    CompletableFuture<List<IceServerInfo>> openSocket(String token) {
-        CompletableFuture<List<IceServerInfo>> future = new CompletableFuture<>();
+    CompletableFuture<List<IceServer>> openSocket(String token) {
+        CompletableFuture<List<IceServer>> future = new CompletableFuture<>();
         synchronized (this) {
             if (closed) {
                 future.completeExceptionally(new ClosedChannelException());
@@ -452,7 +453,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     /** Drops the current socket without reporting it as lost. */
     void abortSocket() {
         Channel current;
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             current = channel;
             channel = null;
@@ -473,7 +474,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
      * once usable, the supervisor learns it was lost and replaces it.
      */
     private void loseSocket(Channel source, Throwable cause) {
-        CompletableFuture<List<IceServerInfo>> attempt;
+        CompletableFuture<List<IceServer>> attempt;
         synchronized (this) {
             if (!isCurrentChannel(source)) {
                 return;
@@ -722,7 +723,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private void refreshTurnCredentials(ChannelHandlerContext ctx) {
         Channel source = ctx.channel();
         sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_TURN_AUTH, new JsonObject()).whenComplete((response, error) -> {
-            CompletableFuture<List<IceServerInfo>> attempt;
+            CompletableFuture<List<IceServer>> attempt;
             synchronized (this) {
                 if (!isCurrentChannel(source)) {
                     return;
@@ -765,7 +766,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /** Parses each server on its own, so one malformed entry does not drop the others. */
     private TurnCredentials parseTurnCredentials(JsonObject json) {
-        List<IceServerInfo> result = new ArrayList<>();
+        List<IceServer> result = new ArrayList<>();
         JsonElement servers = member(json, "TurnAuthServers", "turnAuthServers");
         if (servers != null && servers.isJsonArray()) {
             for (JsonElement element : servers.getAsJsonArray()) {
@@ -779,16 +780,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                     for (JsonElement url : urls.getAsJsonArray()) {
                         urlList.add(url.getAsString());
                     }
-                    IceServerInfo.Builder info = new IceServerInfo.Builder().setUrls(List.copyOf(urlList));
-                    JsonElement username = member(server, "Username", "username");
-                    if (username != null) {
-                        info.setUsername(username.getAsString());
+                    if (urlList.isEmpty()) {
+                        continue;
                     }
-                    JsonElement password = member(server, "Password", "password", "Credential", "credential");
-                    if (password != null) {
-                        info.setPassword(password.getAsString());
-                    }
-                    result.add(info.build());
+                    result.add(new IceServer(urlList, nonEmpty(member(server, "Username", "username")),
+                            nonEmpty(member(server, "Password", "password", "Credential", "credential"))));
                 } catch (RuntimeException e) {
                     log.warn("Skipping a malformed TURN server entry: {}", e.getMessage());
                 }
@@ -805,6 +801,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
         log.debug("Parsed {} ICE servers, lifetime {} s", result.size(), expiration);
         return new TurnCredentials(List.copyOf(result), expiration);
+    }
+
+    private static String nonEmpty(JsonElement value) {
+        return value == null || value.getAsString().isEmpty() ? null : value.getAsString();
     }
 
     private static JsonElement member(JsonObject json, String... names) {

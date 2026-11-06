@@ -13,7 +13,6 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
-import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetSignaling;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufHolder;
@@ -40,7 +39,6 @@ import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
@@ -51,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.stream.Stream;
 
 /**
  * A NetherNet connection over one engine {@link Peer}: a reliable and an
@@ -406,24 +405,12 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
 
     /**
      * The ICE servers a peer uses: the configured ones, then the ones the
-     * signaling handed out. Entries without URLs are skipped.
+     * signaling handed out, each once.
      */
-    static List<IceServer> iceServers(List<IceServer> configured,
-                                      List<NetherNetSignaling.IceServerInfo> signaled) {
-        List<IceServer> servers = new ArrayList<>(configured);
-        if (signaled != null) {
-            for (NetherNetSignaling.IceServerInfo info : signaled) {
-                if (info.urls() == null || info.urls().isEmpty()) {
-                    continue;
-                }
-                servers.add(new IceServer(info.urls(), blankToNull(info.username()), blankToNull(info.password())));
-            }
-        }
-        return servers;
-    }
-
-    private static String blankToNull(String value) {
-        return value == null || value.isEmpty() ? null : value;
+    static List<IceServer> iceServers(List<IceServer> configured, List<IceServer> signaled) {
+        return Stream.concat(configured.stream(), signaled == null ? Stream.empty() : signaled.stream())
+                .distinct()
+                .toList();
     }
 
     // ---- Remote address ----

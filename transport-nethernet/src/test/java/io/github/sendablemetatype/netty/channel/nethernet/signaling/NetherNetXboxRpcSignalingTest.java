@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -76,7 +77,7 @@ class NetherNetXboxRpcSignalingTest {
 
         assertEquals(SignalingState.STARTING, signaling.health().state());
         assertTrue(signaling.sockets.isEmpty());
-        CompletableFuture<List<NetherNetSignaling.IceServerInfo>> client = signaling.connect(null);
+        CompletableFuture<List<IceServer>> client = signaling.connect(null);
         run();
         assertFalse(client.isDone());
 

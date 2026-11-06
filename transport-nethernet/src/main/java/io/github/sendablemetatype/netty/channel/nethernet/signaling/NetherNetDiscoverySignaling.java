@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.buffer.ByteBuf;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.logging.InternalLogger;
@@ -79,7 +80,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
      * same pending target resend the request and share its completion future.
      */
     @Override
-    public CompletableFuture<List<IceServerInfo>> connect(SocketAddress remote) {
+    public CompletableFuture<List<IceServer>> connect(SocketAddress remote) {
         if (!(remote instanceof InetSocketAddress)) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("Discovery requires InetSocketAddress"));
         }
@@ -167,7 +168,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Ne
 
     private final class DiscoveryAttempt {
         private boolean requestSent;
-        private final CompletableFuture<List<IceServerInfo>> result = new CompletableFuture<>();
+        private final CompletableFuture<List<IceServer>> result = new CompletableFuture<>();
         private final CompletableFuture<Void> timeout = new CompletableFuture<>();
         private final BiConsumer<Long, ByteBuf> callback = (serverNetworkId, payload) -> {
             try {

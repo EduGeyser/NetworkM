@@ -7,6 +7,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.CloseCause;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 import io.netty.buffer.ByteBuf;
@@ -495,7 +496,7 @@ class NetherNetClientChannelTest {
     }
 
     private static final class FakeSignaling implements NetherNetClientSignaling {
-        private final List<CompletableFuture<List<IceServerInfo>>> connections = new ArrayList<>();
+        private final List<CompletableFuture<List<IceServer>>> connections = new ArrayList<>();
         private final List<NotFoundHandler> notFoundHandlers = new ArrayList<>();
         private final List<SignalHandler> signalHandlers = new ArrayList<>();
         private final List<String> sent = new ArrayList<>();
@@ -504,11 +505,11 @@ class NetherNetClientChannelTest {
         private int closes;
 
         @Override
-        public CompletableFuture<List<IceServerInfo>> connect(SocketAddress remoteAddress) {
+        public CompletableFuture<List<IceServer>> connect(SocketAddress remoteAddress) {
             if (connectFailure != null) {
                 throw connectFailure;
             }
-            CompletableFuture<List<IceServerInfo>> connection = new CompletableFuture<>();
+            CompletableFuture<List<IceServer>> connection = new CompletableFuture<>();
             connections.add(connection);
             return connection;
         }
