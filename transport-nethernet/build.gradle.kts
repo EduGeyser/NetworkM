@@ -65,3 +65,16 @@ tasks.register<JavaExec>("runDiscovery") {
     mainClass.set("io.github.sendablemetatype.netty.util.nethernet.NetherNetScanner")
     classpath = sourceSets["main"].runtimeClasspath
 }
+
+// A before-and-after measurement of the engine on libwebrtc, kept out of the test task. Settings
+// go in --args, for example --args="pings=50000 pairs=1,4".
+tasks.register<JavaExec>("echoBenchmark") {
+    description = "Measures a NetherNet echo through libwebrtc on this machine; needs -PwebrtcNativePlatform."
+    mainClass.set("io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc.EchoBenchmark")
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    systemProperty("io.github.sendablemetatype.webrtc.logging.severity", "WARNING")
+    systemProperty("echoBenchmark.natives",
+        "webrtc-java ${libs.webrtc.java.get().versionConstraint.requiredVersion}, ${webrtcNativePlatform.getOrElse("none")}")
+    onlyIf("webrtc-java natives are on the classpath (-PwebrtcNativePlatform)") { webrtcNativePlatform.isPresent }
+}

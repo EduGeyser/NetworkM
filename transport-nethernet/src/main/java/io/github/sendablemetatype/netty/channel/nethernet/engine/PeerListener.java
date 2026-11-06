@@ -3,7 +3,9 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine;
 import java.nio.ByteBuffer;
 
 /**
- * A peer's events. Called on engine threads, serialized per peer; see the
+ * A peer's events. Called on engine threads, serialized per data link and
+ * for the peer's own events, but a link's events may run at the same time as
+ * the peer's; see the
  * {@linkplain io.github.sendablemetatype.netty.channel.nethernet.engine
  * package documentation}.
  */

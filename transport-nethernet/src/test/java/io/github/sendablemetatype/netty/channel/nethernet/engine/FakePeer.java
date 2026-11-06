@@ -36,7 +36,7 @@ public final class FakePeer implements Peer {
     private final long session;
     private final PeerConfig config;
     private final PeerListener listener;
-    // Serializes callbacks, as the contract promises per peer.
+    // Serializes all callbacks; the contract promises that only per link and for the peer's own events.
     private final Object serial = new Object();
     // Guards running and terminating; never held while a callback runs.
     private final Object state = new Object();
