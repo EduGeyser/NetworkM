@@ -31,6 +31,7 @@ import java.lang.reflect.Proxy;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -748,6 +749,66 @@ class RakSessionCodecTests {
             assertEquals(0, earlier.refCnt(), "Closing must release a datagram whose number came round");
             s.transport.checkException();
         }
+    }
+
+    @Test
+    void acknowledgementsSlowerThanSixteenTimeoutsStillCount() {
+        try (Session s = new Session(false, 60000)) {
+            sampleRoundTrip(s, 1); // A timeout of 36 ms
+            long roundTrip = 1000;
+            long sentAt = s.now;
+            ByteBuf payload = s.write(100, RakPriority.IMMEDIATE);
+            record Ack(long due, int sequence) {
+            }
+            List<Ack> pending = new ArrayList<>();
+            while (payload.refCnt() > 0 && s.now < sentAt + 5 * roundTrip) {
+                for (Sent sent : s.readData()) {
+                    pending.add(new Ack(s.now + roundTrip, sent.sequence));
+                }
+                s.advance(1);
+                for (Iterator<Ack> iterator = pending.iterator(); iterator.hasNext(); ) {
+                    Ack ack = iterator.next();
+                    if (ack.due() <= s.now) {
+                        iterator.remove();
+                        s.ack(ack.sequence(), false);
+                    }
+                }
+            }
+            assertEquals(0, payload.refCnt(), "The backed-off timeout must keep the first transmission tracked");
+            assertEquals(sentAt + roundTrip, s.now);
+        }
+    }
+
+    @Test
+    void resendsFallingDueTogetherBackOffOnce() {
+        try (Session s = new Session(false, 60000)) {
+            sampleRoundTrip(s, 1); // A timeout of 36 ms
+            s.write(100, RakPriority.IMMEDIATE);
+            int first = s.readData().get(0).reliabilityIndex;
+            s.advance(10);
+            s.write(100, RakPriority.IMMEDIATE);
+            int second = s.readData().get(0).reliabilityIndex;
+            s.advance(26);
+            assertEquals(List.of(first), reliabilityIndices(s.readData()), "The timeout doubles to 72 ms");
+            s.advance(10);
+            assertEquals(List.of(second), reliabilityIndices(s.readData()));
+            s.advance(71);
+            assertEquals(List.of(first), reliabilityIndices(s.readData()));
+            s.advance(1);
+            assertEquals(List.of(second), reliabilityIndices(s.readData()),
+                    "A deadline within the doubled timeout must not double it again");
+        }
+    }
+
+    private static void sampleRoundTrip(Session s, long millis) {
+        s.write(100, RakPriority.IMMEDIATE);
+        Sent sample = s.readData().get(0);
+        s.advance(millis);
+        s.ack(sample.sequence, false);
+    }
+
+    private static List<Integer> reliabilityIndices(List<Sent> sent) {
+        return sent.stream().map(packet -> packet.reliabilityIndex).toList();
     }
 
     @Test

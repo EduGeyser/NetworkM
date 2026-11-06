@@ -60,8 +60,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     private static final int MAX_RECEIVE_GAP = 32768;
     // Charged per queued ordered message on top of its payload.
     static final int ORDERING_ENTRY_OVERHEAD = 2048;
-    // Transmissions of one datagram an ACK may name: ACKs count when delayed by up to this many retransmission
-    // timeouts, at least 30 ms each. The bound keeps a peer that never acknowledges from growing the history.
+    // Transmissions of one datagram an ACK may name. The timeout doubles from at least 30 ms up to 2 s while resends
+    // fall due without ACKs, so an ACK still counts up to about 21 s after its transmission. The bound keeps a peer
+    // that never acknowledges from growing the history.
     static final int MAX_TRACKED_TRANSMISSIONS = 16;
 
     private static final long CONNECTED_PING_INTERVAL_MS = 2000;
@@ -1049,6 +1050,10 @@ public class RakSessionCodec extends ChannelDuplexHandler {
                 break;
             }
             transmissionBandwidth -= size;
+            if (resendCount == 0) {
+                // Before the resends, so they wait the backed-off timeout
+                this.slidingWindow.onRetransmissionTimeout(curTime);
+            }
             this.resendQueue.poll();
             this.transmit(ctx, sent, curTime);
             resendCount++;

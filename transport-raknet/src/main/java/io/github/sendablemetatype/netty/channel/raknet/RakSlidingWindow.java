@@ -32,6 +32,9 @@ public class RakSlidingWindow {
     private long nextCongestionControlBlock;
     private boolean backoffThisBlock;
     private int unackedBytes;
+    // Doublings of the retransmission timeout since the last RTT sample, and when it may double again
+    private int rtoBackoff;
+    private long nextRtoBackoff;
 
     public RakSlidingWindow(int mtu) {
         this.mtu = mtu;
@@ -77,6 +80,27 @@ public class RakSlidingWindow {
     }
 
     /**
+     * Doubles the retransmission timeout when resends fall due, up to {@link RakConstants#CC_MAXIMUM_THRESHOLD}, as
+     * RFC 6298 section 5.5 does; the next {@link #onAck} drops the backoff. RakNet does not back off. Without it, a
+     * timeout shorter than the round trip never grows, since only ACKs give RTT samples.
+     * <p>
+     * Each datagram has its own deadline, so deadlines falling due within one backed-off timeout of the last doubling
+     * count as the same timeout. {@link #onResend} is no substitute: it cuts the window once per congestion block, and
+     * a block only ends with an ACK.
+     *
+     * @param curTime the time the resends fell due
+     */
+    public void onRetransmissionTimeout(long curTime) {
+        if (curTime < this.nextRtoBackoff) {
+            return;
+        }
+        if (this.getRtoForRetransmission() < CC_MAXIMUM_THRESHOLD) {
+            this.rtoBackoff++;
+        }
+        this.nextRtoBackoff = curTime + this.getRtoForRetransmission();
+    }
+
+    /**
      * Applies the acknowledgement of a reliable datagram.
      *
      * @param rtt              time since the acknowledged transmission was sent
@@ -87,6 +111,9 @@ public class RakSlidingWindow {
     public void onAck(long rtt, int size, int sequenceIndex, long curSequenceIndex) {
         this.lastRTT = rtt;
         this.unackedBytes -= size;
+        // Every transmission has its own datagram number, so a sample from a resend is as valid as any
+        this.rtoBackoff = 0;
+        this.nextRtoBackoff = 0;
 
         if (this.estimatedRTT == -1) {
             this.estimatedRTT = rtt;
@@ -129,15 +156,14 @@ public class RakSlidingWindow {
         this.oldestUnsentAck = 0;
     }
 
-    @SuppressWarnings("ManualMinMaxCalculation")
     public long getRtoForRetransmission() {
         if (this.estimatedRTT == -1) {
             return CC_MAXIMUM_THRESHOLD;
         }
 
         long threshold = (long) ((2.0D * this.estimatedRTT + 4.0D * this.deviationRTT) + CC_ADDITIONAL_VARIANCE);
-
-        return threshold > CC_MAXIMUM_THRESHOLD ? CC_MAXIMUM_THRESHOLD : threshold;
+        // The backoff only grows while the result is below the cap, so the shift cannot overflow
+        return Math.min(threshold << this.rtoBackoff, CC_MAXIMUM_THRESHOLD);
     }
 
     public double getRTT() {
