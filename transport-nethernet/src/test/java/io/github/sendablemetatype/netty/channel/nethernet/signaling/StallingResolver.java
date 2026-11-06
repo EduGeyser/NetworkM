@@ -4,30 +4,34 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.net.spi.InetAddressResolver;
 import java.net.spi.InetAddressResolverProvider;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The test JVM's name resolver, registered in {@code META-INF/services}: resolves like the JDK,
- * except that a lookup of {@link #NAME} waits while a {@link Stall} is open and then fails, so a
- * test can hold a request in its name lookup.
+ * except for the names {@link #stall()} hands out, whose lookups wait until their stall is closed
+ * and then fail. That lets a test hold a request in its name lookup.
  */
 public final class StallingResolver extends InetAddressResolverProvider {
-    static final String NAME = "stalled.nethernet.test";
-    private static volatile Stall current;
+    private static final AtomicInteger names = new AtomicInteger();
+    private static final Map<String, Stall> stalls = new ConcurrentHashMap<>();
 
-    /** Holds lookups of {@link #NAME} until the returned stall is closed. */
+    /** A new name, since the JDK caches answers, whose lookups wait until the stall is closed. */
     static Stall stall() {
-        Stall stall = new Stall(new Semaphore(0), new CountDownLatch(1));
-        current = stall;
+        Stall stall = new Stall("stalled-" + names.incrementAndGet() + ".nethernet.test", new Semaphore(0),
+                new CountDownLatch(1));
+        stalls.put(stall.name(), stall);
         return stall;
     }
 
-    record Stall(Semaphore started, CountDownLatch released) implements AutoCloseable {
+    record Stall(String name, Semaphore started, CountDownLatch released) implements AutoCloseable {
         void awaitLookup() throws InterruptedException {
             assertTrue(started.tryAcquire(5, TimeUnit.SECONDS), "no lookup started");
         }
@@ -44,17 +48,15 @@ public final class StallingResolver extends InetAddressResolverProvider {
         return new InetAddressResolver() {
             @Override
             public Stream<InetAddress> lookupByName(String host, LookupPolicy policy) throws UnknownHostException {
-                if (!NAME.equals(host)) {
+                Stall stall = stalls.get(host);
+                if (stall == null) {
                     return builtin.lookupByName(host, policy);
                 }
-                Stall stall = current;
-                if (stall != null) {
-                    stall.started().release();
-                    try {
-                        stall.released().await();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                stall.started().release();
+                try {
+                    stall.released().await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 throw new UnknownHostException(host);
             }

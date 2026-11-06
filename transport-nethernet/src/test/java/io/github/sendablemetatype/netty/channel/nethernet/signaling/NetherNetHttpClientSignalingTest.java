@@ -457,7 +457,7 @@ class NetherNetHttpClientSignalingTest {
             NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT
                     .withScheme(Scheme.HTTP).withAnswerTimeout(Duration.ofSeconds(1)), stopping, "client-1");
             client.setSignalHandler(CONNECTION_ID, signals::add);
-            client.connect(InetSocketAddress.createUnresolved(StallingResolver.NAME, 80)).get(5, TimeUnit.SECONDS);
+            client.connect(InetSocketAddress.createUnresolved(lookup.name(), 80)).get(5, TimeUnit.SECONDS);
             client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
             lookup.awaitLookup();
 
