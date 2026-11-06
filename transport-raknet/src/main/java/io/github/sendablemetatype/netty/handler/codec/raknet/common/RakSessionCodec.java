@@ -1208,11 +1208,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
      */
     private void transmit(ChannelHandlerContext ctx, SentDatagram sent, long time) {
         int sequenceIndex = this.nextSequenceIndex();
-        SentDatagram stale = this.sentDatagrams.put(sequenceIndex, sent);
-        if (stale != null) {
-            // The number came round again while still tracked, so an ACK for it now names this transmission
-            stale.forget(sequenceIndex);
-        }
+        this.sentDatagrams.put(sequenceIndex, sent);
         sent.transmissions.add(new Transmission(sequenceIndex, time));
         if (sent.transmissions.size() > MAX_TRACKED_TRANSMISSIONS) {
             this.sentDatagrams.remove(sent.transmissions.removeFirst().sequenceIndex());
@@ -1222,8 +1218,18 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.writeDatagram(ctx, sent.datagram.retain(), sequenceIndex);
     }
 
+    /**
+     * Takes the next datagram number. A number that came round again while a reliable datagram still tracks it is taken
+     * from that datagram first, whether the datagram sent under it now is reliable or not, so an ACK for it
+     * acknowledges only what goes out under it.
+     */
     private int nextSequenceIndex() {
-        return (int) this.datagramWriteIndex++ & RakSequence.MASK;
+        int sequenceIndex = (int) this.datagramWriteIndex++ & RakSequence.MASK;
+        SentDatagram stale = this.sentDatagrams.remove(sequenceIndex);
+        if (stale != null) {
+            stale.forget(sequenceIndex);
+        }
+        return sequenceIndex;
     }
 
     // Consumes one reference to the datagram
