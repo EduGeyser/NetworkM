@@ -38,7 +38,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private static final int MAX_SERVER_DATA_BYTES = 32_723;
 
     private final long networkId;
-    private final Map<Long, SignalHandler> signalHandlers = new ConcurrentHashMap<>();
+    private final Map<String, ClientHandler> signalHandlers = new ConcurrentHashMap<>();
     private final Map<JoinKey, JoinRoute> joins = new ConcurrentHashMap<>();
     private final DiscoveryPeerRegistry peerAddresses;
     private final Object lifecycleLock = new Object();
@@ -64,14 +64,14 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
          * @param offer the offer SDP
          * @param sender where the datagram came from
          */
-        void onOffer(long connectionId, long senderId, String offer, InetSocketAddress sender);
+        void onOffer(String connectionId, long senderId, String offer, InetSocketAddress sender);
     }
 
     /**
      * A join is told apart by its client's network ID too, so one client cannot reach another's
      * join by its connection ID.
      */
-    private record JoinKey(long senderId, long connectionId) { }
+    private record JoinKey(long senderId, String connectionId) { }
 
     /** Where a join's offer came from, pinned then, and where its later signals go. */
     private record JoinRoute(InetSocketAddress sender, SignalHandler handler) { }
@@ -227,18 +227,28 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         }
     }
 
-    public void registerSignalHandler(long connectionId, SignalHandler handler) {
+    /**
+     * @param connectionId    the client attempt's connection ID
+     * @param remoteNetworkId the server's Network ID; signals with this connection ID from any other
+     *                        sender do not reach the handler
+     * @param handler         receives the attempt's signals
+     */
+    public void registerSignalHandler(String connectionId, long remoteNetworkId, SignalHandler handler) {
         Objects.requireNonNull(handler, "handler");
         synchronized (lifecycleLock) {
             if (closed) {
                 throw new IllegalStateException("Discovery is closed");
             }
-            this.signalHandlers.put(connectionId, handler);
+            this.signalHandlers.put(connectionId, new ClientHandler(remoteNetworkId, handler));
             this.peerAddresses.register(connectionId);
         }
     }
 
-    public void unregisterSignalHandler(long connectionId) {
+    /** A client attempt's handler and the Network ID its signals must come from. */
+    private record ClientHandler(long remoteNetworkId, SignalHandler handler) {
+    }
+
+    public void unregisterSignalHandler(String connectionId) {
         synchronized (lifecycleLock) {
             this.signalHandlers.remove(connectionId);
             this.peerAddresses.unregister(connectionId);
@@ -257,7 +267,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
      * @return false if this client already has a join with this connection ID
      * @throws IllegalStateException if discovery is closed
      */
-    boolean registerJoin(long senderId, long connectionId, InetSocketAddress sender, SignalHandler handler) {
+    boolean registerJoin(long senderId, String connectionId, InetSocketAddress sender, SignalHandler handler) {
         JoinRoute route = new JoinRoute(Objects.requireNonNull(sender, "sender"),
                 Objects.requireNonNull(handler, "handler"));
         synchronized (lifecycleLock) {
@@ -273,7 +283,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     }
 
     /** Stops routing a join's signals and lets its client leave the peer table. */
-    void unregisterJoin(long senderId, long connectionId) {
+    void unregisterJoin(long senderId, String connectionId) {
         synchronized (lifecycleLock) {
             if (joins.remove(new JoinKey(senderId, connectionId)) != null) {
                 peerAddresses.release(senderId);
@@ -452,60 +462,57 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             return;
         }
 
-        String[] parts = messageData.split(" ", 3);
-        if (parts.length < 2) return;
+        Signal signal = Signal.parse(messageData).orElse(null);
+        if (signal == null) {
+            return;
+        }
+        String type = signal.type();
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)
+                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)
+                && !NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD.equals(type)
+                && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)) {
+            return;
+        }
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type) && signal.payload().isEmpty()) {
+            return;
+        }
+        String connectionId = signal.connectionId();
+        // A signal with a client attempt's ID from another sender is not that attempt's; it may still
+        // be an offer of its own, so it goes on to join routing.
+        ClientHandler client = signalHandlers.get(connectionId);
+        if (client != null && client.remoteNetworkId() == senderId) {
+            if (rememberPeer(senderId, sender, connectionId)) {
+                client.handler().onSignal(signal);
+            }
+            return;
+        }
 
-        try {
-            String type = parts[0];
-            if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)
-                    && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(type)
-                    && !NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD.equals(type)
-                    && !NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)) {
-                return;
+        JoinRoute join = joins.get(new JoinKey(senderId, connectionId));
+        if (join != null) {
+            if (!join.sender().equals(sender)) {
+                log.debug("Ignoring a signal for join {} of {} from {}: its offer came from {}",
+                        connectionId, Long.toUnsignedString(senderId), sender, join.sender());
+            } else if (rememberPeer(senderId, sender, null)) {
+                // A repeated offer reaches the join too, which ignores it.
+                join.handler().onSignal(signal);
             }
-            if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR.equals(type)
-                    && (parts.length < 3 || parts[2].isEmpty())) {
-                return;
-            }
-            long connectionId = Long.parseUnsignedLong(parts[1]);
-            SignalHandler handler = signalHandlers.get(connectionId);
-            if (handler != null) {
-                if (rememberPeer(senderId, sender, connectionId)) {
-                    handler.onSignal(messageData);
-                }
-                return;
-            }
+            return;
+        }
 
-            JoinRoute join = joins.get(new JoinKey(senderId, connectionId));
-            if (join != null) {
-                if (!join.sender().equals(sender)) {
-                    log.debug("Ignoring a signal for join {} of {} from {}: its offer came from {}",
-                            Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId), sender,
-                            join.sender());
-                } else if (rememberPeer(senderId, sender, null)) {
-                    // A repeated offer reaches the join too, which ignores it.
-                    join.handler().onSignal(messageData);
-                }
-                return;
+        if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
+            OfferHandler offers = offerHandler;
+            if (offers == null) {
+                log.debug("Received a CONNECTREQUEST, but nothing takes offers");
+            } else if (rememberPeer(senderId, sender, null)) {
+                log.trace("Dispatching an offer: ID={} Sender={}", connectionId, Long.toUnsignedString(senderId));
+                offers.onOffer(connectionId, senderId, signal.payload(), sender);
             }
-
-            if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(type)) {
-                OfferHandler offers = offerHandler;
-                if (offers == null) {
-                    log.debug("Received a CONNECTREQUEST, but nothing takes offers");
-                } else if (rememberPeer(senderId, sender, null)) {
-                    log.trace("Dispatching an offer: ID={} Sender={}", Long.toUnsignedString(connectionId), Long.toUnsignedString(senderId));
-                    offers.onOffer(connectionId, senderId, parts[2], sender);
-                }
-            } else {
-                log.debug("Unhandled signal type: {}", type);
-            }
-        } catch (NumberFormatException e) {
-            log.debug("Ignoring a {} signal with an invalid connection ID ({} chars)", signalType(messageData), messageData.length());
+        } else {
+            log.debug("Unhandled signal type: {}", type);
         }
     }
 
-    private boolean rememberPeer(long peerId, InetSocketAddress address, Long connectionId) {
+    private boolean rememberPeer(long peerId, InetSocketAddress address, String connectionId) {
         synchronized (lifecycleLock) {
             if (closed) {
                 return false;

@@ -75,7 +75,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     ServerJoin(Join join, Settings settings, RemoteCandidateIntake intake, CandidateAnnouncement announcement,
                Runnable handshakeDone) {
         this.join = join;
-        this.id = Long.toUnsignedString(join.connectionId());
+        this.id = join.connectionId();
         this.settings = settings;
         this.intake = intake;
         // Now, on the endpoint's loop: the client's trickled candidates take the offer's mid, and

@@ -734,7 +734,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         NetherServerThrottle throttle = config.getThrottle();
         InetSocketAddress throttled = throttleKey(join.source());
         if (throttled != null && !throttle.accept(throttled)) {
-            log.debug("Refused join {} from {}: throttled", Long.toUnsignedString(join.connectionId()), throttled);
+            log.debug("Refused join {} from {}: throttled", join.connectionId(), throttled);
             serverMetrics(metrics -> metrics.joinThrottled(throttled));
             refuse(join, JoinRefusal.CAPACITY);
             return;
@@ -744,7 +744,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             if (throttled != null) {
                 throttle.closed(throttled);
             }
-            log.debug("Refused join {}: the endpoint is at capacity", Long.toUnsignedString(join.connectionId()));
+            log.debug("Refused join {}: the endpoint is at capacity", join.connectionId());
             refuse(join, JoinRefusal.CAPACITY);
             return;
         }
@@ -757,12 +757,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         try {
             join.reply().refuse(refusal).whenComplete((ignored, failure) -> {
                 if (failure != null) {
-                    log.debug("Could not refuse join {}: {}", Long.toUnsignedString(join.connectionId()),
+                    log.debug("Could not refuse join {}: {}", join.connectionId(),
                             failure.toString());
                 }
             });
         } catch (RuntimeException e) {
-            log.debug("Could not refuse join {}: {}", Long.toUnsignedString(join.connectionId()), e.toString());
+            log.debug("Could not refuse join {}: {}", join.connectionId(), e.toString());
         }
         join.reply().finished();
     }
@@ -793,7 +793,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                           NetherServerThrottle throttle, InetSocketAddress throttled) {
             this.from = from;
             this.join = join;
-            this.id = Long.toUnsignedString(join.connectionId());
+            this.id = join.connectionId();
             this.settings = settings;
             this.reservation = reservation;
             this.throttle = throttle;

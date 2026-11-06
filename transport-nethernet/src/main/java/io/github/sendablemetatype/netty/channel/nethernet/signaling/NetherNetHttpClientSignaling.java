@@ -116,7 +116,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     private final EventLoopGroup group;
     private final String localNetworkId;
     private final ChannelGroup exchanges = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
-    private final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<String, SignalHandler> handlers = new ConcurrentHashMap<>();
     private volatile Target target;
     private volatile boolean closed;
 
@@ -242,19 +242,21 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
      */
     @Override
     public void sendSignal(String targetNetworkId, String data) {
-        String[] parts = data.split(" ", 3);
-        if (parts.length < 3 || !NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0])) {
-            log.debug("HTTP signaling carries only the offer; dropped a {} signal", parts[0]);
+        Signal signal = Signal.parse(data).orElse(null);
+        if (signal == null) {
             return;
         }
-        long connectionId;
-        try {
-            connectionId = Long.parseUnsignedLong(parts[1]);
-        } catch (NumberFormatException e) {
-            log.debug("Dropped an offer with a malformed connection ID {}", parts[1]);
+        if (!NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type())) {
+            log.debug("HTTP signaling carries only the offer; dropped a {} signal", signal.type());
             return;
         }
+        String connectionId = signal.connectionId();
         Target current = target;
+        if (signal.payload().isEmpty()) {
+            fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
+                    JoinRefusal.INTERNAL.errorCode(), "The offer is empty"));
+            return;
+        }
         if (closed || current == null) {
             fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED,
                     JoinRefusal.INTERNAL.errorCode(), "HTTP client signaling is " + (closed ? "closed" : "not connected")));
@@ -262,14 +264,14 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         String path = "/v1/join/" + URLEncoder.encode(localNetworkId, StandardCharsets.UTF_8).replace("+", "%20");
         FullHttpRequest request = request(HttpMethod.POST, path, current.address(),
-                Unpooled.copiedBuffer(parts[2], StandardCharsets.UTF_8));
+                Unpooled.copiedBuffer(signal.payload(), StandardCharsets.UTF_8));
         request.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/sdp");
         request.headers().set(HttpHeaderNames.ACCEPT, "application/sdp");
         exchange(current.address(), current.secure() ? current.ssl() : null, request, settings.answerTimeout(), group,
                 exchanges).whenComplete((response, error) -> answered(connectionId, current, response, error));
     }
 
-    private void answered(long connectionId, Target current, Response response, Throwable error) {
+    private void answered(String connectionId, Target current, Response response, Throwable error) {
         if (closed) {
             return;
         }
@@ -296,11 +298,12 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
-            handler.onSignal(NetherNetConstants.buildSignalConnectResponse(connectionId, response.body()));
+            handler.onSignal(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, connectionId,
+                    response.body()));
         }
     }
 
-    private void fail(long connectionId, Target current, SignalingFailure failure) {
+    private void fail(String connectionId, Target current, SignalingFailure failure) {
         log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), failure.reason());
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
@@ -319,12 +322,13 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
+    public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        // The answer is the response to our own request to one server, so there is no sender to check.
         handlers.put(connectionId, Objects.requireNonNull(handler, "handler"));
     }
 
     @Override
-    public void removeSignalHandler(long connectionId) {
+    public void removeSignalHandler(String connectionId) {
         handlers.remove(connectionId);
     }
 

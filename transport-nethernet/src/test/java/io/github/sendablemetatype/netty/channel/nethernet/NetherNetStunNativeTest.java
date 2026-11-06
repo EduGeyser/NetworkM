@@ -76,7 +76,7 @@ class NetherNetStunNativeTest {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
             String answer = "";
             for (long id = 1; !answer.contains(" typ srflx") && System.nanoTime() < deadline; id++) {
-                answer = source.offer(id, offer).answer();
+                answer = source.offer(Long.toString(id), offer).answer();
                 Thread.sleep(200);
             }
 

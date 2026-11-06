@@ -12,6 +12,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.Signal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SignalingFailure;
 import io.github.sendablemetatype.netty.util.nethernet.ClientIdentity;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -71,12 +72,14 @@ class NetherNetClientChannelTest {
             peer.completeOffer(OFFER);
             peer.localCandidate("candidate:1", "0");
             h.pump();
-            long id = h.connectionId();
+            String id = h.connectionId();
             assertEquals(List.of("CONNECTREQUEST " + id + " " + OFFER, "CANDIDATEADD " + id + " candidate:1"),
                     h.signaling.sent);
 
-            h.signaling.signalHandlers.getLast().onSignal("CANDIDATEADD " + id + " candidate:remote");
-            h.signaling.signalHandlers.getLast().onSignal(NetherNetConstants.buildSignalConnectResponse(id, ANSWER));
+            h.signaling.signalHandlers.getLast().onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD, id, "candidate:remote"));
+            h.signaling.signalHandlers.getLast().onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, id, ANSWER));
             h.pump();
             assertEquals(List.of(new FakePeer.RemoteCandidate("candidate:remote", "0")), peer.remoteCandidates());
             assertEquals(List.of(ANSWER), peer.remoteAnswers());
@@ -119,7 +122,7 @@ class NetherNetClientChannelTest {
             assertEquals(1, h.signaling.connections.size(), "no retry while the answer can still arrive");
 
             h.signaling.signalHandlers.getLast().onSignal(
-                    NetherNetConstants.buildSignalConnectResponse(h.connectionId(), ANSWER));
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, h.connectionId(), ANSWER));
             h.pump();
             h.advance(99);
             assertEquals(1, h.signaling.connections.size());
@@ -456,17 +459,19 @@ class NetherNetClientChannelTest {
             ChannelFuture connect = h.connect();
             h.start().completeOffer(OFFER);
             h.pump();
-            long oldId = h.connectionId();
+            String oldId = h.connectionId();
             h.advance(100);
             String sdp = "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=max-message-size:1\r\n";
-            h.signaling.signalHandlers.get(0).onSignal(NetherNetConstants.buildSignalConnectResponse(oldId, sdp));
+            h.signaling.signalHandlers.get(0).onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, oldId, sdp));
             h.pump();
             assertFalse(connect.isDone());
             h.start().completeOffer(OFFER);
             h.pump();
-            long currentId = h.connectionId();
+            String currentId = h.connectionId();
             assertNotEquals(oldId, currentId);
-            h.signaling.signalHandlers.get(1).onSignal(NetherNetConstants.buildSignalConnectResponse(currentId, sdp));
+            h.signaling.signalHandlers.get(1).onSignal(
+                    new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, currentId, sdp));
             h.pump();
             assertInstanceOf(ConnectException.class, connect.cause());
             assertInstanceOf(IllegalArgumentException.class, connect.cause().getCause());
@@ -566,10 +571,10 @@ class NetherNetClientChannelTest {
         }
 
         /** The connection ID of the newest connect request. */
-        private long connectionId() {
+        private String connectionId() {
             String request = signaling.sent.stream().filter(signal -> signal.startsWith("CONNECTREQUEST"))
                     .reduce((first, second) -> second).orElseThrow();
-            return Long.parseUnsignedLong(request.split(" ", 3)[1]);
+            return request.split(" ", 3)[1];
         }
 
         private void pump() {
@@ -631,9 +636,9 @@ class NetherNetClientChannelTest {
 
         @Override public void setNotFoundHandler(NotFoundHandler handler) { notFoundHandlers.add(handler); }
         @Override public void sendSignal(String targetNetworkId, String data) { sent.add(data); }
-        @Override public void setSignalHandler(long connectionId, SignalHandler handler) { signalHandlers.add(handler); }
+        @Override public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) { signalHandlers.add(handler); }
         @Override
-        public void removeSignalHandler(long connectionId) {
+        public void removeSignalHandler(String connectionId) {
             RuntimeException failure = removeFailure;
             removeFailure = null;
             if (failure != null) {

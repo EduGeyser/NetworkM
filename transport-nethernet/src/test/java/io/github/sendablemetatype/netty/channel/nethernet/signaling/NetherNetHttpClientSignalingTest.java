@@ -57,7 +57,7 @@ class NetherNetHttpClientSignalingTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";
     private static final String ANSWER = "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\n";
     private static final NetherNetServerStatus STATUS = NetherNetServerStatus.builder().name("Server").players(3).build();
-    private static final long CONNECTION_ID = 77;
+    private static final String CONNECTION_ID = "77";
 
     private static X509Bundle authority;
     private static SslContext serverContext;
@@ -66,7 +66,7 @@ class NetherNetHttpClientSignalingTest {
     private final EventLoopGroup group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
     private final RecordingSink sink = new RecordingSink();
     private final List<StatusRequest> statusRequests = new CopyOnWriteArrayList<>();
-    private final BlockingQueue<String> signals = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Signal> signals = new LinkedBlockingQueue<>();
     private NetherNetHttpSignaling server;
     private HttpServer foreign;
     private InetSocketAddress address;
@@ -141,13 +141,18 @@ class NetherNetHttpClientSignalingTest {
 
     private NetherNetHttpClientSignaling connected(HttpClientSettings settings) throws Exception {
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(settings, group, "client-1");
-        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.setSignalHandler(CONNECTION_ID, "server", signals::add);
         client.connect(address).get(15, TimeUnit.SECONDS);
         return client;
     }
 
-    private String nextSignal() throws InterruptedException {
-        String signal = signals.poll(15, TimeUnit.SECONDS);
+    private static Signal connectError(JoinRefusal refusal) {
+        return new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, CONNECTION_ID,
+                Integer.toString(refusal.errorCode()));
+    }
+
+    private Signal nextSignal() throws InterruptedException {
+        Signal signal = signals.poll(15, TimeUnit.SECONDS);
         assertTrue(signal != null, "no signal arrived");
         return signal;
     }
@@ -298,7 +303,8 @@ class NetherNetHttpClientSignalingTest {
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
         client.sendSignal("0", NetherNetConstants.buildSignalCandidateAdd(CONNECTION_ID, "candidate:1 1 udp 1 1.2.3.4 5 typ host"));
 
-        assertEquals(NetherNetConstants.buildSignalConnectResponse(CONNECTION_ID, ANSWER), nextSignal());
+        assertEquals(
+                new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE, CONNECTION_ID, ANSWER), nextSignal());
         Join join = sink.next();
         assertEquals("client-1", join.remoteNetworkId());
         assertEquals(OFFER, join.offer());
@@ -313,8 +319,7 @@ class NetherNetHttpClientSignalingTest {
 
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
 
-        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
-                + JoinRefusal.CAPACITY.errorCode(), nextSignal());
+        assertEquals(connectError(JoinRefusal.CAPACITY), nextSignal());
     }
 
     @Test
@@ -325,7 +330,9 @@ class NetherNetHttpClientSignalingTest {
 
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
 
-        assertTrue(nextSignal().startsWith(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID));
+        Signal error = nextSignal();
+        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, error.type());
+        assertEquals(CONNECTION_ID, error.connectionId());
     }
 
     @Test
@@ -334,14 +341,14 @@ class NetherNetHttpClientSignalingTest {
         BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(
                 trusting().withScheme(Scheme.HTTP), group, "client-1");
-        client.setSignalHandler(CONNECTION_ID, new NetherNetSignaling.SignalHandler() {
+        client.setSignalHandler(CONNECTION_ID, "server", new NetherNetSignaling.SignalHandler() {
             @Override
-            public void onSignal(String signal) {
+            public void onSignal(Signal signal) {
                 signals.add(signal);
             }
 
             @Override
-            public void onFailure(long connectionId, SignalingFailure failure) {
+            public void onFailure(String connectionId, SignalingFailure failure) {
                 failures.add(failure);
             }
         });
@@ -356,6 +363,30 @@ class NetherNetHttpClientSignalingTest {
     }
 
     @Test
+    void anEmptyOfferFailsTheAttempt() throws Exception {
+        startServer(null);
+        BlockingQueue<SignalingFailure> failures = new LinkedBlockingQueue<>();
+        NetherNetHttpClientSignaling client = connected(trusting());
+        client.setSignalHandler(CONNECTION_ID, "server", new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(Signal signal) {
+                signals.add(signal);
+            }
+
+            @Override
+            public void onFailure(String connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        });
+
+        client.sendSignal("0", NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST + " " + CONNECTION_ID + " ");
+
+        assertEquals(new SignalingFailure(NetherConnectionFailure.NEGOTIATION_FAILED, JoinRefusal.INTERNAL.errorCode(),
+                "The offer is empty"), failures.poll(5, TimeUnit.SECONDS));
+        assertTrue(signals.isEmpty());
+    }
+
+    @Test
     void answerWaitIsConfigurable() throws Exception {
         startServer(null);
         NetherNetHttpClientSignaling client = connected(trusting().withAnswerTimeout(Duration.ofMillis(300)));
@@ -363,8 +394,7 @@ class NetherNetHttpClientSignalingTest {
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
         Join join = sink.next();
 
-        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
-                + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+        assertEquals(connectError(JoinRefusal.NO_ANSWER_IN_TIME), nextSignal());
         // The client hung up, which the server reports as an abandoned join
         join.reply().abandoned().toCompletableFuture().get(5, TimeUnit.SECONDS);
     }
@@ -381,8 +411,7 @@ class NetherNetHttpClientSignalingTest {
 
             client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
 
-            assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
-                    + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+            assertEquals(connectError(JoinRefusal.NO_ANSWER_IN_TIME), nextSignal());
             assertTrue(System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(11));
         }
     }
@@ -443,11 +472,10 @@ class NetherNetHttpClientSignalingTest {
         assertInstanceOf(ConnectException.class, probe.getCause());
 
         NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(plain, stopped, "client-1");
-        client.setSignalHandler(CONNECTION_ID, signals::add);
+        client.setSignalHandler(CONNECTION_ID, "server", signals::add);
         client.connect(nowhere).get(5, TimeUnit.SECONDS);
         client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
-        assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
-                + JoinRefusal.INTERNAL.errorCode(), nextSignal());
+        assertEquals(connectError(JoinRefusal.INTERNAL), nextSignal());
     }
 
     @Test
@@ -456,7 +484,7 @@ class NetherNetHttpClientSignalingTest {
         try (StallingResolver.Stall lookup = StallingResolver.stall()) {
             NetherNetHttpClientSignaling client = new NetherNetHttpClientSignaling(HttpClientSettings.DEFAULT
                     .withScheme(Scheme.HTTP).withAnswerTimeout(Duration.ofSeconds(1)), stopping, "client-1");
-            client.setSignalHandler(CONNECTION_ID, signals::add);
+            client.setSignalHandler(CONNECTION_ID, "server", signals::add);
             client.connect(InetSocketAddress.createUnresolved(lookup.name(), 80)).get(5, TimeUnit.SECONDS);
             client.sendSignal("0", NetherNetConstants.buildSignalConnectRequest(CONNECTION_ID, OFFER));
             lookup.awaitLookup();
@@ -464,8 +492,7 @@ class NetherNetHttpClientSignalingTest {
             // Cancels the tasks the group had scheduled, and no channel exists yet to end the request
             stopping.shutdownGracefully(0, 0, TimeUnit.SECONDS).sync();
 
-            assertEquals(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + CONNECTION_ID + " "
-                    + JoinRefusal.NO_ANSWER_IN_TIME.errorCode(), nextSignal());
+            assertEquals(connectError(JoinRefusal.NO_ANSWER_IN_TIME), nextSignal());
         }
     }
 

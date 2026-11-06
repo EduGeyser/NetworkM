@@ -13,19 +13,22 @@ public interface NetherNetSignaling extends AutoCloseable {
     void sendSignal(String targetNetworkId, String data);
 
     /**
-     * Sets a handler to receive signaling messages for a specific connection ID.
+     * Sets a handler for the signals of one connection ID from one remote peer. A signal with that
+     * connection ID from any other sender does not reach the handler, so a third party that learned
+     * the ID can neither answer nor fail the attempt (go-nethernet's dialer filters the same way).
      *
-     * @param connectionId The connection ID to listen for.
-     * @param handler      The handler to process incoming signaling messages.
+     * @param connectionId    The connection ID to listen for.
+     * @param remoteNetworkId The Network ID the signals must come from: the one the offer was sent to.
+     * @param handler         The handler to process incoming signaling messages.
      */
-    void setSignalHandler(long connectionId, SignalHandler handler);
+    void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler);
 
     /**
      * Removes the signaling handler for a specific connection ID.
      *
      * @param connectionId The connection ID whose handler should be removed.
      */
-    void removeSignalHandler(long connectionId);
+    void removeSignalHandler(String connectionId);
 
     /**
      * Returns this client's local Network ID as an opaque string.
@@ -46,9 +49,9 @@ public interface NetherNetSignaling extends AutoCloseable {
         /**
          * Called when a signal is received for the registered connection ID.
          *
-         * @param signal The raw signal payload.
+         * @param signal the parsed signal
          */
-        void onSignal(String signal);
+        void onSignal(Signal signal);
 
         /**
          * Called when client signaling gave up on the offer of the registered connection ID. By
@@ -58,9 +61,9 @@ public interface NetherNetSignaling extends AutoCloseable {
          * @param connectionId the registered connection ID
          * @param failure      why the signaling gave up
          */
-        default void onFailure(long connectionId, SignalingFailure failure) {
-            onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId)
-                    + " " + failure.errorCode());
+        default void onFailure(String connectionId, SignalingFailure failure) {
+            onSignal(new Signal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR, connectionId,
+                    Integer.toString(failure.errorCode())));
         }
     }
 }

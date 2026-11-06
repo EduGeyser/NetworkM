@@ -12,7 +12,7 @@ import java.util.function.Consumer;
 /**
  * One client's request to join: its offer, where it came from, and how to answer it.
  *
- * @param connectionId the connection ID the client chose for this attempt
+ * @param connectionId the connection ID the client chose for this attempt, exactly as it wrote it
  * @param remoteNetworkId the client's network ID, for logs and for sources that address replies
  *        by it
  * @param offer the client's SDP offer, as received
@@ -24,10 +24,16 @@ import java.util.function.Consumer;
  * @param authenticated what a source that authenticated the client itself brings instead of an
  *        offer check (NXS); null for every signaled join
  */
-public record Join(long connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply,
+public record Join(String connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply,
                    Addressed addressed, Authenticated authenticated) {
 
+    /**
+     * @throws IllegalArgumentException if the connection ID is not one {@link Signal} accepts, so a
+     *                                  custom source cannot put an ID into logs and child attributes
+     *                                  that the built-in sources would refuse
+     */
     public Join {
+        Signal.requireValidConnectionId(connectionId);
         Objects.requireNonNull(remoteNetworkId, "remoteNetworkId");
         Objects.requireNonNull(offer, "offer");
         Objects.requireNonNull(source, "source");
@@ -35,12 +41,12 @@ public record Join(long connectionId, String remoteNetworkId, String offer, Sour
     }
 
     /** A join from a source that does not see what the client reached. */
-    public Join(long connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply) {
+    public Join(String connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply) {
         this(connectionId, remoteNetworkId, offer, source, reply, null, null);
     }
 
     /** A signaled join. */
-    public Join(long connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply,
+    public Join(String connectionId, String remoteNetworkId, String offer, SourcedAddress source, ReplyPath reply,
                 Addressed addressed) {
         this(connectionId, remoteNetworkId, offer, source, reply, addressed, null);
     }

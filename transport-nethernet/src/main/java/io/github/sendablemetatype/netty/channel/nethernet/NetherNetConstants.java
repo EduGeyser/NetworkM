@@ -173,8 +173,8 @@ public class NetherNetConstants {
      * @param sdp            The SDP payload.
      * @return The formatted signaling message.
      */
-    public static String buildSignalConnectRequest(long connectionId, String sdp) {
-        return RTC_NEGOTIATION_CONNECT_REQUEST + " " + Long.toUnsignedString(connectionId) + " " + sdp;
+    public static String buildSignalConnectRequest(String connectionId, String sdp) {
+        return RTC_NEGOTIATION_CONNECT_REQUEST + " " + connectionId + " " + sdp;
     }
 
     /**
@@ -184,8 +184,8 @@ public class NetherNetConstants {
      * @param sdp            The SDP payload.
      * @return The formatted signaling message.
      */
-    public static String buildSignalConnectResponse(long connectionId, String sdp) {
-        return RTC_NEGOTIATION_CONNECT_RESPONSE + " " + Long.toUnsignedString(connectionId) + " " + sdp;
+    public static String buildSignalConnectResponse(String connectionId, String sdp) {
+        return RTC_NEGOTIATION_CONNECT_RESPONSE + " " + connectionId + " " + sdp;
     }
 
     /**
@@ -195,8 +195,8 @@ public class NetherNetConstants {
      * @param candidateSdp   The candidate SDP string.
      * @return The formatted signaling message.
      */
-    public static String buildSignalCandidateAdd(long connectionId, String candidateSdp) {
-        return RTC_NEGOTIATION_CANDIDATE_ADD + " " + Long.toUnsignedString(connectionId) + " " + candidateSdp;
+    public static String buildSignalCandidateAdd(String connectionId, String candidateSdp) {
+        return RTC_NEGOTIATION_CANDIDATE_ADD + " " + connectionId + " " + candidateSdp;
     }
 
     /**
@@ -207,8 +207,8 @@ public class NetherNetConstants {
      * @param errorCode the error code
      * @return the formatted signaling message
      */
-    public static String buildSignalConnectError(long connectionId, int errorCode) {
-        return RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId) + " " + errorCode;
+    public static String buildSignalConnectError(String connectionId, int errorCode) {
+        return RTC_NEGOTIATION_CONNECT_ERROR + " " + connectionId + " " + errorCode;
     }
 
     /**

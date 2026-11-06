@@ -71,18 +71,18 @@ final class FakeJoinSource implements JoinSource {
     }
 
     /** Delivers an offer from {@link #CLIENT}. */
-    Reply offer(long connectionId, String offer) {
+    Reply offer(String connectionId, String offer) {
         return offer(connectionId, offer, new SourcedAddress(CLIENT, AddressSource.SIGNALING, null), null);
     }
 
-    Reply offer(long connectionId, String offer, SourcedAddress source, Join.Addressed addressed) {
+    Reply offer(String connectionId, String offer, SourcedAddress source, Join.Addressed addressed) {
         Reply reply = new Reply(trickles);
         sink.join(new Join(connectionId, "remote-" + connectionId, offer, source, reply, addressed));
         return reply;
     }
 
     /** Delivers a join this source authenticated itself, as NXS does. */
-    Reply authenticated(long connectionId, String offer, SourcedAddress source, Join.Authenticated authenticated) {
+    Reply authenticated(String connectionId, String offer, SourcedAddress source, Join.Authenticated authenticated) {
         Reply reply = new Reply(trickles);
         sink.join(new Join(connectionId, "remote-" + connectionId, offer, source, reply, null, authenticated));
         return reply;

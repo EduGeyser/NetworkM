@@ -55,7 +55,7 @@ class NetherNetServerAddressingTest {
     @Test
     void onlyIpLiteralUdpCandidatesReachTheEngine() throws Exception {
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, "v=0\r\n"
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", "v=0\r\n"
                 + "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:data\r\n"
                 + "a=candidate:1 1 udp 2122260223 192.168.1.20 51234 typ host\r\n"
                 + "a=candidate:2 1 udp 2122260223 client.example 51235 typ host\r\n"
@@ -85,7 +85,7 @@ class NetherNetServerAddressingTest {
                 List.of(new InetSocketAddress("203.0.113.7", 0)));
         harness.bind();
 
-        String answer = harness.source(false).offer(1, OFFER).answer();
+        String answer = harness.source(false).offer("1", OFFER).answer();
 
         assertTrue(answer.contains("a=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host\r\n"));
         assertTrue(answer.contains(" 203.0.113.7 5000 typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
@@ -112,7 +112,7 @@ class NetherNetServerAddressingTest {
             names.bind();
             FakeJoinSource source = names.source(false);
 
-            String before = source.offer(1, OFFER).answer();
+            String before = source.offer("1", OFFER).answer();
             assertTrue(before.contains(" 203.0.113.7 5000 typ srflx"), "the literal is announced at once: " + before);
             assertFalse(before.contains("203.0.113.8"), before);
 
@@ -121,7 +121,7 @@ class NetherNetServerAddressingTest {
             String after;
             long connectionId = 2;
             do {
-                after = source.offer(connectionId++, OFFER).answer();
+                after = source.offer(Long.toString(connectionId++), OFFER).answer();
             } while (!after.contains("203.0.113.8") && System.nanoTime() < deadline);
             assertTrue(after.contains(" 203.0.113.8 5000 typ srflx"), after);
             assertTrue(after.contains(" 203.0.113.7 5000 typ srflx"), after);
@@ -146,7 +146,7 @@ class NetherNetServerAddressingTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES,
                 List.of(new InetSocketAddress("203.0.113.7", 0)));
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", OFFER);
         reply.answer();
         FakePeer peer = harness.engine.lastPeer();
 
@@ -168,9 +168,9 @@ class NetherNetServerAddressingTest {
         int icePort = ((InetSocketAddress) server.localAddress()).getPort();
 
         FakeJoinSource source = harness.source(false);
-        String answer = source.offer(1, OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
+        String answer = source.offer("1", OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
                 new Join.Addressed("8.8.8.8:19132", 19132, false)).answer();
-        String proxied = source.offer(2, OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
+        String proxied = source.offer("2", OFFER, new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null),
                 new Join.Addressed("8.8.8.8:19132", 19132, true)).answer();
 
         assertTrue(answer.contains(" 8.8.8.8 " + icePort + " typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
@@ -183,7 +183,7 @@ class NetherNetServerAddressingTest {
         harness.engine.gatherWith(GATHERED);
         harness.bind();
 
-        harness.source(false).offer(1, HOST_ONLY_OFFER,
+        harness.source(false).offer("1", HOST_ONLY_OFFER,
                 new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null), null).answer();
         harness.sync();
 
@@ -200,7 +200,7 @@ class NetherNetServerAddressingTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_INFER_PEER_CANDIDATES, false);
         harness.bind();
 
-        harness.source(false).offer(1, HOST_ONLY_OFFER,
+        harness.source(false).offer("1", HOST_ONLY_OFFER,
                 new SourcedAddress(PUBLIC_CLIENT, AddressSource.SIGNALING, null), null).answer();
         harness.sync();
 
@@ -210,7 +210,7 @@ class NetherNetServerAddressingTest {
     @Test
     void theChildReportsThePairFromActivationAndEachMoveAfter() throws Exception {
         harness.bind();
-        harness.source(true).offer(1, OFFER);
+        harness.source(true).offer("1", OFFER);
         NetherNetChildChannel child = harness.child();
         List<RemoteAddressChangedEvent> events = new CopyOnWriteArrayList<>();
         child.eventLoop().submit(() -> child.pipeline().addLast(new ChannelInboundHandlerAdapter() {
@@ -249,7 +249,7 @@ class NetherNetServerAddressingTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
                 new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
         harness.bind();
-        FakeJoinSource.Reply reply = harness.source(true).offer(1, HOST_ONLY_OFFER);
+        FakeJoinSource.Reply reply = harness.source(true).offer("1", HOST_ONLY_OFFER);
         FakePeer peer = harness.negotiating();
 
         assertEquals(List.of("192.0.2.10/32"), ((FakeIceEndpoint) peer.config().endpoint()).relays());

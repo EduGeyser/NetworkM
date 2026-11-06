@@ -44,7 +44,9 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import javax.net.ssl.SSLException;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
@@ -183,14 +185,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     /** Joins are told apart by sender too, so one client cannot reach another's join by its ID. */
-    private record JoinKey(String sender, long connectionId) {
+    private record JoinKey(String sender, String connectionId) {
     }
 
     private final String localNetworkId;
     private final EventLoopGroup eventLoopGroup;
     private final SignalingSupervisor supervisor;
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<String, ClientHandler> handlers = new ConcurrentHashMap<>();
     private final Map<JoinKey, XboxJoin> joins = new ConcurrentHashMap<>();
 
     private volatile String token;
@@ -327,12 +329,17 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
-        handlers.put(connectionId, handler);
+    public void setSignalHandler(String connectionId, String remoteNetworkId, SignalHandler handler) {
+        handlers.put(connectionId, new ClientHandler(Objects.requireNonNull(remoteNetworkId, "remoteNetworkId"),
+                Objects.requireNonNull(handler, "handler")));
+    }
+
+    /** A client attempt's handler and the peer its signals must come from. */
+    private record ClientHandler(String remoteNetworkId, SignalHandler handler) {
     }
 
     @Override
-    public void removeSignalHandler(long connectionId) {
+    public void removeSignalHandler(String connectionId) {
         handlers.remove(connectionId);
     }
 
@@ -456,11 +463,28 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /** Connects a new WebSocket to the service with this instance as its last handler. */
     ChannelFuture connectSocket(String token) throws SSLException {
+        return connectSocket(token, SERVICE_URI, InetSocketAddress.createUnresolved(SERVICE_URI.getHost(), 443), null);
+    }
+
+    /**
+     * Connects a new WebSocket to a service at an address, for tests that run their own service.
+     *
+     * @param service the service URI, whose host the certificate must name
+     * @param remote  where to connect; an unresolved address is resolved by the bootstrap
+     * @param trust   the trusted roots, null for the JDK's default ones
+     */
+    ChannelFuture connectSocket(String token, URI service, SocketAddress remote, TrustManagerFactory trust)
+            throws SSLException {
+        // The upgrade request carries the Xbox token, so the certificate must name the service host.
+        // Netty 4.2 already checks the name by default; it is set here so the check does not depend
+        // on a library default. XboxSignalingTlsTest fails if it is off.
         SslContext sslCtx = SslContextBuilder.forClient()
+                .trustManager(trust)
                 .endpointIdentificationAlgorithm("HTTPS")
                 .build();
+        int port = service.getPort() < 0 ? 443 : service.getPort();
         WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
-                SERVICE_URI, WebSocketVersion.V13, null, false,
+                service, WebSocketVersion.V13, null, false,
                 new DefaultHttpHeaders()
                         .add("Authorization", token)
                         .add("User-Agent", NetherNetConstants.SIGNALING_USER_AGENT)
@@ -474,7 +498,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline p = ch.pipeline();
-                        p.addLast(sslCtx.newHandler(ch.alloc(), SERVICE_URI.getHost(), 443));
+                        p.addLast(sslCtx.newHandler(ch.alloc(), service.getHost(), port));
                         p.addLast(new HttpClientCodec(), new HttpObjectAggregator(8192));
                         // dropPongFrames=false: pongs must reach channelRead, where they refresh
                         // the liveness clock. Close frames are handled there too, not by the
@@ -484,7 +508,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                         p.addLast("handler", NetherNetXboxRpcSignaling.this);
                     }
                 })
-                .connect(SERVICE_URI.getHost(), 443);
+                .connect(remote);
     }
 
     /** Drops the current socket without reporting it as lost. */
@@ -995,26 +1019,28 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     private void dispatchSignal(String sender, String rawMsg) {
         try {
-            // Signal format: <Type> <ConnectionID> <Data>
-            String[] parts = rawMsg.split(" ", 3);
-            if (parts.length < 2) return;
+            Signal signal = Signal.parse(rawMsg).orElse(null);
+            if (signal == null) {
+                return;
+            }
+            String connectionId = signal.connectionId();
 
-            long connectionId = Long.parseUnsignedLong(parts[1]);
-
-            SignalHandler handler = handlers.get(connectionId);
-            if (handler != null) {
-                handler.onSignal(rawMsg);
+            // A signal with a client attempt's ID from another sender is not that attempt's; it may
+            // still be an offer of its own, so it goes on to join routing.
+            ClientHandler client = handlers.get(connectionId);
+            if (client != null && client.remoteNetworkId().equals(sender)) {
+                client.handler().onSignal(signal);
                 return;
             }
 
             JoinKey key = new JoinKey(sender, connectionId);
-            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(parts[0]);
+            boolean request = NetherNetConstants.RTC_NEGOTIATION_CONNECT_REQUEST.equals(signal.type());
             XboxJoin join = joins.get(key);
             if (join != null) {
                 if (request) {
-                    log.debug("Ignoring a repeated offer for connection ID {}", Long.toUnsignedString(connectionId));
+                    log.debug("Ignoring a repeated offer for connection ID {}", connectionId);
                 } else {
-                    join.received(rawMsg);
+                    join.received(signal);
                 }
                 return;
             }
@@ -1022,11 +1048,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             if (request && current != null) {
                 XboxJoin created = new XboxJoin(key);
                 if (joins.putIfAbsent(key, created) == null) {
-                    current.join(new Join(connectionId, sender, parts.length > 2 ? parts[2] : "",
+                    current.join(new Join(connectionId, sender, signal.payload(),
                             SourcedAddress.unknown(), created));
                 }
             } else {
-                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, parts[0]);
+                log.debug("No handler found for connection ID: {} (Type: {})", connectionId, signal.type());
             }
         } catch (Exception e) {
             // The signal can be an offer with the client's identity token in it, so it is not logged.
