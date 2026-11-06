@@ -10,8 +10,9 @@ import java.util.function.Consumer;
  * A data link of {@link FakePeer}. Sends are recorded and settled by the test
  * (or at once, see {@link FakeEngine#autoAcceptSends}). A send adds its size
  * to {@link #queuedBytes()} when it is made, a refusal takes it out again,
- * and otherwise it stays until the test drains it. Each send settles exactly
- * once, and its peer's close stage waits for a completion still running.
+ * and otherwise it stays until the test drains it, or on a loopback engine
+ * until the other side received it. Each send settles exactly once, and its
+ * peer's close stage waits for a completion still running.
  */
 public final class FakeDataLink implements DataLink {
     private final FakePeer peer;
@@ -21,6 +22,8 @@ public final class FakeDataLink implements DataLink {
     private long watermark; // guarded by this
     private boolean announced;
     private volatile boolean closed;
+    // Loopback only: the other side's link, once the peers connected.
+    private volatile FakeDataLink counterpart;
     private volatile Throwable refusal;
 
     FakeDataLink(FakePeer peer, ChannelParameters parameters) {
@@ -62,18 +65,25 @@ public final class FakeDataLink implements DataLink {
         byte[] bytes = new byte[message.remaining()];
         message.duplicate().get(bytes);
         Send send = new Send(bytes, message.isDirect(), completion);
+        FakeDataLink far = counterpart;
         peer.settling(() -> {
             Throwable refused;
             boolean settleNow;
             synchronized (this) {
                 sends.add(send);
                 queued += bytes.length;
-                refused = closed ? new IOException("The data link is closed") : refusal;
+                refused = closed ? new IOException("The data link is closed")
+                        : refusal != null ? refusal
+                        : peer.isLoopback() && far == null ? new IOException("The data link is not open")
+                        : null;
                 // Settled together with the add, so a close in between cannot settle it as well.
                 settleNow = refused != null || peer.autoAcceptSends();
                 if (settleNow) {
                     markSettled(send, refused);
                 }
+            }
+            if (refused == null && far != null) {
+                transmit(far, bytes);
             }
             if (settleNow) {
                 send.completion.accept(refused);
@@ -177,6 +187,22 @@ public final class FakeDataLink implements DataLink {
 
     synchronized void announce() {
         announced = true;
+    }
+
+    /** Loopback: links this link and the other side's into one channel. */
+    void pair(FakeDataLink far) {
+        counterpart = far;
+        far.counterpart = this;
+    }
+
+    /** Loopback: delivers a message on the other side, then takes its bytes out of this link's queue. */
+    private void transmit(FakeDataLink far, byte[] bytes) {
+        far.peer.post(() -> {
+            if (!far.closed()) {
+                far.peer.message(far, bytes);
+            }
+            drain(bytes.length);
+        });
     }
 
     /** Closes the link and refuses its unsettled sends. Returns false if it was closed already. */

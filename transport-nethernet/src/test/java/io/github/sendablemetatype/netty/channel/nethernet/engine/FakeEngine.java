@@ -1,23 +1,31 @@
 package io.github.sendablemetatype.netty.channel.nethernet.engine;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * A pure Java engine for transport tests. Nothing happens on its own: the test
- * completes SDP stages, fires peer events, settles sends and moves queued
- * bytes. It keeps the interface's contract: a peer's callbacks are serialized,
- * local candidates wait for the local description, a link's messages follow
- * its announcement, and nothing fires once a peer's close stage completed.
+ * A pure Java engine for transport tests. It keeps the interface's contract: a
+ * peer's callbacks are serialized, local candidates wait for the local
+ * description, a link's messages follow its announcement, and nothing fires
+ * once a peer's close stage completed.
  *
- * <p>Callbacks run on the thread that triggers them, so a test that triggers
- * them from an event loop sees them on that loop; real engines never call from
- * an event loop, and channels must not rely on either.
+ * <p>An engine made with {@code new FakeEngine()} does nothing on its own: the
+ * test completes SDP stages, fires peer events, settles sends and moves queued
+ * bytes. Callbacks run on the thread that triggers them, so a test that
+ * triggers them from an event loop sees them on that loop; real engines never
+ * call from an event loop, and channels must not rely on either.
+ *
+ * <p>An engine made with {@link #loopback()} connects its own peers to each
+ * other, with its callbacks on threads of its own; see {@link FakePeer}.
  */
 public final class FakeEngine implements NetherNetEngine {
+    private final boolean loopback;
+    private final AtomicLong nextSession = new AtomicLong(1);
     private final List<FakePeer> peers = new CopyOnWriteArrayList<>();
     private final List<FakeIceEndpoint> endpoints = new CopyOnWriteArrayList<>();
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
@@ -30,6 +38,26 @@ public final class FakeEngine implements NetherNetEngine {
     private volatile String scriptedGathering;
     private volatile boolean autoAcceptSends;
     private volatile boolean holdPeerClose;
+
+    /** An engine the test drives by hand. */
+    public FakeEngine() {
+        this(false);
+    }
+
+    private FakeEngine(boolean loopback) {
+        this.loopback = loopback;
+        this.autoAcceptSends = loopback;
+    }
+
+    /**
+     * An engine whose peers connect to each other: an offerer and an answerer
+     * of this engine connect once each has applied the other's description.
+     * Sends are accepted at once, and their bytes leave the queue once the
+     * other side received them.
+     */
+    public static FakeEngine loopback() {
+        return new FakeEngine(true);
+    }
 
     @Override
     public Peer createPeer(PeerConfig config, PeerListener listener) {
@@ -44,7 +72,7 @@ public final class FakeEngine implements NetherNetEngine {
         if (failure != null) {
             throw failure;
         }
-        FakePeer peer = new FakePeer(this, config, listener);
+        FakePeer peer = new FakePeer(this, nextSession.getAndIncrement(), config, listener);
         peers.add(peer);
         return peer;
     }
@@ -132,6 +160,15 @@ public final class FakeEngine implements NetherNetEngine {
     /** Leaves later peer close stages pending until {@link FakePeer#finishClose()}. */
     public void holdPeerClose(boolean hold) {
         this.holdPeerClose = hold;
+    }
+
+    boolean isLoopback() {
+        return loopback;
+    }
+
+    /** The peer whose descriptions carry this session ID. */
+    Optional<FakePeer> peerOfSession(long session) {
+        return peers.stream().filter(peer -> peer.session() == session).findFirst();
     }
 
     String scriptedAnswer() {

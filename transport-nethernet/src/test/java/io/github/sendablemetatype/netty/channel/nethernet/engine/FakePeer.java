@@ -3,16 +3,37 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * A peer of {@link FakeEngine}. The {@code Peer} methods record what the
  * transport asked for; the other public methods play the engine's side.
+ *
+ * <p>On a {@linkplain FakeEngine#loopback() loopback engine} the peer plays
+ * the engine's side itself, with its events on engine threads in the order
+ * they arose. Its descriptions name the peer through the session ID of their
+ * {@code o=} line; a description that names no suitable peer of the engine
+ * fails its stage and the negotiation. Each description stage is followed by
+ * one host candidate and the end of gathering. When the offerer applies the
+ * answer, both peers connect: the answerer is offered every link the offerer
+ * opened, with the same parameters, and a link it refuses closes at the
+ * offerer as closed by the remote peer. A message reaches the other side's
+ * link and then leaves the sender's queue. A peer's close closes the other
+ * side's links as closed by the remote peer.
  */
 public final class FakePeer implements Peer {
+    private static final String MID = "0";
+    private static final Pattern ORIGIN = Pattern.compile("^o=\\S+ (\\d{1,18}) ", Pattern.MULTILINE);
+    private static final Executor ENGINE_THREADS = task -> Thread.ofVirtual().name("fake-engine").start(task);
+
     private final FakeEngine engine;
+    private final long session;
     private final PeerConfig config;
     private final PeerListener listener;
     // Serializes callbacks, as the contract promises per peer.
@@ -42,18 +63,29 @@ public final class FakePeer implements Peer {
     private volatile String closeThread;
     private volatile boolean ended;
 
+    // Loopback only: the peer this one negotiates with, and the tail of the
+    // events waiting to run (guarded by eventLock).
+    private volatile FakePeer remote;
+    private final Object eventLock = new Object();
+    private CompletableFuture<Void> events = CompletableFuture.completedFuture(null);
+
     /** A remote candidate the transport applied. */
     public record RemoteCandidate(String candidate, String mid) {
     }
 
-    FakePeer(FakeEngine engine, PeerConfig config, PeerListener listener) {
+    FakePeer(FakeEngine engine, long session, PeerConfig config, PeerListener listener) {
         this.engine = engine;
+        this.session = session;
         this.config = config;
         this.listener = listener;
     }
 
     public PeerConfig config() {
         return config;
+    }
+
+    long session() {
+        return session;
     }
 
     // ---- Peer ----
@@ -63,6 +95,19 @@ public final class FakePeer implements Peer {
         requireRole(PeerConfig.Role.ANSWERER);
         synchronized (remoteOffers) {
             remoteOffers.add(remoteOffer);
+        }
+        if (isLoopback()) {
+            post(() -> {
+                Optional<FakePeer> offerer = describedPeer(remoteOffer, PeerConfig.Role.OFFERER);
+                if (offerer.isEmpty()) {
+                    answer.completeExceptionally(new IllegalArgumentException("Not an offer of this engine"));
+                    closed(CloseCause.NEGOTIATION_FAILED);
+                    return;
+                }
+                remote = offerer.get();
+                describe(answer);
+            });
+            return answer.copy();
         }
         String scripted = engine.scriptedAnswer();
         if (scripted != null) {
@@ -74,6 +119,10 @@ public final class FakePeer implements Peer {
     @Override
     public CompletionStage<String> offer() {
         requireRole(PeerConfig.Role.OFFERER);
+        if (isLoopback()) {
+            post(() -> describe(offer));
+            return offer.copy();
+        }
         String scripted = engine.scriptedOffer();
         if (scripted != null) {
             completeOffer(scripted);
@@ -86,6 +135,22 @@ public final class FakePeer implements Peer {
         requireRole(PeerConfig.Role.OFFERER);
         synchronized (remoteAnswers) {
             remoteAnswers.add(remoteAnswer);
+        }
+        if (isLoopback()) {
+            CompletableFuture<Void> applied = new CompletableFuture<>();
+            post(() -> {
+                Optional<FakePeer> answerer = describedPeer(remoteAnswer, PeerConfig.Role.ANSWERER)
+                        .filter(peer -> peer.remote == this);
+                if (answerer.isEmpty()) {
+                    applied.completeExceptionally(new IllegalArgumentException("Not an answer to this peer's offer"));
+                    closed(CloseCause.NEGOTIATION_FAILED);
+                    return;
+                }
+                remote = answerer.get();
+                applied.complete(null);
+                connect(answerer.get());
+            });
+            return applied.copy();
         }
         return applyAnswerResult.copy();
     }
@@ -132,6 +197,10 @@ public final class FakePeer implements Peer {
                 current = List.copyOf(links);
             }
             current.forEach(FakeDataLink::closeByEngine);
+            FakePeer far = remote;
+            if (far != null) {
+                far.post(() -> far.links().forEach(link -> far.linkClosed(link, CloseCause.REMOTE_CLOSED)));
+            }
             if (!engine.holdPeerClose()) {
                 finishClose();
             }
@@ -246,16 +315,7 @@ public final class FakePeer implements Peer {
     public FakeDataLink remoteChannel(ChannelParameters parameters) {
         requireRole(PeerConfig.Role.ANSWERER);
         FakeDataLink link = new FakeDataLink(this, parameters);
-        synchronized (links) {
-            links.add(link);
-        }
-        boolean[] kept = new boolean[1];
-        fire(() -> kept[0] = listener.onRemoteChannel(link));
-        if (kept[0]) {
-            link.announce();
-        } else {
-            link.closeByEngine();
-        }
+        acceptRemote(link);
         return link;
     }
 
@@ -327,11 +387,103 @@ public final class FakePeer implements Peer {
     }
 
     void queueLow(FakeDataLink link) {
-        fire(() -> listener.onQueueLow(link));
+        Runnable event = () -> fire(() -> listener.onQueueLow(link));
+        if (isLoopback()) {
+            post(event);
+        } else {
+            event.run();
+        }
     }
 
     boolean autoAcceptSends() {
         return engine.autoAcceptSends();
+    }
+
+    boolean isLoopback() {
+        return engine.isLoopback();
+    }
+
+    private void acceptRemote(FakeDataLink link) {
+        synchronized (links) {
+            links.add(link);
+        }
+        boolean[] kept = new boolean[1];
+        fire(() -> kept[0] = listener.onRemoteChannel(link));
+        if (kept[0]) {
+            link.announce();
+        } else {
+            link.closeByEngine();
+        }
+    }
+
+    // ---- Loopback ----
+
+    /**
+     * Runs an event on an engine thread after the events posted before it.
+     * A failing event is reported to the thread's uncaught exception handler
+     * and does not stop the ones after it.
+     */
+    void post(Runnable event) {
+        synchronized (eventLock) {
+            events = events.thenRunAsync(() -> {
+                try {
+                    event.run();
+                } catch (RuntimeException | Error e) {
+                    Thread current = Thread.currentThread();
+                    current.getUncaughtExceptionHandler().uncaughtException(current, e);
+                }
+            }, ENGINE_THREADS);
+        }
+    }
+
+    /** Completes a description stage, then gathers one host candidate. */
+    private void describe(CompletableFuture<String> stage) {
+        String sdp = String.join("\r\n", "v=0", "o=- " + session + " 1 IN IP4 127.0.0.1", "s=-", "t=0 0",
+                "m=application 9 UDP/DTLS/SCTP webrtc-datachannel", "c=IN IP4 0.0.0.0", "a=mid:" + MID) + "\r\n";
+        localDescription = true;
+        if (!stage.complete(sdp)) {
+            return;
+        }
+        String candidate = "candidate:1 1 udp 2122260223 127.0.0.1 " + (40000 + session % 20000) + " typ host";
+        localCandidate(candidate, MID);
+        gatheringComplete(sdp + "a=" + candidate + "\r\na=end-of-candidates\r\n");
+    }
+
+    /** The other peer of this engine that a description names, if it has the given role. */
+    private Optional<FakePeer> describedPeer(String sdp, PeerConfig.Role role) {
+        Matcher origin = ORIGIN.matcher(sdp);
+        if (!origin.find()) {
+            return Optional.empty();
+        }
+        return engine.peerOfSession(Long.parseLong(origin.group(1)))
+                .filter(peer -> peer != this && peer.config.role() == role);
+    }
+
+    /**
+     * Offerer only, on its engine thread: connects to the answerer. Each link
+     * is announced to the answerer before this side's open event, so a
+     * message sent once the link is open finds the far link announced.
+     */
+    private void connect(FakePeer answerer) {
+        answerer.post(() -> {
+            answerer.iceState(IceState.CONNECTED);
+            answerer.state(PeerState.CONNECTED);
+        });
+        iceState(IceState.CONNECTED);
+        state(PeerState.CONNECTED);
+        for (FakeDataLink link : links()) {
+            FakeDataLink far = new FakeDataLink(answerer, link.parameters());
+            link.pair(far);
+            answerer.post(() -> {
+                answerer.acceptRemote(far);
+                if (far.closed()) {
+                    post(() -> linkClosed(link, CloseCause.REMOTE_CLOSED));
+                } else {
+                    answerer.open(far);
+                }
+            });
+            open(link);
+        }
     }
 
     private void fire(Runnable callback) {
