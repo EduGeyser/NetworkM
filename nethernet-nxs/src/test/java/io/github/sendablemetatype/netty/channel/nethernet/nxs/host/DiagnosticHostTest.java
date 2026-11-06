@@ -154,6 +154,38 @@ class DiagnosticHostTest {
     }
 
     @Test
+    void aProberThatClosesBeforeTheSendResultArrivesStillGetsThePongCounted() throws Exception {
+        directHost();
+        Permit permit = permit(DiagnosticAdmissionCodec.PROFILE, CLIENT);
+        fixture.hold(permit.credentials.localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        FakeDataLink reliable = connect(peer, CLIENT);
+        peer.message(reliable, ping(permit));
+        await(() -> reliable.sendCount() == 1, "the PONG");
+
+        peer.closed(CloseCause.REMOTE_CLOSED);
+        Thread.sleep(200);
+        assertTrue(fixture.transport.pollDiagnosticResults(1).isEmpty(), "the PONG's send result is still out");
+        reliable.accept(0);
+        assertEquals(Outcome.PONG_SENT, result().outcome());
+    }
+
+    @Test
+    void aProberThatClosesBeforeARefusedPongFailsTheCheck() throws Exception {
+        directHost();
+        Permit permit = permit(DiagnosticAdmissionCodec.PROFILE, CLIENT);
+        fixture.hold(permit.credentials.localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        FakeDataLink reliable = connect(peer, CLIENT);
+        peer.message(reliable, ping(permit));
+        await(() -> reliable.sendCount() == 1, "the PONG");
+
+        peer.closed(CloseCause.REMOTE_CLOSED);
+        reliable.reject(0, new IOException("The engine refused the PONG"));
+        assertEquals(Outcome.TRANSPORT_FAILED, result().outcome());
+    }
+
+    @Test
     void withoutAPolicyADiagnosticTicketCreatesNoPeer() throws Exception {
         fixture.start(HostFixture.fixed());
         fixture.installKey();

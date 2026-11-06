@@ -392,11 +392,15 @@ final class DiagnosticHost {
         }
         long now = observe();
         DiagnosticChannels channels = check.channels;
-        // The PONG counts as sent once the engine accepted it, and the prober's time to close starts then
+        // The PONG counts as sent once the engine accepted it, and the prober's time to close starts then.
+        // A prober that got the PONG closes at once, which can reach the loop before the send result does,
+        // so a transport failure while the PONG is still out waits for that result.
         boolean sent = check.pongSent;
+        boolean transportFailed = channels.failedTransport();
         Outcome ended = !authorized(check, now) ? Outcome.WITHDRAWN
                 : channels.protocolFailed() ? Outcome.INVALID_PROTOCOL
-                : channels.failedTransport() ? sent ? Outcome.PONG_SENT : Outcome.TRANSPORT_FAILED
+                : transportFailed && sent ? Outcome.PONG_SENT
+                : transportFailed && !check.pongOut ? Outcome.TRANSPORT_FAILED
                 : !sent && lastNanos - check.handshakeDeadlineNanos >= 0 ? Outcome.HANDSHAKE_TIMEOUT
                 : sent && lastNanos - check.pongSentNanos >= LINGER_NANOS ? Outcome.PONG_SENT
                 : null;
@@ -448,14 +452,17 @@ final class DiagnosticHost {
         check.selectedRemote = remote;
         DataLink reliable = check.reliable;
         check.exchange = new DiagnosticExchange(check.admission.claims().attemptIdHex(), true,
-                (channel, frame) -> reliable.send(ByteBuffer.wrap(frame),
-                        failure -> check.later(() -> pongSettled(check, failure))));
+                (channel, frame) -> {
+                    check.pongOut = true;
+                    reliable.send(ByteBuffer.wrap(frame), failure -> check.later(() -> pongSettled(check, failure)));
+                });
         check.exchange.start();
         return true;
     }
 
     /** The engine accepted the PONG for transmission, or refused it. Event loop. */
     private void pongSettled(Check check, Throwable failure) {
+        check.pongOut = false;
         if (failure == null) {
             observe();
             check.pongSent = true;
@@ -659,6 +666,8 @@ final class DiagnosticHost {
         InetSocketAddress selectedLocal, selectedRemote;
         /** Whether the PING arrived, so the exchange handed its PONG to the engine or failed. */
         boolean pinged;
+        /** Whether the PONG was handed to the engine and its send result has not reached the loop yet. */
+        boolean pongOut;
         /** Whether the engine accepted the PONG, and when the loop learned it. */
         boolean pongSent;
         long pongSentNanos;
