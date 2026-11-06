@@ -296,6 +296,25 @@ class DiagnosticHostTest {
     }
 
     @Test
+    void anAssistedCheckWithNothingToAnswerWithCreatesNoPeer() throws Exception {
+        fixture.start(new HostTransport.Settings(HostTransport.Publication.MAINTAINED, List.of(), false, true, false,
+                TicketLedger.Limits.defaults()));
+        fixture.installKey();
+        revision = fixture.transport.captureHostProfile().toCompletableFuture().get(5, TimeUnit.SECONDS)
+                .candidateRevision();
+        target = new InetSocketAddress("93.184.216.40", fixture.endpoint.port());
+        install(Set.of(DiagnosticHostPolicy.Endpoint.assisted(4, revision)));
+        Permit permit = permit(DiagnosticAdmissionCodec.ASSISTED_PROFILE, PUBLIC_PROBER);
+
+        // No public host candidate and no provider STUN server to learn a mapping through
+        ExecutionException refused = assertThrows(ExecutionException.class, () -> fixture.transport
+                .assistedJoin(assistedJoin(permit, PUBLIC_PROBER), System.nanoTime() + TimeUnit.SECONDS.toNanos(20),
+                        OwnershipGuard.ALWAYS).toCompletableFuture().get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class, refused.getCause());
+        assertTrue(fixture.answerers().isEmpty());
+    }
+
+    @Test
     void aPolicyMustDescribeTheHostAsItStands() throws Exception {
         fixture.start(HostFixture.fixed());
         fixture.installKey();

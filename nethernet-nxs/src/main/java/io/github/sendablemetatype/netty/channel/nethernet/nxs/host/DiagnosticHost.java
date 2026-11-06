@@ -177,11 +177,6 @@ final class DiagnosticHost {
         }
     }
 
-    /** The installed policy, null when none is. */
-    DiagnosticHostPolicy policy() {
-        return policy;
-    }
-
     // ---- Direct checks ----
 
     /**
@@ -233,7 +228,7 @@ final class DiagnosticHost {
      * @param deadlineNanos When the join's deadline passes, corrected for the provider's clock
      * @param guard         Holds while the provider authority behind the join holds; the check stops once it lapses
      * @return The answer, which carries no identity assertion
-     * @throws IllegalStateException    If the host serves no diagnostic now
+     * @throws IllegalStateException    If the host serves no diagnostic now, or has no candidate to answer with
      * @throws IllegalArgumentException If the policy does not admit the join
      */
     CompletionStage<AssistedAnswer> assist(AssistedJoin join, long deadlineNanos, OwnershipGuard guard) {
@@ -279,17 +274,22 @@ final class DiagnosticHost {
         }
         String offer = privateHost && !reachable.test(remote.getAddress()) ? withoutCandidates(join.offer())
                 : join.offer();
+        // Before the peer, so a host with nothing to answer with creates none
+        long gathering = Math.min(lastNanos + Math.min(remaining, DiagnosticAdmissionCodec.MAX_HANDSHAKE_MILLIS)
+                * 1_000_000L, deadlineNanos);
+        CompletableFuture<HostCandidate> candidate = answerCandidates.find(AddressFamily.of(claims.family()),
+                gathering);
         Check check = start(admission, key, remote, guard, offer, remaining);
         if (check == null) {
+            candidate.cancel(false);
             throw new IllegalStateException("The diagnostic was replayed, or the host has no room for it");
         }
-        long gathering = Math.min(check.handshakeDeadlineNanos, deadlineNanos);
-        check.candidate = answerCandidates.find(AddressFamily.of(claims.family()), gathering);
-        check.candidate.whenComplete((candidate, failure) -> onLoop(() -> {
+        check.candidate = candidate;
+        candidate.whenComplete((found, failure) -> onLoop(() -> {
             if (failure != null) {
                 stop(check, Outcome.ANSWER_FAILED);
             } else {
-                check.answerCandidate = candidate;
+                check.answerCandidate = found;
                 answer(check);
             }
         }));
