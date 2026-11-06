@@ -35,7 +35,6 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.logging.InternalLogger;
@@ -382,7 +381,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
         if (trustedProxies.isProxy(peer)) {
             pipeline.addLast(new HttpSourceCounter(this, connection));
         }
-        pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
+        pipeline.addLast(new HttpOfferAggregator(this, maxRequestBodyBytes));
         pipeline.addLast(new HttpRequestHandler(this, connection));
     }
 
@@ -417,7 +416,12 @@ public final class NetherNetHttpSignaling implements JoinSource {
      * reports the refusals it decides.
      */
     void joinRefused(JoinRefusal refusal) {
-        metrics(metrics -> metrics.joinRefused(refusal.httpStatus()));
+        joinRefused(refusal.httpStatus());
+    }
+
+    /** An offer refused with this status, also one the aggregator turned away before it was read whole. */
+    void joinRefused(int httpStatus) {
+        metrics(metrics -> metrics.joinRefused(httpStatus));
     }
 
     /** Reports to the metrics, which must never break signaling. */
@@ -647,7 +651,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
          * ({@link NetherServerMetrics#addressRefused}), plain HTTP under {@link #requiresTls}
          * ({@link NetherServerMetrics#plaintextRefused}), and offers it answers with a
          * {@link JoinRefusal} before or instead of the endpoint, such as a {@code 504} past the
-         * negotiation deadline ({@link NetherServerMetrics#joinRefused}).
+         * negotiation deadline, or with a {@code 413} or {@code 417} before reading it whole
+         * ({@link NetherServerMetrics#joinRefused}).
          * Give it the metrics the endpoint has as
          * {@link io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption#NETHER_SERVER_METRICS}:
          * the endpoint reports the refusals it decides, so nothing is counted twice. A hook that

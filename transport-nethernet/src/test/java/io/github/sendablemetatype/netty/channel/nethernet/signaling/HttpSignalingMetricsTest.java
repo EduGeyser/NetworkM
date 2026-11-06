@@ -86,6 +86,33 @@ class HttpSignalingMetricsTest {
         assertEquals(JoinRefusal.HOST_REFUSED.httpStatus(), refused.response().status());
     }
 
+    /** The aggregator answers these itself, before the offer is read whole. */
+    @Test
+    void offersTheAggregatorTurnsAwayAreReportedAndStatusRequestsAreNot() {
+        NetherNetHttpSignaling.Builder builder = NetherNetHttpSignaling.builder(worker).metrics(metrics)
+                .maxRequestBodyBytes(64);
+        EmbeddedHttp declared = connect(builder);
+        declared.send("POST /v1/join/42 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65\r\n\r\n");
+        EmbeddedHttp streamed = connect(builder);
+        streamed.send("POST /v1/join/43 HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "41\r\n" + "x".repeat(65) + "\r\n0\r\n\r\n");
+        EmbeddedHttp continued = connect(builder);
+        continued.send("POST /v1/join/44 HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\n"
+                + "Content-Length: 65\r\n\r\n");
+        EmbeddedHttp expectation = connect(builder);
+        expectation.send(post("45", OFFER, "Expect: x\r\n"));
+        EmbeddedHttp status = connect(builder);
+        status.send(get("/v1/join", "Expect: x\r\n"));
+
+        for (EmbeddedHttp connection : List.of(declared, streamed, continued)) {
+            assertEquals(413, connection.response().status());
+        }
+        assertEquals(417, expectation.response().status());
+        assertEquals(417, status.response().status());
+        assertEquals(List.of("refused 413", "refused 413", "refused 413", "refused 417"), events);
+        assertTrue(sink.joins.isEmpty());
+    }
+
     @Test
     void plainHttpRefusedUnderRequiresTlsIsReportedWithTheClient() {
         EmbeddedHttp http = connect(NetherNetHttpSignaling.builder(worker).requiresTls(true).metrics(metrics));

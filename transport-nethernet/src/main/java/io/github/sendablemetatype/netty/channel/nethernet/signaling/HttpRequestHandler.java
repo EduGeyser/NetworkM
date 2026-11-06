@@ -14,6 +14,7 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
@@ -118,12 +119,10 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
             write(response, false);
             return;
         }
-        String uri = request.uri();
-        int query = uri.indexOf('?');
-        String path = query < 0 ? uri : uri.substring(0, query);
+        String path = path(request);
         if (HttpMethod.GET.equals(request.method()) && JOIN_PATH.equals(path)) {
             status(request, first && HttpUtil.isKeepAlive(request));
-        } else if (HttpMethod.POST.equals(request.method()) && path.startsWith(OFFER_PATH_PREFIX)) {
+        } else if (isOffer(request)) {
             offer(request, path.substring(OFFER_PATH_PREFIX.length()), receivedNanos);
         } else {
             respond(HttpResponseStatus.NOT_FOUND, false);
@@ -220,6 +219,18 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                 }
             });
         }
+    }
+
+    /** Whether a request carries an offer: {@code POST /v1/join/{networkId}}. */
+    static boolean isOffer(HttpRequest request) {
+        return HttpMethod.POST.equals(request.method()) && path(request).startsWith(OFFER_PATH_PREFIX);
+    }
+
+    /** The request target without its query. */
+    private static String path(HttpRequest request) {
+        String uri = request.uri();
+        int query = uri.indexOf('?');
+        return query < 0 ? uri : uri.substring(0, query);
     }
 
     private static boolean admits(JoinSink sink, SourcedAddress source) {

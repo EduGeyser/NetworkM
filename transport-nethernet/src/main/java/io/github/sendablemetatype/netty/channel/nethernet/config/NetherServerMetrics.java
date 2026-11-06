@@ -46,7 +46,9 @@ public interface NetherServerMetrics {
      * A join was refused, by the endpoint or by HTTP signaling itself. The
      * status names the reason ({@code JoinRefusal#httpStatus()}), and is what
      * the peer was refused with over HTTP; joins over other sources report the
-     * status of the same refusal. A join counts once, for the refusal that
+     * status of the same refusal. HTTP signaling also reports an offer it
+     * turned away before reading it whole: {@code 413} for a body over its cap,
+     * {@code 417} for an expectation it does not meet. A join counts once, for the refusal that
      * settled it: one that comes after the join was settled is not counted.
      */
     default void joinRefused(int httpStatus) {
