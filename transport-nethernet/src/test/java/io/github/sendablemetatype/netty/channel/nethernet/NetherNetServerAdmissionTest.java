@@ -25,14 +25,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.ANSWER;
 import static io.github.sendablemetatype.netty.channel.nethernet.EndpointHarness.OFFER;
@@ -42,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** The endpoint's one admission stage: identity, throttle and budget, the same for every source. */
 @Timeout(15)
 class NetherNetServerAdmissionTest {
-    private final ManualExecutor checks = new ManualExecutor();
+    private final ManualCheckExecutor checks = new ManualCheckExecutor();
     private EndpointHarness harness = new EndpointHarness();
     private final List<Integer> refusedStatuses = new CopyOnWriteArrayList<>();
 
@@ -346,51 +341,6 @@ class NetherNetServerAdmissionTest {
         @Override
         public void closed(InetSocketAddress address) {
             closed.add(address);
-        }
-    }
-
-    /** Holds one check at a time until the test runs it. */
-    private static final class ManualExecutor extends AbstractExecutorService {
-        final LinkedBlockingQueue<Runnable> tasks = new LinkedBlockingQueue<>(1);
-        private volatile boolean shutdown;
-
-        @Override
-        public void execute(Runnable command) {
-            if (shutdown || !tasks.offer(command)) {
-                throw new RejectedExecutionException();
-            }
-        }
-
-        void runNext() {
-            tasks.remove().run();
-        }
-
-        @Override
-        public void shutdown() {
-            shutdown = true;
-        }
-
-        @Override
-        public List<Runnable> shutdownNow() {
-            shutdown = true;
-            List<Runnable> remaining = new ArrayList<>();
-            tasks.drainTo(remaining);
-            return remaining;
-        }
-
-        @Override
-        public boolean isShutdown() {
-            return shutdown;
-        }
-
-        @Override
-        public boolean isTerminated() {
-            return shutdown && tasks.isEmpty();
-        }
-
-        @Override
-        public boolean awaitTermination(long timeout, TimeUnit unit) {
-            return isTerminated();
         }
     }
 }
