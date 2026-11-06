@@ -69,6 +69,13 @@ final class ClientHarness implements AutoCloseable {
         return scheduler.failure(stage);
     }
 
+    /** Like {@link #await}, but moves the clock to the client's own timers, such as retry delays, when it waits. */
+    <T> T settled(CompletionStage<T> stage) throws Exception {
+        var future = stage.toCompletableFuture();
+        scheduler.settle(future::isDone);
+        return await(future);
+    }
+
     void advance(Duration duration) {
         scheduler.advance(duration);
     }
