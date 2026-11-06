@@ -62,6 +62,15 @@ public interface ReplyPath {
     CompletionStage<Void> abandoned();
 
     /**
+     * Tells the source the join's connection went active: the client got its answer and reached
+     * the server. Called at most once, before {@link #finished()}; a join that fails never gets
+     * it. HTTP signaling holds the client's network ID as pending until this or
+     * {@link #finished()}.
+     */
+    default void connected() {
+    }
+
+    /**
      * Tells the source the endpoint is done with this join: it was refused, or its connection
      * closed. The source drops what it keeps to route the join's signals, such as a handler by
      * connection ID or a pinned LAN peer. Called once, last; later sends may fail.

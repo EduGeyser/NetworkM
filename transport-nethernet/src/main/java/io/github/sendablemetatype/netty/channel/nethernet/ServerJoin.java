@@ -299,6 +299,7 @@ final class ServerJoin implements NetherNetChildChannel.Negotiation {
     @Override
     public void activated() {
         handshakeDone.run();
+        join.reply().connected();
     }
 
     @Override

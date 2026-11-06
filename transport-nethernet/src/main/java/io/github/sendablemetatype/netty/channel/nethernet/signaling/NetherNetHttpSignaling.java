@@ -46,6 +46,8 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -68,7 +70,9 @@ import java.util.function.Supplier;
  *   (not started, closed, or the endpoint's {@link JoinSink#admits} says no).</li>
  *   <li>{@code POST /v1/join/{networkId}}: the body is the client's SDP offer; the response is
  *   the full answer ({@code application/sdp}) or a {@link JoinRefusal}'s status with an empty
- *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle.</li>
+ *   body. The offer goes to the endpoint as a {@link Join} whose reply path does not trickle. A
+ *   second offer for a network ID whose join has neither failed nor gone active yet is refused
+ *   with {@link JoinRefusal#DUPLICATE} before it reaches the endpoint.</li>
  * </ul>
  * Everything else is a {@code 404}, as on vanilla.
  *
@@ -128,6 +132,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
     private final Object lifecycleLock = new Object();
     private final ChannelGroup connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
     private final List<Consumer<SignalingHealth>> healthListeners = new CopyOnWriteArrayList<>();
+    /** The pending offer of each network ID, see {@link #claimPending}. */
+    private final ConcurrentMap<String, ReplyPath> pendingOffers = new ConcurrentHashMap<>();
     private final AtomicLong nextPlaintextWarning = new AtomicLong(System.nanoTime());
     private final AtomicLong nextTlsWarning = new AtomicLong(System.nanoTime());
     private volatile JoinSink sink;
@@ -316,6 +322,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
                 channel.close();
             }
             connections.close();
+            pendingOffers.clear();
         } finally {
             try {
                 if (ownedStatusExecutor != null) {
@@ -366,6 +373,21 @@ public final class NetherNetHttpSignaling implements JoinSource {
         }
         pipeline.addLast(new HttpObjectAggregator(maxRequestBodyBytes));
         pipeline.addLast(new HttpRequestHandler(this, connection));
+    }
+
+    /**
+     * Holds a network ID for an offer until the offer's join fails or goes active.
+     *
+     * @return false when another offer holds it; a second offer for a pending join is a
+     *         {@link JoinRefusal#DUPLICATE}
+     */
+    boolean claimPending(String networkId, ReplyPath offer) {
+        return pendingOffers.putIfAbsent(networkId, offer) == null;
+    }
+
+    /** Lets go of a network ID this offer held, if it still holds it. Any thread, any number of times. */
+    void releasePending(String networkId, ReplyPath offer) {
+        pendingOffers.remove(networkId, offer);
     }
 
     /** Where a request came from. */

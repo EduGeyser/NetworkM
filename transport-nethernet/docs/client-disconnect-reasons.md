@@ -28,6 +28,7 @@ the client shows for each code is not recorded either.
 | `HOST_REFUSED` | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored |
 | `CAPACITY` | 503 | ServerFull (25), also when the endpoint is not ready, is closing or the source was removed | 16, IncomingConnectionIgnored |
 | `BAD_OFFER` | 400 | not recorded | 13, FailedToSetRemoteDescription |
+| `DUPLICATE` | 409 | not recorded | 16, IncomingConnectionIgnored |
 | `TRUST_SOURCE_UNREACHABLE` | 500 | not recorded | 35, GenericFailure |
 | `INTERNAL` | 500 | not recorded | 11, FailedToCreateAnswer |
 | `NO_ANSWER_IN_TIME` | 504 | not recorded | 2, NegotiationTimeout |

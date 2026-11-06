@@ -287,9 +287,11 @@ class NetherNetServerChannelTest {
         assertTrue(reply.answer().contains("a=identity:"));
         assertEquals("candidate candidate:1 1 udp 1 192.0.2.1 5000 typ host", reply.next(),
                 "local candidates follow the answer");
+        assertEquals(0, reply.connected.get());
 
         harness.activate(peer);
         assertTrue(child.isActive());
+        assertEquals(1, reply.connected.get(), "the source learns the join went active");
     }
 
     @Test

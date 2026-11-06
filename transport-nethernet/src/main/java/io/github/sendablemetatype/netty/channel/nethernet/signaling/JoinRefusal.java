@@ -26,11 +26,18 @@ public enum JoinRefusal {
     /** No answer was ready in time. */
     NO_ANSWER_IN_TIME(504, JoinRefusal.NEGOTIATION_TIMEOUT),
     /**
-     * The offer is unusable: empty, an SDP the identity check could not read, an unusable
-     * {@code a=max-message-size}, or a description the engine refused. The client's input is at
-     * fault, not the server.
+     * The offer is unusable: empty, sent for a network ID that does not decode, an SDP the
+     * identity check could not read, an unusable {@code a=max-message-size}, or a description the
+     * engine refused. The client's input is at fault, not the server.
      */
     BAD_OFFER(400, JoinRefusal.FAILED_TO_SET_REMOTE_DESCRIPTION),
+    /**
+     * Another offer with the same network ID is still pending (HTTP signaling): it has not gone
+     * active nor failed yet. The source refuses the second offer before the endpoint sees it and
+     * leaves the first alone. Its error code is IncomingConnectionIgnored, as for the admission
+     * refusals, since the server ignores this offer and nothing failed.
+     */
+    DUPLICATE(409, JoinRefusal.INCOMING_CONNECTION_IGNORED),
     /** Something failed on the server while answering. */
     INTERNAL(500, JoinRefusal.FAILED_TO_CREATE_ANSWER);
 
