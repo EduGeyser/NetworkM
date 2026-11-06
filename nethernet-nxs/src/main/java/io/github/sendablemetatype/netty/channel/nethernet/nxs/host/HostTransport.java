@@ -500,8 +500,8 @@ public final class HostTransport implements ProviderTransport {
     }
 
     /** The NetherNet connection ID of a ticket: the first eight bytes of its ID, so logs can tie them together. */
-    private static long connectionId(TicketId ticket) {
-        return Long.parseUnsignedLong(ticket.value().substring(0, 16), 16);
+    private static String connectionId(TicketId ticket) {
+        return Long.toUnsignedString(Long.parseUnsignedLong(ticket.value().substring(0, 16), 16));
     }
 
     /** The endpoint created the child of an admitted ticket, before exposing it. Event loop. */

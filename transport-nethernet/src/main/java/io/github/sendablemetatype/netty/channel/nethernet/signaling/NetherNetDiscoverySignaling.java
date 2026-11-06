@@ -226,7 +226,7 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
         });
     }
 
-    private void offered(JoinSink sink, long connectionId, long senderId, String offer, InetSocketAddress sender) {
+    private void offered(JoinSink sink, String connectionId, long senderId, String offer, InetSocketAddress sender) {
         LanJoin join = new LanJoin(connectionId, senderId, sender);
         try {
             // Routes this client's later signals for the connection ID to the join, and keeps the
@@ -243,11 +243,11 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
 
     /** One join's way back to the client, at the address its offer came from. */
     private final class LanJoin extends MessageReplyPath {
-        private final long connectionId;
+        private final String connectionId;
         private final long senderId;
         private final InetSocketAddress sender;
 
-        private LanJoin(long connectionId, long senderId, InetSocketAddress sender) {
+        private LanJoin(String connectionId, long senderId, InetSocketAddress sender) {
             super(connectionId);
             this.connectionId = connectionId;
             this.senderId = senderId;
@@ -340,12 +340,12 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
+    public void setSignalHandler(String connectionId, SignalHandler handler) {
         this.discovery.registerSignalHandler(connectionId, handler);
     }
 
     @Override
-    public void removeSignalHandler(long connectionId) {
+    public void removeSignalHandler(String connectionId) {
         this.discovery.unregisterSignalHandler(connectionId);
     }
 

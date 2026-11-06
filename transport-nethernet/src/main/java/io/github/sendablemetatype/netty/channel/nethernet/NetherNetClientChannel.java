@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -52,7 +51,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
     private final NetherNetClientSignaling signaling;
     private final Object attemptLock = new Object();
 
-    private volatile long connectionId; // Session ID (Long)
+    private volatile String connectionId;
     private volatile String targetNetworkId; // Peer ID (String, for Realms)
 
     private volatile boolean handshakeComplete = false;
@@ -188,7 +187,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         final int gen = attemptGeneration;
         clearFailureReported();
 
-        log.debug("Starting Handshake with Connection ID: {}", Long.toUnsignedString(this.connectionId));
+        log.debug("Starting Handshake with Connection ID: {}", this.connectionId);
 
         armHandshakeTimeout(gen, handshakeTimeoutMillis() + signalingWaitMillis());
 
@@ -204,7 +203,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 }
 
                 @Override
-                public void onFailure(long id, SignalingFailure failure) {
+                public void onFailure(String id, SignalingFailure failure) {
                     executeForAttempt(gen, () -> {
                         if (isCurrentHandshake(gen)) {
                             connectionFailed(failure.failure());
@@ -348,7 +347,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         bindReliable(created.openChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL)));
         bindUnreliable(created.openChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL)));
 
-        final long attemptConnectionId = this.connectionId;
+        final String attemptConnectionId = this.connectionId;
         CompletionStage<String> offered = created.offer();
         // Signaling that does not trickle carries every candidate in the offer, so it waits for
         // gathering, as vanilla's HTTP offers do (they carry host candidates).
@@ -396,7 +395,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
         return identity == null ? offer : identity.withAssertion(offer);
     }
 
-    private boolean sendLocalCandidate(long attemptConnectionId, String candidate) {
+    private boolean sendLocalCandidate(String attemptConnectionId, String candidate) {
         try {
             signaling.sendSignal(targetNetworkId,
                     NetherNetConstants.buildSignalCandidateAdd(attemptConnectionId, candidate));
@@ -413,18 +412,13 @@ public class NetherNetClientChannel extends NetherNetChannel {
         String[] parts = signal.split(" ", 3);
         if (parts.length < 2) return; // Allow length 2 for ERROR packets without payload
         String type = parts[0];
-        String idStr = parts[1].trim();
+        String idStr = parts[1];
         String data = parts.length > 2 ? parts[2] : "";
 
-        // Verify this signal belongs to the current attempt
-        final long signalId;
-        try {
-            signalId = Long.parseUnsignedLong(idStr);
-            if (signalId != this.connectionId) {
-                log.debug("Ignored stale signal for ID {}", idStr);
-                return;
-            }
-        } catch (NumberFormatException e) {
+        // Verify this signal belongs to the current attempt. Signaling routed it here by an ID
+        // this channel generated, so the ID is safe to log.
+        if (!idStr.equals(this.connectionId)) {
+            log.debug("Ignored stale signal for ID {}", idStr);
             return;
         }
 
@@ -434,7 +428,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
             // this task running. Inside the task the id, generation, and
             // peer mutate together, so passing this check means everything
             // read below belongs to the current attempt.
-            if (signalId != this.connectionId) {
+            if (!idStr.equals(this.connectionId)) {
                 log.debug("Ignored stale signal for ID {} (attempt retried)", idStr);
                 return;
             }
@@ -465,7 +459,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 // The engine holds candidates until the answer applied.
                 case NetherNetConstants.RTC_NEGOTIATION_CANDIDATE_ADD -> current.addRemoteCandidate(data, mid);
                 case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
-                    log.error("Received SIGNAL_CONNECT_ERROR for {}.", Long.toUnsignedString(this.connectionId));
+                    log.error("Received SIGNAL_CONNECT_ERROR for {}.", this.connectionId);
                     connectionFailed(NetherConnectionFailure.CONNECT_ERROR);
                     if (connectPromise != null && !connectPromise.isDone()) {
                         connectPromise.tryFailure(new ConnectException("Remote peer sent connect error."));
@@ -496,7 +490,7 @@ public class NetherNetClientChannel extends NetherNetChannel {
                 // The offer carries it
                 return;
             }
-            final long attemptConnectionId = connectionId;
+            final String attemptConnectionId = connectionId;
             executeForAttempt(generation, () -> {
                 if (offerSent) {
                     sendLocalCandidate(attemptConnectionId, candidate);
@@ -564,8 +558,8 @@ public class NetherNetClientChannel extends NetherNetChannel {
         }
     }
 
-    private long cycleConnectionId() {
-        this.connectionId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+    private String cycleConnectionId() {
+        this.connectionId = NetherNetConstants.newConnectionId();
         return this.connectionId;
     }
 }

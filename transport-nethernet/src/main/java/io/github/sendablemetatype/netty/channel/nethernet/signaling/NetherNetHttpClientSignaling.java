@@ -116,7 +116,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     private final EventLoopGroup group;
     private final String localNetworkId;
     private final ChannelGroup exchanges = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE, true);
-    private final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<String, SignalHandler> handlers = new ConcurrentHashMap<>();
     private volatile Target target;
     private volatile boolean closed;
 
@@ -247,11 +247,9 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
             log.debug("HTTP signaling carries only the offer; dropped a {} signal", parts[0]);
             return;
         }
-        long connectionId;
-        try {
-            connectionId = Long.parseUnsignedLong(parts[1]);
-        } catch (NumberFormatException e) {
-            log.debug("Dropped an offer with a malformed connection ID {}", parts[1]);
+        String connectionId = parts[1];
+        if (!NetherNetConstants.isValidConnectionId(connectionId)) {
+            log.debug("Dropped an offer with an invalid connection ID ({} chars)", connectionId.length());
             return;
         }
         Target current = target;
@@ -269,7 +267,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
                 exchanges).whenComplete((response, error) -> answered(connectionId, current, response, error));
     }
 
-    private void answered(long connectionId, Target current, Response response, Throwable error) {
+    private void answered(String connectionId, Target current, Response response, Throwable error) {
         if (closed) {
             return;
         }
@@ -300,7 +298,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
     }
 
-    private void fail(long connectionId, Target current, SignalingFailure failure) {
+    private void fail(String connectionId, Target current, SignalingFailure failure) {
         log.debug("Signaling to {} failed: {}", current == null ? null : current.address(), failure.reason());
         SignalHandler handler = handlers.get(connectionId);
         if (handler != null) {
@@ -319,12 +317,12 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
+    public void setSignalHandler(String connectionId, SignalHandler handler) {
         handlers.put(connectionId, Objects.requireNonNull(handler, "handler"));
     }
 
     @Override
-    public void removeSignalHandler(long connectionId) {
+    public void removeSignalHandler(String connectionId) {
         handlers.remove(connectionId);
     }
 

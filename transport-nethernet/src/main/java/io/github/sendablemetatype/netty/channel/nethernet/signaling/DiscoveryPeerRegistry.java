@@ -15,7 +15,7 @@ final class DiscoveryPeerRegistry {
     private final LongSupplier clock;
     private final Map<Long, Peer> peers = new HashMap<>();
     private final LinkedHashMap<Long, Peer> passive = new LinkedHashMap<>(16, 0.75f, true);
-    private final Map<Long, Peer> registeredConnections = new HashMap<>();
+    private final Map<String, Peer> registeredConnections = new HashMap<>();
     private boolean passiveExpiryScheduled;
     private long nextPassiveExpiry;
 
@@ -43,7 +43,7 @@ final class DiscoveryPeerRegistry {
      * A signal for a connection this side registered a handler for: the peer that sent it stays
      * in the table while the connection is registered.
      */
-    synchronized void rememberSignal(long connectionId, long peerId, InetSocketAddress address) {
+    synchronized void rememberSignal(String connectionId, long peerId, InetSocketAddress address) {
         long now = clock.getAsLong();
         expire(now);
         Peer peer = remember(peerId, address, now);
@@ -59,14 +59,14 @@ final class DiscoveryPeerRegistry {
         trimPassive();
     }
 
-    synchronized void register(long connectionId) {
+    synchronized void register(String connectionId) {
         expire(clock.getAsLong());
         if (!registeredConnections.containsKey(connectionId)) {
             registeredConnections.put(connectionId, null);
         }
     }
 
-    synchronized void unregister(long connectionId) {
+    synchronized void unregister(String connectionId) {
         long now = clock.getAsLong();
         expire(now);
         Peer peer = registeredConnections.remove(connectionId);

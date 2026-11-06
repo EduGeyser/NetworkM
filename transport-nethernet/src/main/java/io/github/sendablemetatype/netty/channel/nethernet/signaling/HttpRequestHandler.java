@@ -1,5 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
+import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.ClientInfo;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.StatusRequest;
@@ -30,7 +31,6 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -209,7 +209,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         exchange.start(remainingNanos);
         Join join = new Join(exchange.connectionId, networkId, offer, source, exchange, addressed);
         NetherNetHttpSignaling.log.debug("Offer {} from network {} at {} via HTTP",
-                Long.toUnsignedString(exchange.connectionId), networkId, source);
+                exchange.connectionId, networkId, source);
         try {
             sink.join(join);
         } catch (RuntimeException e) {
@@ -345,7 +345,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
      * client that leaves, or a deadline that passes, completes {@link #abandoned()}.
      */
     private final class Exchange implements ReplyPath {
-        private final long connectionId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        private final String connectionId = NetherNetConstants.newConnectionId();
         private final CompletableFuture<Void> abandoned = new CompletableFuture<>();
         private final CompletionStage<Void> abandonedView = abandoned.minimalCompletionStage();
         private State state = State.PENDING;
@@ -429,8 +429,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                 return;
             }
             state = State.TIMED_OUT;
-            NetherNetHttpSignaling.log.debug("Offer {} got no answer in time",
-                    Long.toUnsignedString(connectionId));
+            NetherNetHttpSignaling.log.debug("Offer {} got no answer in time", connectionId);
             respond(HttpResponseStatus.valueOf(JoinRefusal.NO_ANSWER_IN_TIME.httpStatus()), false);
             abandoned.complete(null);
         }

@@ -53,8 +53,8 @@ public class NetherNetChildChannel extends NetherNetChannel {
             AttributeKey.valueOf(NetherNetChildChannel.class, "offerCheck");
 
     /**
-     * The connection ID the client chose for this join, as an unsigned decimal
-     * string: what ties the child back to its offer and its signaling.
+     * The connection ID the client chose for this join, exactly as it wrote it:
+     * what ties the child back to its offer and its signaling.
      */
     public static final AttributeKey<String> CONNECTION_ID =
             AttributeKey.valueOf(NetherNetChildChannel.class, "connectionId");

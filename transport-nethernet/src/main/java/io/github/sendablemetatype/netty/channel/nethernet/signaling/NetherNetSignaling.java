@@ -18,14 +18,14 @@ public interface NetherNetSignaling extends AutoCloseable {
      * @param connectionId The connection ID to listen for.
      * @param handler      The handler to process incoming signaling messages.
      */
-    void setSignalHandler(long connectionId, SignalHandler handler);
+    void setSignalHandler(String connectionId, SignalHandler handler);
 
     /**
      * Removes the signaling handler for a specific connection ID.
      *
      * @param connectionId The connection ID whose handler should be removed.
      */
-    void removeSignalHandler(long connectionId);
+    void removeSignalHandler(String connectionId);
 
     /**
      * Returns this client's local Network ID as an opaque string.
@@ -58,8 +58,8 @@ public interface NetherNetSignaling extends AutoCloseable {
          * @param connectionId the registered connection ID
          * @param failure      why the signaling gave up
          */
-        default void onFailure(long connectionId, SignalingFailure failure) {
-            onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + Long.toUnsignedString(connectionId)
+        default void onFailure(String connectionId, SignalingFailure failure) {
+            onSignal(NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR + " " + connectionId
                     + " " + failure.errorCode());
         }
     }

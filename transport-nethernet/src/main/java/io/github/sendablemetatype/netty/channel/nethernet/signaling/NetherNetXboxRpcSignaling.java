@@ -183,14 +183,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     /** Joins are told apart by sender too, so one client cannot reach another's join by its ID. */
-    private record JoinKey(String sender, long connectionId) {
+    private record JoinKey(String sender, String connectionId) {
     }
 
     private final String localNetworkId;
     private final EventLoopGroup eventLoopGroup;
     private final SignalingSupervisor supervisor;
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final Map<Long, SignalHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<String, SignalHandler> handlers = new ConcurrentHashMap<>();
     private final Map<JoinKey, XboxJoin> joins = new ConcurrentHashMap<>();
 
     private volatile String token;
@@ -327,12 +327,12 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     }
 
     @Override
-    public void setSignalHandler(long connectionId, SignalHandler handler) {
+    public void setSignalHandler(String connectionId, SignalHandler handler) {
         handlers.put(connectionId, handler);
     }
 
     @Override
-    public void removeSignalHandler(long connectionId) {
+    public void removeSignalHandler(String connectionId) {
         handlers.remove(connectionId);
     }
 
@@ -999,7 +999,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             String[] parts = rawMsg.split(" ", 3);
             if (parts.length < 2) return;
 
-            long connectionId = Long.parseUnsignedLong(parts[1]);
+            String connectionId = parts[1];
+            if (!NetherNetConstants.isValidConnectionId(connectionId)) {
+                log.debug("Dropped a signal with an invalid connection ID ({} chars)", connectionId.length());
+                return;
+            }
 
             SignalHandler handler = handlers.get(connectionId);
             if (handler != null) {
@@ -1012,7 +1016,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             XboxJoin join = joins.get(key);
             if (join != null) {
                 if (request) {
-                    log.debug("Ignoring a repeated offer for connection ID {}", Long.toUnsignedString(connectionId));
+                    log.debug("Ignoring a repeated offer for connection ID {}", connectionId);
                 } else {
                     join.received(rawMsg);
                 }
