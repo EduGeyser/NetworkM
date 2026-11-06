@@ -38,6 +38,8 @@ public final class FakeEngine implements NetherNetEngine {
     private volatile String scriptedGathering;
     private volatile boolean autoAcceptSends;
     private volatile boolean holdPeerClose;
+    private volatile boolean holdEndpointOpen;
+    private volatile boolean holdEndpointClose;
 
     /** An engine the test drives by hand. */
     public FakeEngine() {
@@ -82,9 +84,12 @@ public final class FakeEngine implements NetherNetEngine {
         if (closing) {
             return CompletableFuture.failedFuture(new IllegalStateException("The engine is closed"));
         }
-        FakeIceEndpoint endpoint = new FakeIceEndpoint(config.port());
+        FakeIceEndpoint endpoint = new FakeIceEndpoint(config.port(), holdEndpointClose);
         endpoints.add(endpoint);
-        return CompletableFuture.completedFuture(endpoint);
+        if (!holdEndpointOpen) {
+            endpoint.finishOpen();
+        }
+        return endpoint.opened();
     }
 
     @Override
@@ -165,6 +170,16 @@ public final class FakeEngine implements NetherNetEngine {
     /** Leaves later peer close stages pending until {@link FakePeer#finishClose()}. */
     public void holdPeerClose(boolean hold) {
         this.holdPeerClose = hold;
+    }
+
+    /** Leaves later endpoint open stages pending until {@link FakeIceEndpoint#finishOpen()}. */
+    public void holdEndpointOpen(boolean hold) {
+        this.holdEndpointOpen = hold;
+    }
+
+    /** Leaves the close stages of later endpoints pending until {@link FakeIceEndpoint#finishClose()}. */
+    public void holdEndpointClose(boolean hold) {
+        this.holdEndpointClose = hold;
     }
 
     boolean isLoopback() {

@@ -2,6 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
@@ -181,6 +182,40 @@ class DiagnosticProbeTest {
                         CandidateType.HOST))) {
             assertEquals(DiagnosticProbe.Reason.SELECTED_PATH, probeOver(path, engine.peers().size() + 1).reason(),
                     path.toString());
+        }
+    }
+
+    @Test
+    void cancellingOrExpiringWhileTheEndpointOpensWaitsForItToClose() throws Exception {
+        engine.holdEndpointOpen(true);
+        engine.holdEndpointClose(true);
+        for (boolean cancel : List.of(true, false)) {
+            DiagnosticProbe probe = probe(job(cancel ? 20 : 2));
+            CompletableFuture<DiagnosticProbe.Result> running = probe.run(request -> new CompletableFuture<>())
+                    .toCompletableFuture();
+            int opened = cancel ? 1 : 2;
+            HostFixtureWait.until(() -> engine.endpoints().size() == opened, "the probe to open its endpoint");
+            FakeIceEndpoint endpoint = engine.endpoints().getLast();
+            if (cancel) {
+                probe.cancel();
+                executor.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            } else {
+                Thread.sleep(2_500);
+            }
+            CompletableFuture<Void> terminated = probe.termination().toCompletableFuture();
+            assertFalse(running.isDone(), "the endpoint is still opening");
+            assertFalse(terminated.isDone(), "the endpoint is still opening");
+
+            endpoint.finishOpen();
+            HostFixtureWait.until(endpoint::closed, "the late endpoint to close");
+            assertFalse(terminated.isDone(), "the endpoint is still closing");
+            assertTrue(engine.peers().isEmpty(), "no peer is created on a late endpoint");
+
+            endpoint.finishClose();
+            DiagnosticProbe.Result result = running.get(5, TimeUnit.SECONDS);
+            assertEquals(cancel ? DiagnosticProbe.Reason.CANCELLED : DiagnosticProbe.Reason.EXPIRED, result.reason());
+            assertTrue(result.cleanupComplete());
+            terminated.get(1, TimeUnit.SECONDS);
         }
     }
 
