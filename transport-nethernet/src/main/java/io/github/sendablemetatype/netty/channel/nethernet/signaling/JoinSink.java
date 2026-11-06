@@ -2,6 +2,8 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 
+import java.util.Optional;
+
 /**
  * The endpoint side of a {@link JoinSource}. Each source gets a sink of its own, which carries the
  * admission policy the endpoint applies to that source's joins.
@@ -25,4 +27,14 @@ public interface JoinSink {
      * @return false if the join would certainly be refused
      */
     boolean admits(SourcedAddress source);
+
+    /**
+     * The endpoint's shared ICE port, for a source that admits joins from a connectivity check alone (NXS stateless
+     * admission) or keeps STUN bindings from the port.
+     *
+     * @return the port, empty when each session takes ports of its own
+     */
+    default Optional<SharedIcePort> sharedIcePort() {
+        return Optional.empty();
+    }
 }

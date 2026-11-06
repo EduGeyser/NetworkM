@@ -20,6 +20,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinRefusal;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSource;
+import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityRefusal;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
@@ -59,6 +60,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -80,7 +82,9 @@ import java.util.function.Supplier;
  * ({@link NetherChannelOption#NETHER_SERVER_MAX_SESSIONS},
  * {@link NetherChannelOption#NETHER_SERVER_MAX_PENDING_JOINS}), and the offer's identity check
  * ({@link NetherChannelOption#NETHER_SERVER_OFFER_CHECK}) under the source's {@link OfferPolicy}.
- * The check runs off the event loop with a deadline. A refused join gets a typed
+ * The check runs off the event loop with a deadline. A join whose source authenticated the client
+ * itself ({@link Join.Authenticated}, NXS) skips the check and brings the binding that decides its
+ * login; the throttle and the budget apply to it all the same. A refused join gets a typed
  * {@link JoinRefusal} through its reply path and creates nothing. A join holds its share of the
  * budget and its throttle entry until its child's {@linkplain NetherNetChannel#termination()
  * termination} completed.
@@ -115,6 +119,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private final Set<NetherNetChildChannel> live = ConcurrentHashMap.newKeySet();
     /** Joins in the admission stage, which closing the endpoint or removing their source ends. */
     private final Set<Admission> admitting = ConcurrentHashMap.newKeySet();
+    /** The one source's hold on the shared port's held checks, if any source took them. */
+    private final AtomicReference<HeldCheckClaim> heldChecks = new AtomicReference<>();
 
     private final Object sourcesLock = new Object();
     // Guarded by sourcesLock.
@@ -265,6 +271,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         registration.removed = true;
         // Before the source closes, so the refusals can still reach their clients.
         withdrawAdmissions(registration);
+        registration.releaseHeldChecks();
         closeQuietly(source);
         return true;
     }
@@ -281,6 +288,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         private final JoinSource source;
         private final OfferPolicy policy;
         private volatile boolean removed;
+        private volatile HeldCheckClaim claim;
 
         private Registration(JoinSource source, OfferPolicy policy) {
             this.source = Objects.requireNonNull(source, "source");
@@ -307,6 +315,125 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         @Override
         public boolean admits(SourcedAddress address) {
             return NetherNetServerChannel.this.admits(this, address);
+        }
+
+        @Override
+        public Optional<SharedIcePort> sharedIcePort() {
+            Bound settings = bound;
+            IceEndpoint endpoint = settings == null ? null : settings.iceEndpoint();
+            return endpoint == null ? Optional.empty() : Optional.of(new SourcePort(this, endpoint));
+        }
+
+        void releaseHeldChecks() {
+            HeldCheckClaim current = claim;
+            if (current != null) {
+                current.close();
+            }
+        }
+    }
+
+    /** The shared port as one source sees it. */
+    private final class SourcePort implements SharedIcePort {
+        private final Registration from;
+        private final IceEndpoint endpoint;
+
+        private SourcePort(Registration from, IceEndpoint endpoint) {
+            this.from = from;
+            this.endpoint = endpoint;
+        }
+
+        @Override
+        public InetSocketAddress localAddress() {
+            return NetherNetServerChannel.this.localAddress;
+        }
+
+        @Override
+        public HeldChecks claimHeldChecks(Consumer<IceEndpoint.HeldCheck> handler) {
+            Objects.requireNonNull(handler, "handler");
+            HeldCheckClaim claim = new HeldCheckClaim(endpoint, handler);
+            if (!open || from.removed) {
+                throw new IllegalStateException("The NetherNet endpoint or the join source is closed");
+            }
+            if (!heldChecks.compareAndSet(null, claim)) {
+                throw new IllegalStateException("Another join source holds the shared ICE port's held checks");
+            }
+            from.claim = claim;
+            if (!open || from.removed) {
+                // Removed or closed meanwhile, after the release that would have found it.
+                claim.close();
+                throw new IllegalStateException("The NetherNet endpoint or the join source is closed");
+            }
+            return claim;
+        }
+
+        @Override
+        public CompletionStage<IceEndpoint.StunMonitor> monitorStun(InetSocketAddress server) {
+            return endpoint.monitorStun(server);
+        }
+    }
+
+    /**
+     * A source's hold on the held checks. The engine passes a check for which no peer exists on unverified when no
+     * derived passwords are set, so the handler is set only while keys are, and derived passwords always go in
+     * before the handler and come out after it.
+     */
+    private final class HeldCheckClaim implements SharedIcePort.HeldChecks {
+        private final IceEndpoint endpoint;
+        private final Consumer<IceEndpoint.HeldCheck> handler;
+        // Guarded by this.
+        private boolean handling;
+        private volatile boolean closed;
+
+        private HeldCheckClaim(IceEndpoint endpoint, Consumer<IceEndpoint.HeldCheck> handler) {
+            this.endpoint = endpoint;
+            this.handler = handler;
+        }
+
+        @Override
+        public synchronized void admit(byte[] context, Map<String, byte[]> keys) {
+            if (closed) {
+                return;
+            }
+            if (keys.isEmpty()) {
+                stopHandling();
+                return;
+            }
+            endpoint.derivedPasswords(context, keys);
+            if (!handling) {
+                endpoint.onHeldCheck(this::held, eventLoop());
+                handling = true;
+            }
+        }
+
+        private void held(IceEndpoint.HeldCheck check) {
+            if (closed || !open) {
+                check.reject();
+                return;
+            }
+            try {
+                handler.accept(check);
+            } catch (RuntimeException e) {
+                log.debug("A held check handler failed: {}", e.toString());
+                check.reject();
+            }
+        }
+
+        private void stopHandling() {
+            if (handling) {
+                endpoint.clearHeldCheckHandler();
+                handling = false;
+            }
+            endpoint.clearDerivedPasswords();
+        }
+
+        @Override
+        public synchronized void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            stopHandling();
+            heldChecks.compareAndSet(this, null);
         }
     }
 
@@ -497,8 +624,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             long period = StunDiscovery.REFRESH.toNanos();
             discoveryRefresh = eventLoop().scheduleAtFixedRate(discovery::refresh, period, period, TimeUnit.NANOSECONDS);
         }
-        // NXS stateless joins are no join source: they arrive at the shared port, as checks it holds
-        // (IceEndpoint.onHeldCheck), and are to take the same budget and throttle (gate).
+        // NXS stateless joins arrive at the shared port as checks it holds; the source that claims them
+        // (SharedIcePort.claimHeldChecks) turns each into an authenticated join, which takes the same
+        // throttle and budget as every other join.
         this.bound = new Bound(plan.answers(), endpoint, plan.offerCheck(), checkExecutors.get(), discovery);
         log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
                 endpoint != null ? "shared ICE port" : "ICE ports per session",
@@ -522,6 +650,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
         for (Registration registration : closing) {
             registration.removed = true;
+            registration.releaseHeldChecks();
         }
         // Before the sources close, so the refusals can still reach their clients. Without this,
         // a check the executor drops below would keep its share and throttle entry for good.
@@ -667,6 +796,15 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             } catch (IllegalArgumentException e) {
                 log.debug("Refusing join {}: {}", id, e.getMessage());
                 fail(JoinRefusal.INTERNAL);
+                return;
+            }
+            if (join.authenticated() != null) {
+                // The source authenticated the client, and its binding decides the login: no offer check.
+                if (!open || from.removed) {
+                    fail(JoinRefusal.CAPACITY);
+                } else if (settle()) {
+                    createChild(this, null);
+                }
                 return;
             }
             admitting.add(this);
@@ -822,7 +960,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     // ---- Children ----
 
-    /** Creates the child for a join whose admission ended in its favor, and exposes it. Event loop. */
+    /**
+     * Creates the child for a join whose admission ended in its favor, and exposes it. Event loop.
+     *
+     * @param offerCheck the offer check's result, null for an authenticated join
+     */
     private void createChild(Admission admission, OfferCheckResult offerCheck) {
         Join join = admission.join;
         Bound settings = admission.settings;
@@ -842,7 +984,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         NetherNetChildChannel child = new NetherNetChildChannel(this, join.source().address(), localAddress, negotiation);
         child.setMaxOutboundMessageSize(admission.maxMessageSize);
         child.attr(NetherNetChildChannel.CONNECTION_ID).set(negotiation.id());
-        child.setOfferCheck(offerCheck);
+        Join.Authenticated authenticated = join.authenticated();
+        if (authenticated == null) {
+            child.setOfferCheck(offerCheck);
+        } else {
+            child.installBinding(authenticated.binding());
+        }
         child.trackAddress(tracker, intake, relayed ? settings.iceEndpoint() : null);
         live.add(child);
         child.closeFuture().addListener(future -> negotiation.closed());
@@ -854,7 +1001,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         });
 
         try {
-            child.openPeer(current, peerConfig(admission.from.source, settings));
+            child.openPeer(current, peerConfig(admission.from.source, settings, authenticated));
         } catch (Exception | LinkageError e) {
             log.error("Failed to create the peer for join {}: {}", negotiation.id(), e.toString(), e);
             negotiation.refuse(JoinRefusal.INTERNAL);
@@ -884,7 +1031,20 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             }
         });
 
-        serverMetrics(metrics -> metrics.connectionAccepted(join.remoteNetworkId(), offerCheck.attested()));
+        if (authenticated != null) {
+            try {
+                authenticated.created().accept(child);
+            } catch (RuntimeException e) {
+                log.warn("The source of join {} failed to take its child, closing it: {}", negotiation.id(),
+                        e.toString());
+                negotiation.refuse(JoinRefusal.INTERNAL);
+                child.close();
+                return;
+            }
+        }
+        // An authenticated join was attested by its source, if at all, not by this endpoint.
+        boolean attested = offerCheck != null && offerCheck.attested();
+        serverMetrics(metrics -> metrics.connectionAccepted(join.remoteNetworkId(), attested));
         pipeline().fireChannelRead(child);
         if (!open) {
             // Closed while this join was set up, after doClose went through the children.
@@ -892,10 +1052,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         }
     }
 
-    private PeerConfig peerConfig(JoinSource source, Bound settings) {
+    private PeerConfig peerConfig(JoinSource source, Bound settings, Join.Authenticated authenticated) {
         return new PeerConfig(PeerConfig.Role.ANSWERER,
                 NetherNetChannel.iceServers(config.getIceServers(), source.iceServers()),
-                config.getCandidatePolicy(), settings.iceEndpoint(), null, null);
+                config.getCandidatePolicy(), settings.iceEndpoint(),
+                authenticated == null ? null : authenticated.identity(),
+                authenticated == null ? null : authenticated.credentials());
     }
 
     /**

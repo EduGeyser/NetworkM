@@ -107,6 +107,11 @@ public class NetherNetChildChannel extends NetherNetChannel {
                 ? TransportIdentityBinding.forOffer(result) : TransportIdentityBinding.unbound());
     }
 
+    /** Installs the login binding of a join whose source authenticated the client itself, with no offer check. */
+    void installBinding(TransportIdentityBinding binding) {
+        TransportIdentityBinding.install(this, binding);
+    }
+
     /**
      * Reports the remote address through the tracker from now on: the signaled address until the
      * child goes active, then the selected pair, with a {@link RemoteAddressChangedEvent} for each

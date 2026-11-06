@@ -81,6 +81,13 @@ final class FakeJoinSource implements JoinSource {
         return reply;
     }
 
+    /** Delivers a join this source authenticated itself, as NXS does. */
+    Reply authenticated(long connectionId, String offer, SourcedAddress source, Join.Authenticated authenticated) {
+        Reply reply = new Reply(trickles);
+        sink.join(new Join(connectionId, "remote-" + connectionId, offer, source, reply, null, authenticated));
+        return reply;
+    }
+
     /** A reply path that records what the endpoint sends. */
     static final class Reply implements ReplyPath {
         private final boolean trickles;
