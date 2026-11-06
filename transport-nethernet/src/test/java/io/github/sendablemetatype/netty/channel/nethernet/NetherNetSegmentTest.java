@@ -5,6 +5,8 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import org.junit.jupiter.api.Test;
 
+import java.util.HexFormat;
+
 import static io.github.sendablemetatype.netty.channel.nethernet.ActiveChild.payload;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +32,20 @@ class NetherNetSegmentTest {
             h.reliable().accept(2);
             h.run();
             assertTrue(write.isSuccess());
+        }
+    }
+
+    /**
+     * The fragment vector in the NXS specification's protocol vectors
+     * ({@code nethernet-nxs/docs/external-signaling/fixtures/cloudburst-protocol-vectors.v1.json}): a message
+     * that needs two more segments starts with countdown 2.
+     */
+    @Test
+    void theSpecificationsFragmentVectorIsTheFirstSegment() {
+        try (ActiveChild h = new ActiveChild(child -> child.setMaxOutboundMessageSize(3))) {
+            h.channel.writeAndFlush(payload(0x0a, 0x0b, 0, 0, 0, 0));
+            assertEquals(3, h.reliable().sendCount());
+            assertArrayEquals(HexFormat.of().parseHex("020a0b"), h.reliable().sentBytes().get(0));
         }
     }
 

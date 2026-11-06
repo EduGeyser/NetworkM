@@ -10,6 +10,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.ByteBuffer;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -49,6 +50,22 @@ class NetherNetMessageAssemblerTest {
         assertEquals(2, metrics.fragments);
         assertEquals(0, metrics.failures);
         assertReleased();
+    }
+
+    /**
+     * The NetherNet frames in the NXS specification's protocol vectors
+     * ({@code nethernet-nxs/docs/external-signaling/fixtures/cloudburst-protocol-vectors.v1.json}).
+     */
+    @Test
+    void theSpecificationsFrameVectorsDecode() {
+        ByteBuf complete = decode(ByteBuffer.allocateDirect(5).put(HexFormat.of().parseHex("0001020304")).flip());
+        try {
+            assertArrayEquals(HexFormat.of().parseHex("01020304"), ByteBufUtil.getBytes(complete));
+        } finally {
+            complete.release();
+        }
+        assertNull(decode(ByteBuffer.allocateDirect(3).put(HexFormat.of().parseHex("020a0b")).flip()),
+                "a fragment with two more to come completes nothing");
     }
 
     @Test
