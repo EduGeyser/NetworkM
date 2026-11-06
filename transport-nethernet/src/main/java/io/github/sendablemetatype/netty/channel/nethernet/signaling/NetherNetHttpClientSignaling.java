@@ -176,22 +176,19 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         String path = "/v1/join" + query(settings.clientInfo(), networkId);
         return switch (settings.scheme()) {
             case HTTPS -> get(address, ssl, path, group, exchanges)
-                    .thenApply(response -> probed(address, response, Scheme.HTTPS, null));
+                    .handle((response, error) -> probed(address, response, error, Scheme.HTTPS, null));
             case HTTP -> get(address, null, path, group, exchanges)
-                    .thenApply(response -> probed(address, response, Scheme.HTTP, null));
+                    .handle((response, error) -> probed(address, response, error, Scheme.HTTP, null));
             case AUTO -> get(address, ssl, path, group, exchanges).handle((response, error) -> {
-                if (error == null) {
-                    // An answer over HTTPS is final, whatever it says
-                    return CompletableFuture.completedFuture(probed(address, response, Scheme.HTTPS, null));
-                }
-                Throwable cause = unwrap(error);
-                if (!(cause instanceof TlsRefusedException refused)) {
-                    // A rejected certificate is final, as on the retail client; and where nothing
-                    // answered, plain HTTP would only wait through the same failure again
-                    throw failure(address + " could not be reached over HTTPS: " + describe(cause), cause);
+                if (error == null || !(unwrap(error) instanceof TlsRefusedException refused)) {
+                    // An answer over HTTPS is final, whatever it says. So is a rejected certificate,
+                    // as on the retail client; and where nothing answered, plain HTTP would only
+                    // wait through the same failure again
+                    return CompletableFuture.completedFuture(probed(address, response, error, Scheme.HTTPS, null));
                 }
                 return get(address, null, path, group, exchanges)
-                        .thenApply(fallback -> probed(address, fallback, Scheme.HTTP, refused));
+                        .handle((fallback, fallbackError) -> probed(address, fallback, fallbackError, Scheme.HTTP,
+                                refused));
             }).thenCompose(Function.identity());
         };
     }
@@ -521,11 +518,16 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
 
     /**
      * Reads a status response into a result, or fails with the reason as a
-     * {@link ConnectException}.
+     * {@link ConnectException}, also when no response came.
      *
      * @param httpsRefused why the HTTPS attempt before this plain one failed, when there was one
      */
-    private static Probe probed(InetSocketAddress address, Response response, Scheme scheme, Throwable httpsRefused) {
+    private static Probe probed(InetSocketAddress address, Response response, Throwable error, Scheme scheme,
+                                Throwable httpsRefused) {
+        if (error != null) {
+            Throwable cause = unwrap(error);
+            throw failure(address + " could not be reached over " + scheme + ": " + describe(cause), cause);
+        }
         int code = response.status();
         if (code / 100 == 2) {
             // Vanilla BDS before 1.26.50 answers with an empty body, and serves NetherNet all the same
