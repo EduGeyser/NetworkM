@@ -317,7 +317,11 @@ public final class WebRtcEngine implements NetherNetEngine {
                 if (factory != null) {
                     try {
                         factory.dispose();
-                    } catch (RuntimeException e) {
+                    } catch (RuntimeException | Error e) {
+                        // A native reference left behind is a plain Error.
+                        if (!NativeErrors.isCallFailure(e)) {
+                            throw e;
+                        }
                         log.warn("Disposing a WebRTC factory failed: {}", e.toString());
                     }
                     factory = null;
