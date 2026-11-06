@@ -81,6 +81,11 @@ public final class DiagnosticChannels {
         protocolFailed = true;
     }
 
+    /** The peer broke the profile in a way the engine reported, such as opening a data channel of its own. */
+    public synchronized void violated() {
+        protocolFailed = true;
+    }
+
     /**
      * A binary message. The engine's buffer is borrowed, so the one permitted frame is copied before returning.
      *
