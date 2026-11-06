@@ -252,6 +252,19 @@ class DiagnosticHostTest {
     }
 
     @Test
+    void aPingSentAsTextFailsTheCheck() throws Exception {
+        directHost();
+        Permit permit = permit(DiagnosticAdmissionCodec.PROFILE, CLIENT);
+        fixture.hold(permit.credentials.localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        FakeDataLink reliable = connect(peer, CLIENT);
+        peer.text(reliable, ping(permit));
+
+        assertEquals(Outcome.INVALID_PROTOCOL, result().outcome());
+        assertEquals(0, reliable.sendCount(), "no PONG answers a text message");
+    }
+
+    @Test
     void anAssistedCheckIsAnsweredWithOneCandidateAndNoIdentity() throws Exception {
         assistedHost();
         Permit permit = permit(DiagnosticAdmissionCodec.ASSISTED_PROFILE, PUBLIC_PROBER);

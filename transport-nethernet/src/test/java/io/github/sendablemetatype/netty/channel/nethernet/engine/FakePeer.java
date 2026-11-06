@@ -319,10 +319,20 @@ public final class FakePeer implements Peer {
     }
 
     /**
-     * Delivers a message. The buffer is a direct copy that is overwritten
-     * once the callback returns, so a transport that keeps it sees garbage.
+     * Delivers a binary message. The buffer is a direct copy that is
+     * overwritten once the callback returns, so a transport that keeps it sees
+     * garbage.
      */
     public void message(FakeDataLink link, byte... bytes) {
+        deliver(link, bytes, true);
+    }
+
+    /** Delivers a text message, as {@link #message} does a binary one. */
+    public void text(FakeDataLink link, byte... bytes) {
+        deliver(link, bytes, false);
+    }
+
+    void deliver(FakeDataLink link, byte[] bytes, boolean binary) {
         if (!link.announced()) {
             throw new IllegalStateException("A link's messages cannot precede its announcement");
         }
@@ -330,7 +340,7 @@ public final class FakePeer implements Peer {
             return;
         }
         ByteBuffer buffer = ByteBuffer.allocateDirect(bytes.length).put(bytes).flip();
-        fire(() -> listener.onMessage(link, buffer));
+        fire(binary ? () -> listener.onMessage(link, buffer) : () -> listener.onTextMessage(link, buffer));
         buffer.clear();
         while (buffer.hasRemaining()) {
             buffer.put((byte) 0x5A);

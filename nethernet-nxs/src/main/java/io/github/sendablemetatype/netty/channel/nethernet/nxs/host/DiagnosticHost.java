@@ -735,6 +735,12 @@ final class DiagnosticHost {
         }
 
         @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            channels.receivedText();
+            wake();
+        }
+
+        @Override
         public void onChannelClosed(DataLink link, CloseCause cause) {
             channels.failed();
             wake();

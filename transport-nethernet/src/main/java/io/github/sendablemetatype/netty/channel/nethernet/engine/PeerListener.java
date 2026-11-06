@@ -32,12 +32,22 @@ public interface PeerListener {
     void onChannelOpen(DataLink link);
 
     /**
-     * A message arrived.
+     * A binary message arrived.
      *
      * @param link the link it arrived on
      * @param message the message, valid only during this call
      */
     void onMessage(DataLink link, ByteBuffer message);
+
+    /**
+     * A text message arrived: the remote peer sent a string, which WebRTC
+     * marks apart from binary data. NetherNet peers send binary messages only.
+     *
+     * @param link the link it arrived on
+     * @param message the message's bytes as they arrived, not checked to be
+     *        UTF-8, valid only during this call
+     */
+    void onTextMessage(DataLink link, ByteBuffer message);
 
     /** A link's queued bytes fell to or below its low watermark. */
     void onQueueLow(DataLink link);

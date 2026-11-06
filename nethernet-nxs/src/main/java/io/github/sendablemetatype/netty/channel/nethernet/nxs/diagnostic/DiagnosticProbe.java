@@ -777,6 +777,12 @@ public final class DiagnosticProbe {
         }
 
         @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            channels.receivedText();
+            onExecutor(DiagnosticProbe.this::step);
+        }
+
+        @Override
         public void onChannelClosed(DataLink link, CloseCause cause) {
             channels.failed();
             onExecutor(DiagnosticProbe.this::step);

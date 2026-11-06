@@ -16,8 +16,8 @@
  * are serialized and ordered. They must return promptly and must not block.
  * Send completions are the exception: they may arrive on another engine
  * thread, concurrently with listener callbacks.</li>
- * <li>A buffer handed to {@link PeerListener#onMessage} is valid only during
- * the call.</li>
+ * <li>A buffer handed to {@link PeerListener#onMessage} or
+ * {@link PeerListener#onTextMessage} is valid only during the call.</li>
  * </ul>
  *
  * <h2>Ordering</h2>

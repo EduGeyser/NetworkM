@@ -186,6 +186,14 @@ class DiagnosticProbeTest {
     }
 
     @Test
+    void aPongSentAsTextFailsTheProbe() throws Exception {
+        DiagnosticProbe.Result result = probeOver(new TransportPath(BIND, CandidateType.HOST, TARGET,
+                CandidateType.HOST), 1, true);
+        assertEquals(DiagnosticProbe.Reason.PROTOCOL, result.reason());
+        assertFalse(result.pingVerified());
+    }
+
+    @Test
     void cancellingOrExpiringWhileTheEndpointOpensWaitsForItToClose() throws Exception {
         engine.holdEndpointOpen(true);
         engine.holdEndpointClose(true);
@@ -282,9 +290,13 @@ class DiagnosticProbeTest {
 
     /**
      * Runs a direct probe whose {@code number}th peer connects over this pair, and answers its PING as the host would
-     * if it sends one.
+     * if it sends one, or with the same PONG as a text message.
      */
     private DiagnosticProbe.Result probeOver(TransportPath path, int number) throws Exception {
+        return probeOver(path, number, false);
+    }
+
+    private DiagnosticProbe.Result probeOver(TransportPath path, int number, boolean textPong) throws Exception {
         DiagnosticProbe.Job job = job(20);
         CompletableFuture<DiagnosticProbe.Result> running = probe(job).run(request ->
                 CompletableFuture.completedFuture(answer(request, job, HOST_FINGERPRINT, TARGET))).toCompletableFuture();
@@ -299,8 +311,13 @@ class DiagnosticProbeTest {
         if (!running.isDone()) {
             reliable.accept(0);
             byte[] ping = reliable.sentBytes().getFirst();
-            peer.message(reliable, DiagnosticExchange.encode(job.attemptIdHex(), DiagnosticExchange.PONG, 0,
-                    Arrays.copyOfRange(ping, 24, 56)));
+            byte[] pong = DiagnosticExchange.encode(job.attemptIdHex(), DiagnosticExchange.PONG, 0,
+                    Arrays.copyOfRange(ping, 24, 56));
+            if (textPong) {
+                peer.text(reliable, pong);
+            } else {
+                peer.message(reliable, pong);
+            }
         }
         return running.get(5, TimeUnit.SECONDS);
     }

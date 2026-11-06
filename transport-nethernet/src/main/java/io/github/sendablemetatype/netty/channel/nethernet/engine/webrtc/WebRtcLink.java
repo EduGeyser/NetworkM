@@ -260,7 +260,7 @@ final class WebRtcLink implements DataLink {
 
         @Override
         public void onMessage(RTCDataChannelBuffer buffer) {
-            peer.deliver(WebRtcLink.this, buffer.data);
+            peer.deliver(WebRtcLink.this, buffer.data, buffer.binary);
         }
     }
 }

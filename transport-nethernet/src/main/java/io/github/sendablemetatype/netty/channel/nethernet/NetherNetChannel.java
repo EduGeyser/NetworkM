@@ -307,6 +307,17 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
             }
         }
 
+        /**
+         * Reads a text message as game data, like a binary one. Vanilla sends
+         * binary messages only, and its receive path closes a session only for
+         * an empty segment or a wrong countdown header, not for anything else
+         * about a message (transport-nethernet/docs/client-behavior.md).
+         */
+        @Override
+        public void onTextMessage(DataLink link, ByteBuffer message) {
+            onMessage(link, message);
+        }
+
         @Override
         public void onQueueLow(DataLink link) {
             if (!stale()) {
