@@ -46,6 +46,8 @@ final class IndependentProviderStub implements AutoCloseable {
     private final MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final Channel server;
     volatile Runnable heartbeatResponseHook = () -> {};
+    /** Runs as each heartbeat arrives, before the stub decides whether it fails. */
+    volatile Runnable heartbeatAttemptHook = () -> {};
     final Map<String, JsonObject> challenges = new HashMap<>(), keys = new HashMap<>();
     JsonObject registration;
     String initialChallengeId;
@@ -320,6 +322,7 @@ final class IndependentProviderStub implements AutoCloseable {
             return complete(body);
         }
         if (path.equals("/example/heartbeat")) {
+            heartbeatAttemptHook.run();
             Refusal refusal = heartbeatRefusal;
             if (refusal != null) {
                 throw refusal;

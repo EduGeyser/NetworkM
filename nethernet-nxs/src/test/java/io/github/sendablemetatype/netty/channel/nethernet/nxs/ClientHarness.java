@@ -5,6 +5,11 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
+
+import javax.net.ssl.SSLContext;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -38,6 +43,25 @@ final class ClientHarness implements AutoCloseable {
         stub = new IndependentProviderStub(scheduler::millis, serverTls);
         this.http = http;
         this.tls = clientTls;
+    }
+
+    /**
+     * A harness whose provider serves HTTPS on {@code localhost}, with a certificate from a throwaway root that only
+     * this harness's clients trust; diagnostic admission needs an HTTPS provider.
+     */
+    static ClientHarness secure() throws Exception {
+        X509Bundle root = new CertificateBuilder().subject("CN=Harness Root").setIsCertificateAuthority(true).ecp256()
+                .buildSelfSigned();
+        X509Bundle leaf = new CertificateBuilder().subject("CN=localhost").addSanDnsName("localhost").ecp256()
+                .buildIssuedBy(root);
+        SSLContext trust = SSLContext.getInstance("TLS");
+        trust.init(null, root.toTrustManagerFactory().getTrustManagers(), null);
+        HttpClient http = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(Duration.ofSeconds(10)).sslContext(trust).build();
+        return new ClientHarness(
+                SslContextBuilder.forServer(leaf.getKeyPair().getPrivate(), leaf.getCertificatePath()).build(), http,
+                SslContextBuilder.forClient().trustManager(root.getCertificate())
+                        .endpointIdentificationAlgorithm("HTTPS").build());
     }
 
     ProviderClient.Configuration.Builder configuration() {
