@@ -175,27 +175,37 @@ public final class WebRtcEngine implements NetherNetEngine {
         Objects.requireNonNull(config, "config");
         synchronized (lock) {
             if (closed != null) {
-                return CompletableFuture.failedStage(new IllegalStateException("The WebRTC engine is closed"));
+                return CompletableFuture.failedStage(closedError());
+            }
+            // Queued under the lock, so it runs before the task close()
+            // queues on the same thread to wait for it.
+            return CompletableFuture.supplyAsync(() -> createEndpoint(config), endpointControl).minimalCompletionStage();
+        }
+    }
+
+    /** On the endpoint thread. An endpoint the engine closed in the meantime is never created, or disposed again. */
+    private IceEndpoint createEndpoint(EndpointConfig config) {
+        synchronized (lock) {
+            if (closed != null) {
+                throw closedError();
             }
         }
-        return CompletableFuture.supplyAsync(() -> {
-            requireFreePort(config);
-            prepareNatives();
-            IceUdpEndpoint created = new IceUdpEndpoint(config.port(), config.addresses().toArray(InetAddress[]::new));
-            WebRtcIceEndpoint endpoint = new WebRtcIceEndpoint(this, created, config.port(), endpointControl);
-            boolean open;
-            synchronized (lock) {
-                open = closed == null;
-                if (open) {
-                    endpoints.add(endpoint);
-                }
+        requireFreePort(config);
+        prepareNatives();
+        IceUdpEndpoint created = new IceUdpEndpoint(config.port(), config.addresses().toArray(InetAddress[]::new));
+        WebRtcIceEndpoint endpoint = new WebRtcIceEndpoint(this, created, config.port(), endpointControl);
+        synchronized (lock) {
+            if (closed == null) {
+                endpoints.add(endpoint);
+                return endpoint;
             }
-            if (!open) {
-                created.dispose();
-                throw new IllegalStateException("The WebRTC engine is closed");
-            }
-            return (IceEndpoint) endpoint;
-        }, endpointControl).minimalCompletionStage();
+        }
+        created.dispose();
+        throw closedError();
+    }
+
+    private static IllegalStateException closedError() {
+        return new IllegalStateException("The WebRTC engine is closed");
     }
 
     /**
@@ -246,9 +256,16 @@ public final class WebRtcEngine implements NetherNetEngine {
             open = List.copyOf(peers);
             openEndpoints = List.copyOf(endpoints);
         }
-        CompletableFuture.allOf(open.stream()
-                        .map(peer -> peer.close().toCompletableFuture())
-                        .toArray(CompletableFuture[]::new))
+        // Runs after every endpoint creation queued before the engine closed.
+        // Each of them has then registered its endpoint, which closes below,
+        // or created none; either way it took its native resources and its
+        // log bridge share before the engine releases them.
+        CompletableFuture<Void> creations = CompletableFuture.runAsync(() -> {
+        }, endpointControl);
+        CompletableFuture<Void> peersClosed = CompletableFuture.allOf(open.stream()
+                .map(peer -> peer.close().toCompletableFuture())
+                .toArray(CompletableFuture[]::new));
+        CompletableFuture.allOf(creations, peersClosed)
                 .thenCompose(ignored -> CompletableFuture.allOf(openEndpoints.stream()
                         .map(endpoint -> endpoint.close().toCompletableFuture())
                         .toArray(CompletableFuture[]::new)))

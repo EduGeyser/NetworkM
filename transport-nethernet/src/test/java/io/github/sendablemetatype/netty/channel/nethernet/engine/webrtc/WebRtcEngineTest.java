@@ -4,6 +4,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.CandidatePolicy
 import io.github.sendablemetatype.netty.channel.nethernet.engine.ChannelParameters;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
@@ -18,6 +20,7 @@ import io.github.sendablemetatype.webrtc.logging.Logging.Severity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -121,6 +124,24 @@ class WebRtcEngineTest {
         List<String> order = List.copyOf(log);
         assertTrue(order.indexOf("dispose ReliableDataChannel") > order.indexOf("close peer"), order.toString());
         assertTrue(order.indexOf("dispose factory") > order.indexOf("dispose ReliableDataChannel"), order.toString());
+    }
+
+    @Test
+    void closeWaitsForAnEndpointBeingOpened() throws Exception {
+        WebRtcEngine engine = engine(1, () -> {
+            throw new AssertionError("No factory needed");
+        });
+        int port;
+        try (DatagramSocket socket = new DatagramSocket(0)) {
+            port = socket.getLocalPort();
+        }
+
+        // Without natives the creation fails; with them it may succeed. Either way it ends before the close.
+        CompletableFuture<IceEndpoint> opening = engine.openEndpoint(new EndpointConfig(port, List.of())).toCompletableFuture();
+        boolean openedFirst = engine.close().toCompletableFuture().thenApply(ignored -> opening.isDone()).get(5, TimeUnit.SECONDS);
+
+        assertTrue(openedFirst, "The engine closed while an endpoint was still being created");
+        assertTrue(engine.openEndpoint(new EndpointConfig(port, List.of())).toCompletableFuture().isCompletedExceptionally());
     }
 
     @Test
