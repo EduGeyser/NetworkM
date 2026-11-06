@@ -13,7 +13,7 @@ import java.util.function.BooleanSupplier;
  * fire only when the test advances the clock, and work other threads hand over (HTTP replies, socket events) waits
  * in a queue until the test runs it. Nothing sleeps.
  */
-final class ManualScheduler extends AbstractExecutorService implements ScheduledExecutorService, ProviderClock {
+public final class ManualScheduler extends AbstractExecutorService implements ScheduledExecutorService, ProviderClock {
     /** How long to wait for work from another thread, such as a loopback HTTP reply, before giving up. */
     private static final long EXTERNAL_WAIT_MILLIS = 20_000;
 
@@ -35,7 +35,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
     }
 
     /** Runs everything ready now, including timers that are due. */
-    void runReady() {
+    public void runReady() {
         while (true) {
             Runnable task = ready.poll();
             if (task == null) {
@@ -54,7 +54,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
     }
 
     /** Moves time forward, firing timers in order, with the work they release run at their own time. */
-    void advance(Duration duration) {
+    public void advance(Duration duration) {
         long until = nanos + duration.toNanos();
         runReady();
         while (true) {
@@ -74,7 +74,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
     }
 
     /** Runs work until the stage completes, waiting for other threads only as long as they take. */
-    <T> T await(CompletionStage<T> stage) throws Exception {
+    public <T> T await(CompletionStage<T> stage) throws Exception {
         CompletableFuture<T> future = stage.toCompletableFuture();
         until(future::isDone);
         try {
@@ -88,7 +88,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
      * Runs work until the condition holds, failing when nothing arrives for a long time. The condition may also turn
      * true on another thread, such as the stub receiving a frame, so it is checked between short waits.
      */
-    void until(BooleanSupplier condition) throws InterruptedException {
+    public void until(BooleanSupplier condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + EXTERNAL_WAIT_MILLIS;
         while (true) {
             runReady();
@@ -110,7 +110,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
      * Runs work until the condition holds. When nothing arrives for a moment, the work is waiting on one of its own
      * timers, such as an in-place retry delay, so the clock moves to that timer, at most a second at a time.
      */
-    void settle(BooleanSupplier condition) throws InterruptedException {
+    public void settle(BooleanSupplier condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + EXTERNAL_WAIT_MILLIS;
         while (true) {
             runReady();
@@ -137,7 +137,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
      * Runs work until none has arrived from another thread for {@code millis}, so replies already on their way, such
      * as a pong, land before the clock moves on.
      */
-    void quiet(long millis) throws InterruptedException {
+    public void quiet(long millis) throws InterruptedException {
         while (true) {
             runReady();
             Runnable task = ready.poll(millis, TimeUnit.MILLISECONDS);
@@ -152,7 +152,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
     private static final long QUIET_MILLIS = 300;
 
     /** The failure a stage completes with. */
-    Throwable failure(CompletionStage<?> stage) throws InterruptedException {
+    public Throwable failure(CompletionStage<?> stage) throws InterruptedException {
         CompletableFuture<?> future = stage.toCompletableFuture();
         until(future::isDone);
         try {
@@ -197,7 +197,7 @@ final class ManualScheduler extends AbstractExecutorService implements Scheduled
     }
 
     /** The timers still waiting, for checks that nothing was left behind. */
-    int pendingTimers() {
+    public int pendingTimers() {
         synchronized (timers) {
             return (int) timers.stream().filter(timer -> !timer.isCancelled()).count();
         }
