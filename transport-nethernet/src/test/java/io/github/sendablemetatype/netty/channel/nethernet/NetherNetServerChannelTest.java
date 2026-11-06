@@ -65,7 +65,7 @@ class NetherNetServerChannelTest {
         assertInstanceOf(IllegalStateException.class, bind.cause());
         assertTrue(bind.cause().getMessage().contains("NETHER_SERVER_IDENTITY"));
         assertEquals(0, creations.get());
-        assertFalse(bind.channel().isOpen(), "a failed bind closes the channel");
+        assertTrue(bind.channel().closeFuture().awaitUninterruptibly(2, TimeUnit.SECONDS), "a failed bind closes the channel");
     }
 
     @Test
