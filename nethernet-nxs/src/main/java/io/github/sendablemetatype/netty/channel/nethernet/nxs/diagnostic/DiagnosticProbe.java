@@ -535,13 +535,17 @@ public final class DiagnosticProbe {
                 || family(remote.getAddress()) != family) {
             return false;
         }
-        // A NAT may show the host another mapping than the STUN server saw, which libwebrtc reports as a local
-        // peer-reflexive candidate
-        boolean assistedLocal = job.target().assisted() && (local.equals(gatheredLocal)
-                || current.localType() == TransportPath.CandidateType.PEER_REFLEXIVE
-                && destination(local.getAddress()));
+        // The peer gathers on the bound socket only, so every local candidate is that socket or a mapping of it. A
+        // probe behind NAT learns the mapping the host saw from the host's check responses, which libwebrtc then
+        // reports as a local peer-reflexive candidate: on a direct probe from a private address, and on an assisted
+        // one whose NAT showed the host another mapping than the STUN server saw. A host elsewhere sees a public
+        // mapping; a private one means probe and host share a network, which only local development allows, so the
+        // mapping must be a destination.
+        boolean mapped = current.localType() == TransportPath.CandidateType.PEER_REFLEXIVE
+                && destination(local.getAddress());
+        boolean localAllowed = local.equals(bind) || local.equals(gatheredLocal) || mapped;
         boolean remoteAllowed = target != null ? remote.equals(target) : destination(remote.getAddress());
-        if (!(local.equals(bind) || assistedLocal) || !remoteAllowed) {
+        if (!localAllowed || !remoteAllowed) {
             return false;
         }
         selectedLocal = local;

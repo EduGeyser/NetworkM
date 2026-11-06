@@ -1,9 +1,13 @@
 package io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeDataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeEngine;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakePeer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceCredentials;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec.Context;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec.Credentials;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.diagnostic.DiagnosticAdmissionCodec.Key;
@@ -14,6 +18,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.net.InetSocketAddress;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -158,6 +163,28 @@ class DiagnosticProbeTest {
     }
 
     @Test
+    void aDirectProbeBehindNatChecksFromTheMappingTheHostSaw() throws Exception {
+        // Bound to a private address, the probe reaches the public target through NAT; libwebrtc then reports the
+        // mapping the host's check responses named as the pair's local peer-reflexive candidate
+        InetSocketAddress mapping = new InetSocketAddress("93.184.216.99", 61000);
+        DiagnosticProbe.Result result = probeOver(new TransportPath(mapping, CandidateType.PEER_REFLEXIVE, TARGET,
+                CandidateType.HOST), 1);
+        assertEquals(DiagnosticProbe.Reason.COMPLETE, result.reason());
+        assertEquals(mapping, result.selectedLocal());
+        assertEquals(TARGET, result.selectedRemote());
+
+        // A mapping that is no destination, and a host address the probe was not bound to, are not its endpoint
+        for (TransportPath path : List.of(
+                new TransportPath(new InetSocketAddress("10.0.0.77", 61000), CandidateType.PEER_REFLEXIVE, TARGET,
+                        CandidateType.HOST),
+                new TransportPath(new InetSocketAddress("10.0.0.6", 40000), CandidateType.HOST, TARGET,
+                        CandidateType.HOST))) {
+            assertEquals(DiagnosticProbe.Reason.SELECTED_PATH, probeOver(path, engine.peers().size() + 1).reason(),
+                    path.toString());
+        }
+    }
+
+    @Test
     void onlyDestinationsTheJobMayUseAreProbed() {
         for (String address : List.of("10.0.0.9", "127.0.0.1", "192.0.2.1", "203.0.113.7")) {
             DiagnosticProbe.Job job = job(20, new InetSocketAddress(address, 19132));
@@ -216,6 +243,31 @@ class DiagnosticProbeTest {
         peer.gatheringComplete(offer + "a=candidate:1 1 udp 2122260223 10.0.0.5 40000 typ host generation 0\r\n"
                 + "a=end-of-candidates\r\n");
         return peer;
+    }
+
+    /**
+     * Runs a direct probe whose {@code number}th peer connects over this pair, and answers its PING as the host would
+     * if it sends one.
+     */
+    private DiagnosticProbe.Result probeOver(TransportPath path, int number) throws Exception {
+        DiagnosticProbe.Job job = job(20);
+        CompletableFuture<DiagnosticProbe.Result> running = probe(job).run(request ->
+                CompletableFuture.completedFuture(answer(request, job, HOST_FINGERPRINT, TARGET))).toCompletableFuture();
+        FakePeer peer = gather(number);
+        HostFixtureWait.until(() -> !peer.remoteAnswers().isEmpty(), "the answer to reach the engine");
+        peer.path(path);
+        peer.state(PeerState.CONNECTED);
+        FakeDataLink reliable = peer.links().getFirst();
+        peer.open(reliable);
+        peer.open(peer.links().getLast());
+        HostFixtureWait.until(() -> running.isDone() || reliable.sendCount() == 1, "the PING or the result");
+        if (!running.isDone()) {
+            reliable.accept(0);
+            byte[] ping = reliable.sentBytes().getFirst();
+            peer.message(reliable, DiagnosticExchange.encode(job.attemptIdHex(), DiagnosticExchange.PONG, 0,
+                    Arrays.copyOfRange(ping, 24, 56)));
+        }
+        return running.get(5, TimeUnit.SECONDS);
     }
 
     /** The host's answer as a provider returns it: a permit for the request, the target as its one candidate. */
