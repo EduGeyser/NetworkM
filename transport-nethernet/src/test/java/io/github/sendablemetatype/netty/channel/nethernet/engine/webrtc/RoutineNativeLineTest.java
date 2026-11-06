@@ -20,7 +20,7 @@ class RoutineNativeLineTest {
             "(turn_port.cc:1933): Received TURN CreatePermission error response, code=403; pruned connection.",
     })
     void routineLinesMatch(String line) {
-        assertTrue(RoutineNativeLine.matches(line), line);
+        assertTrue(RoutineNativeLine.matches(line, () -> true), line);
     }
 
     @ParameterizedTest
@@ -28,6 +28,9 @@ class RoutineNativeLineTest {
             // Other aborts: another cause from the peer, and a local failure
             "(dcsctp_transport.cc:561): DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=Protocol Violation, additional_information=x).",
             "(dcsctp_transport.cc:561): DcSctpTransport3->OnAborted(error=TOO_MANY_RETRIES, message=Too many retransmissions).",
+            // A peer's own cause text that contains the routine text does not make its abort routine
+            "(dcsctp_transport.cc:561): DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=Protocol Violation, additional_information=->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=x).",
+            "(dcsctp_transport.cc:561): DcSctpTransport3->OnError(error=PROTOCOL_VIOLATION, message=DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort).",
             // A lookup that fails on an IPv4 network, also behind a network name with a colon
             "(stun_port.cc:490): Port[1f2e3d4c:0:1:0:local:Net[eth0:192.168.1.x/24:Ethernet:id=1]]: StunPort: stun host lookup received error 11001",
             "(turn_port.cc:943): Port[1f2e3d4c:0:1:0:relay:Net[eth0:1:10.0.0.x/8:Ethernet:id=4]]: TURN host lookup received error 11001",
@@ -39,6 +42,16 @@ class RoutineNativeLineTest {
             "DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=Close called).",
     })
     void otherLinesDoNotMatch(String line) {
-        assertFalse(RoutineNativeLine.matches(line), line);
+        assertFalse(RoutineNativeLine.matches(line, () -> true), line);
+    }
+
+    // On a host without an IPv4 network nothing else gathers, so a failed IPv6 lookup is a real problem
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "(stun_port.cc:490): Port[1f2e3d4c:0:1:0:local:Net[eth0:2a01:4f8:c17:x:x:x:x:x/64:Ethernet:id=2]]: StunPort: stun host lookup received error 11004",
+            "(turn_port.cc:943): Port[1f2e3d4c:0:1:0:relay:Net[Wi-Fi:2001:db8:1:x:x:x:x:x/64:Wifi:id=3]]: TURN host lookup received error 0",
+    })
+    void ipv6LookupFailuresKeepTheirLevelOnAnIpv6OnlyHost(String line) {
+        assertFalse(RoutineNativeLine.matches(line, () -> false), line);
     }
 }
