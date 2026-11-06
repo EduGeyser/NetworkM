@@ -8,6 +8,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.webrtc.AddIceCandidateObserver;
+import io.github.sendablemetatype.webrtc.RTCDataChannelBuffer;
 import io.github.sendablemetatype.webrtc.CreateSessionDescriptionObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelObserver;
 import io.github.sendablemetatype.webrtc.RTCDataChannelSendObserver;
@@ -182,6 +183,13 @@ final class FakeNative {
         // Runs during each state read, after the state was read: what changes meanwhile.
         volatile Consumer<Link> onStateRead = link -> {
         };
+        // Runs when an observer is registered, before it is: what changes before registration.
+        volatile Consumer<Link> onRegister = link -> {
+        };
+        // Messages that arrived while the channel was not open or had no observer. As libwebrtc
+        // does (SctpDataChannel::DeliverQueuedReceivedData), they go to the observer once both
+        // hold: when it is registered on an open channel, or when the channel opens.
+        private final List<RTCDataChannelBuffer> queued = new ArrayList<>();
 
         Link(ChannelParameters parameters, List<String> log) {
             this.parameters = parameters;
@@ -207,7 +215,9 @@ final class FakeNative {
 
         @Override
         public void registerObserver(RTCDataChannelObserver observer) {
+            onRegister.accept(this);
             this.observer = observer;
+            deliverQueued();
         }
 
         @Override
@@ -242,6 +252,22 @@ final class FakeNative {
         void changeState(RTCDataChannelState newState) {
             state = newState;
             observer.onStateChange();
+            deliverQueued();
+        }
+
+        /** A message from the remote peer: delivered at once if the channel is open and observed, else queued. */
+        void receive(RTCDataChannelBuffer message) {
+            if (state == RTCDataChannelState.OPEN && observer != null) {
+                observer.onMessage(message);
+            } else {
+                queued.add(message);
+            }
+        }
+
+        private void deliverQueued() {
+            while (state == RTCDataChannelState.OPEN && observer != null && !queued.isEmpty()) {
+                observer.onMessage(queued.removeFirst());
+            }
         }
 
         RTCDataChannelSendObserver send(int index) {

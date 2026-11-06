@@ -430,6 +430,26 @@ class WebRtcPeerTest {
     }
 
     /**
+     * A remote channel can open before its observer is registered, which fires no event, and the
+     * messages that arrive meanwhile are delivered by the registration itself. The listener hears
+     * of the open first.
+     */
+    @Test
+    void aRemoteChannelOpenedBeforeItsObserverReportsTheOpenBeforeItsQueuedMessages() {
+        WebRtcPeer peer = peer(Role.ANSWERER, null);
+        FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+        channel.onRegister = link -> {
+            link.state = RTCDataChannelState.OPEN;
+            link.receive(new RTCDataChannelBuffer(ByteBuffer.allocate(7), true));
+        };
+
+        peer.onRemoteChannel(channel);
+
+        assertEquals(List.of("remote ReliableDataChannel", "open ReliableDataChannel", "message ReliableDataChannel 7"),
+                listener.snapshot());
+    }
+
+    /**
      * The attaching thread's look at the state can be older than the close the
      * network thread reports meanwhile; the listener must not hear of an open
      * after the close.
@@ -438,15 +458,13 @@ class WebRtcPeerTest {
     void aRemoteChannelClosedWhileItIsAttachedIsNotReportedOpenAfterwards() {
         WebRtcPeer peer = peer(Role.ANSWERER, null);
         FakeNative.Link channel = new FakeNative.Link(ChannelParameters.reliable("ReliableDataChannel"), nativeLog);
+        // Opens before the observer is registered, which fires no event.
+        channel.onRegister = link -> link.state = RTCDataChannelState.OPEN;
         int[] reads = {0};
         channel.onStateRead = link -> {
-            switch (++reads[0]) {
-                // Opens before the observer is registered, which fires no event.
-                case 1 -> link.state = RTCDataChannelState.OPEN;
-                // Closes during the look after registration, which reads OPEN.
-                case 2 -> link.changeState(RTCDataChannelState.CLOSED);
-                default -> {
-                }
+            // Closes during the look after registration, which reads OPEN.
+            if (++reads[0] == 1) {
+                link.changeState(RTCDataChannelState.CLOSED);
             }
         };
 

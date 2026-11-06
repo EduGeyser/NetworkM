@@ -135,16 +135,17 @@ final class WebRtcLink implements DataLink {
     }
 
     /**
-     * Starts delivering events of a remote channel the listener kept. A
-     * remote channel is usually open already when libwebrtc announces it,
-     * and a change before the observer is registered fires no event, so the
-     * state is reported from here: once before registering, which puts the
-     * open ahead of the messages that registration delivers, and once after,
-     * for a change in between.
+     * Starts delivering events of a remote channel the listener kept.
+     * libwebrtc announces a remote channel before it opens it, and opens it
+     * right after the announcement returns
+     * ({@code DataChannelController::OnDataChannelOpenMessage}), but a ready
+     * transport can open it earlier ({@code OnReadyToSend}). A change before
+     * the observer is registered fires no event, so the state is read once
+     * the observer is: the messages that registration delivers report the
+     * open first ({@link Observer#onMessage}).
      */
     void attachRemote() {
         NativeLink current = channel;
-        observer.onStateChange();
         current.registerObserver(observer);
         observer.onStateChange();
     }
@@ -296,9 +297,20 @@ final class WebRtcLink implements DataLink {
             }
         }
 
+        /**
+         * libwebrtc delivers messages only while the channel is open, so a
+         * message the listener gets before it heard of the open reports the
+         * open first. That happens for a remote channel that opened before
+         * its observer was registered: the registration delivers the
+         * messages that arrived meanwhile, before the state is read.
+         */
         @Override
         public void onMessage(RTCDataChannelBuffer buffer) {
             synchronized (events) {
+                if (reported == Reported.NOTHING) {
+                    reported = Reported.OPEN;
+                    peer.dispatch(listener -> listener.onChannelOpen(WebRtcLink.this));
+                }
                 peer.deliver(WebRtcLink.this, buffer.data, buffer.binary);
             }
         }
