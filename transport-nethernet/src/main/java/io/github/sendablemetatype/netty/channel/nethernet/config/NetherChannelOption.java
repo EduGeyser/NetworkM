@@ -57,8 +57,9 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
             valueOf(NetherChannelOption.class, "NETHER_SERVER_MAX_SESSIONS");
 
     /**
-     * The most joins a server channel admits at once that have not gone active yet, over all
-     * join sources, those waiting for their identity check included. 256 by default.
+     * The most joins a server channel holds at once that have not gone active, over all join
+     * sources: those waiting for their identity check, negotiating, or still tearing down their
+     * peer. 256 by default.
      */
     public static final ChannelOption<Integer> NETHER_SERVER_MAX_PENDING_JOINS =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_MAX_PENDING_JOINS");

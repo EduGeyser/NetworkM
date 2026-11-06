@@ -599,11 +599,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         child.setOfferCheck(offerCheck);
         child.trackAddress(tracker, intake, relayed ? settings.iceEndpoint() : null);
         live.add(child);
-        child.closeFuture().addListener(future -> {
-            reservation.handshakeDone();
-            negotiation.closed();
-        });
-        // Capacity follows the peer's teardown, not the close call.
+        child.closeFuture().addListener(future -> negotiation.closed());
+        // Capacity follows the peer's teardown, not the close call: a handshake that closes stays
+        // pending until its peer is gone, or join and close could pile up native teardown.
         child.termination().whenComplete((ignored, failure) -> {
             live.remove(child);
             admission.release();

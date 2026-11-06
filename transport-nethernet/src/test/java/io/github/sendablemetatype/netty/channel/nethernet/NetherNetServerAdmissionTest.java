@@ -261,6 +261,28 @@ class NetherNetServerAdmissionTest {
         assertEquals("3", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
     }
 
+    @Test
+    void aClosedHandshakeStaysPendingUntilItsTerminationCompletes() throws Exception {
+        harness.engine.holdPeerClose(true);
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_MAX_PENDING_JOINS, 1);
+        harness.bind();
+        FakeJoinSource source = harness.source(true);
+        source.offer(1, OFFER);
+        NetherNetChildChannel child = harness.child();
+        FakePeer peer = harness.negotiating();
+
+        child.close().sync();
+        harness.sync();
+        assertEquals(1, harness.server.gate().pending(), "the peer that never went active still tears down");
+        source.offer(2, OFFER).assertRefused(JoinRefusal.CAPACITY);
+
+        peer.finishClose();
+        harness.sync();
+        assertEquals(0, harness.server.gate().pending());
+        source.offer(3, OFFER);
+        assertEquals("3", harness.child().attr(NetherNetChildChannel.CONNECTION_ID).get());
+    }
+
     // The throttle.
 
     @Test

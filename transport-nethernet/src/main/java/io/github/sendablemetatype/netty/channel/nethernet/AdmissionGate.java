@@ -3,8 +3,9 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 /**
  * One server endpoint's budget, shared by every join source: sessions, held from a join's
  * admission until its connection's termination completed, and pending handshakes, held from
- * admission until the connection goes active or ends. Joins waiting for their identity check
- * count as pending, so the pending budget also bounds the checks in flight. Thread-safe.
+ * admission until the connection goes active or its termination completed. Joins waiting for
+ * their identity check count as pending, so the pending budget also bounds the checks in flight
+ * and the peers still tearing down that never went active. Thread-safe.
  */
 final class AdmissionGate {
     // Guarded by this.
@@ -51,7 +52,7 @@ final class AdmissionGate {
         private Reservation() {
         }
 
-        /** The handshake ended: the connection went active, or it is closing. */
+        /** The connection went active: it is no longer a pending handshake. */
         void handshakeDone() {
             synchronized (AdmissionGate.this) {
                 if (pendingHeld) {
