@@ -45,8 +45,11 @@ import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -99,7 +102,7 @@ import java.util.function.Supplier;
  * under the logger {@code io.github.sendablemetatype.netty.channel.nethernet.signaling.HttpAccessLog}.
  *
  * <p>Bind with {@link #bind}, then hand the source to an endpoint, which calls {@link #start}.
- * Closed instances cannot be bound again.
+ * Closed instances cannot be bound again; {@link #termination()} says when the port is free.
  */
 public final class NetherNetHttpSignaling implements JoinSource {
     static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpSignaling.class);
@@ -149,6 +152,7 @@ public final class NetherNetHttpSignaling implements JoinSource {
     private boolean bound;
     private volatile boolean closed;
     private volatile SignalingHealth health = new SignalingHealth(SignalingState.NEW, 0, null, null);
+    private final CompletableFuture<Void> terminated = new CompletableFuture<>();
 
     private NetherNetHttpSignaling(Builder builder) {
         this.workerGroup = builder.workerGroup;
@@ -317,6 +321,15 @@ public final class NetherNetHttpSignaling implements JoinSource {
         close(null);
     }
 
+    /**
+     * Completes once this source, closed, has closed its TCP listener, its accept thread and every
+     * connection, so its port can be bound again at once. Never completes exceptionally.
+     */
+    @Override
+    public CompletionStage<Void> termination() {
+        return terminated.minimalCompletionStage();
+    }
+
     private void close(Throwable failure) {
         Channel channel;
         EventLoopGroup accept;
@@ -330,11 +343,12 @@ public final class NetherNetHttpSignaling implements JoinSource {
             serverChannel = null;
             acceptGroup = null;
         }
+        List<CompletableFuture<Void>> released = new ArrayList<>();
         try {
             if (channel != null) {
-                channel.close();
+                released.add(whenDone(channel.close()));
             }
-            connections.close();
+            released.add(whenDone(connections.close()));
         } finally {
             try {
                 if (ownedStatusExecutor != null) {
@@ -342,11 +356,20 @@ public final class NetherNetHttpSignaling implements JoinSource {
                 }
             } finally {
                 if (accept != null) {
-                    accept.shutdownGracefully(0, 3, TimeUnit.SECONDS);
+                    released.add(whenDone(accept.shutdownGracefully(0, 3, TimeUnit.SECONDS)));
                 }
+                CompletableFuture.allOf(released.toArray(CompletableFuture[]::new))
+                        .whenComplete((ignored, error) -> terminated.complete(null));
             }
         }
         updateHealth(failure);
+    }
+
+    /** Completes once the Netty future is done, whatever its outcome. */
+    private static CompletableFuture<Void> whenDone(io.netty.util.concurrent.Future<?> future) {
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        future.addListener(ignored -> done.complete(null));
+        return done;
     }
 
     /** Builds the pipeline of one accepted connection. */

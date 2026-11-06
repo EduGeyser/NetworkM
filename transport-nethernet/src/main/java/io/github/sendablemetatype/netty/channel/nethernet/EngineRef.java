@@ -5,6 +5,8 @@ import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Supplier;
 
 /**
@@ -18,7 +20,8 @@ final class EngineRef {
     private final NetherNetEngine shared;
     private final Supplier<? extends NetherNetEngine> supplier;
     private NetherNetEngine owned;
-    private boolean released;
+    /** Completes once the engine is released; null until {@link #release()}. */
+    private CompletableFuture<Void> released;
 
     private EngineRef(NetherNetEngine shared, Supplier<? extends NetherNetEngine> supplier) {
         this.shared = shared;
@@ -39,7 +42,7 @@ final class EngineRef {
      * @throws IllegalStateException after {@link #release()}
      */
     synchronized NetherNetEngine get() {
-        if (released) {
+        if (released != null) {
             throw new IllegalStateException("The channel's engine was released");
         }
         if (shared != null) {
@@ -53,23 +56,41 @@ final class EngineRef {
 
     /** The engine if it exists, without creating it; null after {@link #release()}. */
     synchronized NetherNetEngine current() {
-        return released ? null : shared != null ? shared : owned;
+        return released != null ? null : shared != null ? shared : owned;
     }
 
-    /** Closes an owned engine; leaves a shared one alone. Idempotent. */
-    void release() {
+    /**
+     * Closes an owned engine; leaves a shared one alone. Idempotent.
+     *
+     * @return completes once an owned engine is closed, at once for a shared engine or one never
+     *         created; never exceptionally
+     */
+    CompletionStage<Void> release() {
         NetherNetEngine engine;
+        CompletableFuture<Void> done;
         synchronized (this) {
-            released = true;
+            if (released != null) {
+                return released.minimalCompletionStage();
+            }
+            done = released = new CompletableFuture<>();
             engine = owned;
             owned = null;
         }
-        if (engine != null) {
+        if (engine == null) {
+            done.complete(null);
+            return done.minimalCompletionStage();
+        }
+        try {
             engine.close().whenComplete((ignored, failure) -> {
                 if (failure != null) {
                     log.warn("Closing the NetherNet engine failed", failure);
                 }
+                done.complete(null);
             });
+        } catch (RuntimeException e) {
+            log.warn("Closing the NetherNet engine failed", e);
+            done.complete(null);
         }
+        return done.minimalCompletionStage();
     }
 }

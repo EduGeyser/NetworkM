@@ -30,6 +30,8 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.LongPredicate;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -67,6 +69,7 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
     private final ExecutorService advertiserExecutor;
     private volatile OfferHandler offerHandler;
     private volatile boolean closed;
+    private final CompletableFuture<Void> terminated = new CompletableFuture<>();
 
     /** Receives offers for connection IDs that have no signal handler yet. */
     @FunctionalInterface
@@ -594,6 +597,11 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
         return true;
     }
 
+    /** Completes once a closed instance has closed its socket and its event loop; never exceptionally. */
+    CompletionStage<Void> termination() {
+        return terminated.minimalCompletionStage();
+    }
+
     /** Closes the socket and its event loop. A closed instance cannot be rebound. */
     public void close() {
         Channel channel;
@@ -617,8 +625,11 @@ public class NetherNetDiscovery extends SimpleChannelInboundHandler<DatagramPack
             }
         } finally {
             advertiserExecutor.shutdownNow();
-            if (group != null) {
-                group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+            if (group == null) {
+                terminated.complete(null);
+            } else {
+                // The socket is on this group, so its close runs before the group terminates.
+                group.shutdownGracefully(0, 1, TimeUnit.SECONDS).addListener(ignored -> terminated.complete(null));
             }
         }
     }

@@ -3,6 +3,8 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 
 /**
@@ -68,4 +70,16 @@ public interface JoinSource extends AutoCloseable {
      */
     @Override
     void close();
+
+    /**
+     * Completes once this source, closed, has let go of every port it listened on, so the host can
+     * bind them again at once. The endpoint that owns the source waits for it in its own
+     * {@linkplain io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel#termination()
+     * termination}. Never completes exceptionally.
+     *
+     * @return the stage; by default a completed one, for sources that listen on no port
+     */
+    default CompletionStage<Void> termination() {
+        return CompletableFuture.completedStage(null);
+    }
 }

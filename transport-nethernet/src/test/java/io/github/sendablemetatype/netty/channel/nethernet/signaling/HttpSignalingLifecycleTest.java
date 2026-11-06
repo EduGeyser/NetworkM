@@ -110,6 +110,23 @@ class HttpSignalingLifecycleTest {
     }
 
     @Test
+    void terminationCompletesOnceThePortCanBeBoundAgain() throws Exception {
+        EventLoopGroup accept = newAcceptGroup();
+        NetherNetHttpSignaling signaling = listener(accept);
+        signaling.bind(new InetSocketAddress("127.0.0.1", 0));
+        InetSocketAddress address = signaling.boundAddress();
+        assertFalse(signaling.termination().toCompletableFuture().isDone());
+
+        signaling.close();
+        signaling.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+
+        assertTrue(accept.isTerminated());
+        try (ServerSocket again = new ServerSocket()) {
+            again.bind(address);
+        }
+    }
+
+    @Test
     void bindingNeverAsksTheTlsSelector() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         NetherNetHttpSignaling signaling = NetherNetHttpSignaling.builder(worker).acceptGroupFactory(this::newAcceptGroup)

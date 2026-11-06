@@ -526,6 +526,75 @@ class NetherNetServerChannelTest {
         assertThrows(IllegalStateException.class, () -> harness.server.addSource(new FakeJoinSource(true)));
     }
 
+    @Test
+    void terminationWaitsForThePeersTheIcePortAndTheOwnedEngine() throws Exception {
+        FakeEngine fake = new FakeEngine();
+        fake.holdPeerClose(true);
+        fake.holdEndpointClose(true);
+        CompletableFuture<Void> engineClosed = new CompletableFuture<>();
+        NetherNetEngine engine = new NetherNetEngine() {
+            @Override
+            public Peer createPeer(PeerConfig config, PeerListener listener) {
+                return fake.createPeer(config, listener);
+            }
+
+            @Override
+            public CompletionStage<IceEndpoint> openEndpoint(EndpointConfig config) {
+                return fake.openEndpoint(config);
+            }
+
+            @Override
+            public CompletionStage<Void> close() {
+                return fake.close().thenCompose(ignored -> engineClosed);
+            }
+        };
+        NetherNetServerChannel server = (NetherNetServerChannel) owned(() -> engine)
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        FakeJoinSource source = new FakeJoinSource(true);
+        server.addSource(source, EndpointHarness.ADMIT_ALL);
+        source.offer("1", OFFER);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (fake.peers().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        FakePeer peer = fake.peer(0);
+        FakeIceEndpoint port = (FakeIceEndpoint) peer.config().endpoint();
+        CompletableFuture<Void> termination = server.termination().toCompletableFuture();
+
+        server.close().sync();
+        harness.sync();
+        assertFalse(termination.isDone(), "the closed endpoint's peer is still tearing down");
+        assertFalse(port.closed(), "the port closes after its peers");
+
+        peer.finishClose();
+        harness.sync();
+        assertTrue(port.closed());
+        assertFalse(termination.isDone(), "the port is still closing");
+
+        port.finishClose();
+        assertEquals(1, fake.closeCalls(), "the owned engine closes after the port");
+        assertFalse(termination.isDone(), "the owned engine is still closing");
+
+        engineClosed.complete(null);
+        termination.get(2, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void terminationWaitsForTheSourcesToLetGoOfTheirPorts() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeJoinSource source = harness.source(true);
+        CompletableFuture<Void> sourceReleased = new CompletableFuture<>();
+        source.termination = sourceReleased;
+
+        server.close().sync();
+        harness.sync();
+        assertTrue(source.closed);
+        assertFalse(server.termination().toCompletableFuture().isDone());
+
+        sourceReleased.complete(null);
+        server.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+    }
+
     // Peers without a child.
 
     @Test
