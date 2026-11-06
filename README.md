@@ -101,9 +101,10 @@ the Maven group with `-PnetworkGroup=your.group`; Java packages do not change.
 
 ## Publishing
 
-Release and feature-snapshot publication are manual workflows. The generic
-Maven deployment workflow remains reusable. Publishing requires the relevant
-repository credentials and signing keys; ordinary builds do not publish.
+Releases go to Maven Central only. The manual `Publish release` workflow runs
+the full CI build matrix on the selected commit and publishes only if every lane
+passes. It needs the Central Portal credentials and the signing key; ordinary
+builds do not publish. JitPack builds snapshots of any commit.
 POM project, source, issue, and CI links use GitHub Actions' `GITHUB_REPOSITORY`.
 For local publication, set `-PnetworkRepository=owner/repository`. Local builds
 without this setting omit repository links.

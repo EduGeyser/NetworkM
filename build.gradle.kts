@@ -61,16 +61,6 @@ subprojects {
     val javaToolchains = extensions.getByType<JavaToolchainService>()
 
     configure<PublishingExtension> {
-        repositories {
-            maven {
-                name = "maven-deploy"
-                url = uri(System.getenv("MAVEN_DEPLOY_URL") ?: "https://repo.opencollab.dev/maven-snapshots/")
-                credentials {
-                    username = System.getenv("MAVEN_DEPLOY_USERNAME") ?: "username"
-                    password = System.getenv("MAVEN_DEPLOY_PASSWORD") ?: "password"
-                }
-            }
-        }
         publications {
             create<MavenPublication>("maven") {
                 artifactId = "netty-${project.name}"
