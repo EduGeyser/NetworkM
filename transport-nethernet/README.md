@@ -139,6 +139,8 @@ resolve, answers announce the literals only, and a name that does not resolve
 closes the endpoint. An address the host gathered narrows the host candidates to
 it; any other is announced as the public side of a NAT. Empty by default: answers
 carry what ICE gathered plus the address in the client's `Host` header.
+`NetherNetServerChannel.advertisedAddresses()` returns the list answers announce
+at the moment, with the names resolved.
 
 **STUN discovery.** Instead of advertised addresses, `NETHER_SERVER_STUN_SERVERS`
 lists STUN servers (each with a port; `StunObserver.parseServer` reads `stun:`
@@ -150,6 +152,8 @@ servers. A mapping on another port than the ICE port is also announced on the
 ICE port, for a router that forwards the ICE port but moves the port of outgoing
 traffic. Binding fails when STUN servers are set together with advertised
 addresses, with PROXY protocol relays, or without the shared ICE port.
+`NetherNetServerChannel.discoveredAddresses()` returns the fresh mappings with
+their ICE port twins, as answers announce them.
 
 **Candidate options.**
 

@@ -42,26 +42,34 @@ class NetherNetServerStunTest {
         harness.engine.answerWith(ANSWER);
         harness.engine.gatherWith(GATHERED);
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_STUN_SERVERS, List.of(SERVER));
-        harness.bind();
+        NetherNetServerChannel server = harness.bind();
         FakeIceEndpoint endpoint = harness.engine.endpoints().getFirst();
         assertEquals(List.of(SERVER), endpoint.stunMonitors(), "the monitor opens with the port");
         FakeJoinSource source = harness.source(false);
 
         String before = source.offer("1", OFFER).answer();
         assertFalse(before.contains("typ srflx"), "nothing is announced before the server answered: " + before);
+        assertEquals(List.of(), server.discoveredAddresses());
 
         // The router took another port on the way out; the mapping must be public to be announced
-        endpoint.mapStun(SERVER, new InetSocketAddress("93.184.216.40", 1454));
+        InetSocketAddress mapped = new InetSocketAddress("93.184.216.40", 1454);
+        endpoint.mapStun(SERVER, mapped);
         awaitReads(endpoint, 2);
         String answer = source.offer("2", OFFER).answer();
 
         int icePort = endpoint.port();
+        assertEquals(List.of(mapped, new InetSocketAddress(mapped.getAddress(), icePort)),
+                server.discoveredAddresses(), "the mapping, then its ICE port twin");
+        assertEquals(List.of(), server.advertisedAddresses());
         assertTrue(answer.contains("a=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host\r\n"), answer);
         assertTrue(answer.contains(" 93.184.216.40 1454 typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
         assertTrue(answer.contains(" 93.184.216.40 " + icePort + " typ srflx raddr 10.0.0.5 rport 5000\r\n"), answer);
         assertTrue(priority(answer, "1454") > priority(answer, Integer.toString(icePort)),
                 "the mapping ranks above its twin, both below the host candidate");
         assertTrue(priority(answer, Integer.toString(icePort)) < 2122260223L);
+
+        server.close().sync();
+        assertEquals(List.of(), server.discoveredAddresses(), "a closed endpoint announces nothing");
     }
 
     /** Waits until the endpoint's monitors were read this often, which a refresh does once per second. */
