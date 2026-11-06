@@ -160,8 +160,13 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
                 return;
             }
             switch (reply) {
-                case HttpStatusService.Reply.Document(String json) ->
-                        write(response(HttpResponseStatus.OK, "application/json", json), keep);
+                case HttpStatusService.Reply.Document document ->
+                        write(response(HttpResponseStatus.OK, "application/json", document.json()), keep)
+                                .addListener(written -> {
+                                    if (written.isSuccess()) {
+                                        service.served(statusRequest, document);
+                                    }
+                                });
                 case HttpStatusService.Reply.Declined _ -> respond(HttpResponseStatus.NOT_FOUND, false);
                 case HttpStatusService.Reply.Empty _ -> respond(HttpResponseStatus.OK, keep);
                 case null -> respond(HttpResponseStatus.OK, keep);
@@ -190,9 +195,18 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         int localPort = ctx.channel().localAddress() instanceof InetSocketAddress local ? local.getPort() : 0;
         Join.Addressed addressed = new Join.Addressed(request.headers().get(HttpHeaderNames.HOST), localPort,
                 signaling.trustedProxies().isProxy(peer));
-        Exchange exchange = new Exchange();
         // From the end of the request, also for one that waited behind a status request (E-4)
-        exchange.start(receivedNanos + signaling.negotiationTimeout().toNanos());
+        long remainingNanos = receivedNanos + signaling.negotiationTimeout().toNanos()
+                - ctx.executor().ticker().nanoTime();
+        if (remainingNanos <= 0) {
+            // Too late to start: an endpoint answering at once would beat the expiry task
+            NetherNetHttpSignaling.log.debug("Offer from network {} at {} waited past its negotiation deadline",
+                    networkId, source);
+            respond(HttpResponseStatus.valueOf(JoinRefusal.NO_ANSWER_IN_TIME.httpStatus()), false);
+            return;
+        }
+        Exchange exchange = new Exchange();
+        exchange.start(remainingNanos);
         Join join = new Join(exchange.connectionId, networkId, offer, source, exchange, addressed);
         NetherNetHttpSignaling.log.debug("Offer {} from network {} at {} via HTTP",
                 Long.toUnsignedString(exchange.connectionId), networkId, source);
@@ -337,10 +351,9 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         private State state = State.PENDING;
         private ScheduledFuture<?> deadline;
 
-        /** @param deadlineNanos when the negotiation deadline passes, on the loop's ticker */
-        void start(long deadlineNanos) {
-            long delay = Math.max(0, deadlineNanos - ctx.executor().ticker().nanoTime());
-            deadline = ctx.executor().schedule(this::expire, delay, TimeUnit.NANOSECONDS);
+        /** @param remainingNanos how long the negotiation deadline is still ahead, more than zero */
+        void start(long remainingNanos) {
+            deadline = ctx.executor().schedule(this::expire, remainingNanos, TimeUnit.NANOSECONDS);
             ctx.channel().closeFuture().addListener(future -> onLoop(this::left));
         }
 

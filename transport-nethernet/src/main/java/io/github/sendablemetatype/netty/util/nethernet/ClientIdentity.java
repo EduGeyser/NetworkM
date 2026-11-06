@@ -69,15 +69,21 @@ public final class ClientIdentity {
         } catch (IllegalArgumentException e) {
             throw new InvalidKeyException("The client identity's key is not a secp384r1 key", e);
         }
-        // A token naming another key fails every server's proof; fail here instead
-        byte[] named;
+        // A token naming another key fails every server's proof; fail here instead. The failures
+        // keep no cause: jose4j's messages quote the token's header and claims
+        JwtClaims claims;
         try {
             JsonWebSignature parsed = new JsonWebSignature();
             parsed.setCompactSerialization(token);
-            named = IdentityPublicKey.canonical(IdentityPublicKey.fromClaim(
-                    JwtClaims.parse(parsed.getUnverifiedPayload()).getClaimValue("cpk")));
-        } catch (JoseException | InvalidJwtException | IllegalArgumentException e) {
-            throw new GeneralSecurityException("The client token is not a JWT with a readable cpk claim", e);
+            claims = JwtClaims.parse(parsed.getUnverifiedPayload());
+        } catch (JoseException | InvalidJwtException | RuntimeException e) {
+            throw new GeneralSecurityException("The client token is not a JWT");
+        }
+        byte[] named;
+        try {
+            named = IdentityPublicKey.canonical(IdentityPublicKey.fromClaim(claims.getClaimValue("cpk")));
+        } catch (IllegalArgumentException e) {
+            throw new GeneralSecurityException("The client token's cpk claim is missing or not a secp384r1 public key");
         }
         if (!Arrays.equals(named, IdentityPublicKey.canonical(signer.publicKey()))) {
             throw new InvalidKeyException("The client token's cpk names another key than the client identity's");

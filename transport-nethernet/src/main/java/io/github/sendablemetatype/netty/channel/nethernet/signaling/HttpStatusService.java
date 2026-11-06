@@ -16,13 +16,15 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Runs the {@link StatusProvider} for status requests: off the I/O threads, at most
  * {@value #MAX_CONCURRENT_CALLS} calls at once, each with a deadline. A call that fails, misses
  * its deadline or finds no room is answered with the last document served for the same
  * {@code Host}, or with an empty {@code 200}; never with an error status, since a failed status
- * request costs the client NetherNet (ruling E-6).
+ * request costs the client NetherNet (ruling E-6). A document counts as served once its response
+ * was written, which the request handler reports with {@link #served}.
  */
 final class HttpStatusService {
     static final int MAX_CONCURRENT_CALLS = 64;
@@ -31,8 +33,13 @@ final class HttpStatusService {
 
     /** What a status request is answered with. */
     sealed interface Reply {
-        /** A {@code 200} with this JSON document. */
-        record Document(String json) implements Reply {
+        /**
+         * A {@code 200} with this JSON document.
+         *
+         * @param sequence orders the provider's answers, so an older document never replaces a
+         *                 newer one; a fallback carries the sequence of the answer it repeats
+         */
+        record Document(String json, long sequence) implements Reply {
         }
 
         /** A {@code 200} with no body. */
@@ -48,9 +55,10 @@ final class HttpStatusService {
     private final Duration timeout;
     private final Executor executor;
     private final Semaphore calls = new Semaphore(MAX_CONCURRENT_CALLS);
-    private final Map<String, String> lastDocuments = new LinkedHashMap<>(16, 0.75f, true) {
+    private final AtomicLong answers = new AtomicLong();
+    private final Map<String, Reply.Document> lastDocuments = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<String, Reply.Document> eldest) {
             return size() > REMEMBERED_HOSTS;
         }
     };
@@ -82,14 +90,8 @@ final class HttpStatusService {
                 try {
                     StatusAnswer answer = provider.status(request);
                     switch (answer) {
-                        case StatusAnswer.Serve(var status) -> {
-                            String json = status.toJson();
-                            // Only the document that is served: an answer past its deadline was
-                            // never sent and may be older than the one sent since (E-6)
-                            if (reply.complete(new Reply.Document(json))) {
-                                remember(host, json);
-                            }
-                        }
+                        case StatusAnswer.Serve(var status) ->
+                                reply.complete(new Reply.Document(status.toJson(), answers.incrementAndGet()));
                         case StatusAnswer.Decline _ -> reply.complete(new Reply.Declined());
                         case null -> throw new NullPointerException("The status provider answered null");
                     }
@@ -120,18 +122,31 @@ final class HttpStatusService {
         return reply;
     }
 
-    private Reply fallback(String host) {
-        String json;
+    /**
+     * Records a document whose response was written, the only kind a fallback may repeat: one
+     * for a client that left, or past its deadline, never reached anybody (E-6).
+     *
+     * @param request  the request it answered
+     * @param document the document as {@link #query} gave it
+     */
+    void served(StatusRequest request, Reply.Document document) {
+        String host = hostKey(request.host());
         synchronized (lastDocuments) {
-            json = lastDocuments.get(host);
+            // Writes on different connections finish in any order, and a fallback repeats an
+            // older answer
+            Reply.Document last = lastDocuments.get(host);
+            if (last == null || document.sequence() > last.sequence()) {
+                lastDocuments.put(host, document);
+            }
         }
-        return json == null ? new Reply.Empty() : new Reply.Document(json);
     }
 
-    private void remember(String host, String json) {
+    private Reply fallback(String host) {
+        Reply.Document last;
         synchronized (lastDocuments) {
-            lastDocuments.put(host, json);
+            last = lastDocuments.get(host);
         }
+        return last == null ? new Reply.Empty() : last;
     }
 
     private void failed(String format, Object argument) {

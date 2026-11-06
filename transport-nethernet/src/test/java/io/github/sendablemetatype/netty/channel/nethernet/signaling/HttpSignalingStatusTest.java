@@ -24,6 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.signaling.EmbeddedHttp.get;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -195,6 +196,68 @@ class HttpSignalingStatusTest {
         next.send(get("/v1/join"));
         next.advance(500);
         assertEquals(FIRST.toJson(), next.response().body());
+    }
+
+    @Test
+    void documentForAClientThatLeftIsNotTheLastServed() {
+        List<Runnable> calls = new ArrayList<>();
+        AtomicInteger answers = new AtomicInteger();
+        start(request -> switch (answers.getAndIncrement()) {
+            case 0 -> StatusAnswer.serve(FIRST);
+            case 1 -> StatusAnswer.serve(SECOND);
+            default -> throw new IllegalStateException("status source down");
+        }, calls::add);
+
+        EmbeddedHttp first = new EmbeddedHttp(signaling);
+        connections.add(first);
+        first.send(get("/v1/join"));
+        calls.removeFirst().run();
+        assertEquals(FIRST.toJson(), first.response().body());
+
+        EmbeddedHttp gone = new EmbeddedHttp(signaling);
+        connections.add(gone);
+        gone.send(get("/v1/join"));
+        gone.channel.close();
+        calls.removeFirst().run();
+
+        EmbeddedHttp next = new EmbeddedHttp(signaling);
+        connections.add(next);
+        next.send(get("/v1/join"));
+        calls.removeFirst().run();
+        assertEquals(FIRST.toJson(), next.response().body(), "the second document never reached a client");
+    }
+
+    @Test
+    void olderDocumentNeverReplacesANewerOneThatReachedAClient() {
+        List<Runnable> calls = new ArrayList<>();
+        AtomicInteger answers = new AtomicInteger();
+        HttpStatusService service = new HttpStatusService(request -> switch (answers.getAndIncrement()) {
+            case 0 -> StatusAnswer.serve(FIRST);
+            case 2 -> StatusAnswer.serve(SECOND);
+            default -> throw new IllegalStateException("status source down");
+        }, Duration.ofSeconds(1), calls::add);
+        EmbeddedChannel loop = new EmbeddedChannel();
+        try {
+            StatusRequest request = new StatusRequest("a.example", SourcedAddress.unknown(), null, null);
+            Supplier<HttpStatusService.Reply.Document> ask = () -> {
+                CompletableFuture<HttpStatusService.Reply> reply = service.query(request, loop.eventLoop());
+                calls.removeFirst().run();
+                return assertInstanceOf(HttpStatusService.Reply.Document.class, reply.join());
+            };
+            HttpStatusService.Reply.Document first = ask.get();
+            service.served(request, first);
+            HttpStatusService.Reply.Document fallback = ask.get();
+            HttpStatusService.Reply.Document second = ask.get();
+            service.served(request, second);
+
+            // Writes on other connections finish in any order
+            service.served(request, fallback);
+            service.served(request, first);
+
+            assertEquals(SECOND.toJson(), ask.get().json());
+        } finally {
+            loop.finishAndReleaseAll();
+        }
     }
 
     @Test
