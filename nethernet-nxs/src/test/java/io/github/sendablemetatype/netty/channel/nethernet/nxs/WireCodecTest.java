@@ -2,7 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.CandidateType;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.HostCandidate;
 import org.junit.jupiter.api.Test;
 
@@ -22,7 +22,7 @@ class WireCodecTest {
     void candidatePrioritiesRankByTypeThenByOrderWithinTheType() {
         var encoded = WireCodec.candidates(List.of(
                 candidate("10.0.0.2", CandidateType.HOST),
-                candidate("203.0.113.7", CandidateType.SRFLX),
+                candidate("203.0.113.7", CandidateType.SERVER_REFLEXIVE),
                 candidate("10.0.0.3", CandidateType.HOST),
                 candidate("198.51.100.9", CandidateType.RELAY)));
         // RFC 8445 section 5.1.2.1 with component 1: the first host candidate is 2130706431

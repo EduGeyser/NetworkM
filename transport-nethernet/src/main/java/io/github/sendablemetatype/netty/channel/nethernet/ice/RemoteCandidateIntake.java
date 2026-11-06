@@ -67,7 +67,7 @@ public final class RemoteCandidateIntake {
      * RFC 8445 section 5.1.2.1 with the server reflexive type preference and local preference 0,
      * below anything the peer itself signals.
      */
-    private static final long INFERRED_PRIORITY = 100L << 24 | 255;
+    private static final long INFERRED_PRIORITY = (long) CandidateType.SERVER_REFLEXIVE.typePreference() << 24 | 255;
     private static final byte[] LIMITED_BROADCAST = {(byte) 255, (byte) 255, (byte) 255, (byte) 255};
 
     private enum Mode {

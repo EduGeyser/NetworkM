@@ -16,6 +16,7 @@
 
 package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.ProviderClient.*;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.*;
 
@@ -225,7 +226,7 @@ final class Heartbeats {
         if (snapshot != null && snapshot.candidateRevision() > 0) {
             snapshot.requireCurrent();
             List<HostCandidate> candidates = snapshot.profile().candidates();
-            boolean reflexive = candidates.stream().anyMatch(c -> c.type() == CandidateType.SRFLX);
+            boolean reflexive = candidates.stream().anyMatch(c -> c.type() == CandidateType.SERVER_REFLEXIVE);
             report = new WireCodec.ConnectivityReport(round.diagnosticsAdvertised, snapshot.candidateRevision(),
                     snapshot.probeCandidates().equals(candidates) ? null : snapshot.probeCandidates(),
                     reflexive ? CandidateMethod.WARM_STUN : runtime.config.connectivityMethod());

@@ -19,6 +19,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -127,7 +128,7 @@ class ProviderDiagnosticsTest {
                     + "\"critical\":false,\"data\":{\"stunServers\":[{\"host\":\"stun.example\",\"port\":3478}]}}}")
                     .getAsJsonObject();
             var transport = transport();
-            transport.candidates = List.of(new HostCandidate(PUBLIC, CandidateType.SRFLX));
+            transport.candidates = List.of(new HostCandidate(PUBLIC, CandidateType.SERVER_REFLEXIVE));
             var client = client(h, directory, transport, true, CandidateMethod.DISCOVERED);
             h.await(client.start());
             assertEquals(List.of(new StunServer("stun.example", 3478)), transport.stunServers.getLast());
