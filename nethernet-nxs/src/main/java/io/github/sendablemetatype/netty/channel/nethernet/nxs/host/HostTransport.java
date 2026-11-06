@@ -838,6 +838,9 @@ public final class HostTransport implements ProviderTransport {
             NetherNetChildChannel child = session.child;
             if (!session.reporting && child.isActive()) {
                 session.reporting = true;
+                // Before the sweep below, which would take a child connected just in time for a stalled handshake;
+                // only the outcome waits for the address
+                ledger.connected(session.reservation);
                 try {
                     // The address tracker belongs to the child's own loop
                     child.eventLoop().execute(() -> {
@@ -865,7 +868,6 @@ public final class HostTransport implements ProviderTransport {
             return;
         }
         session.reported = true;
-        ledger.connected(session.reservation);
         if (session.kind == Kind.ASSISTED) {
             emit(session, OutcomeStage.ICE_SEEN, "assisted_ice_dtls_established", null);
         }

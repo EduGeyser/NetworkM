@@ -24,6 +24,8 @@ import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.StunServ
 import io.github.sendablemetatype.netty.channel.nethernet.nxs.transport.TransportOutcome;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityPublicKey;
 import io.github.sendablemetatype.netty.util.nethernet.TransportIdentityBinding;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -34,6 +36,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.github.sendablemetatype.netty.channel.nethernet.nxs.host.HostFixture.CLIENT;
 import static io.github.sendablemetatype.netty.channel.nethernet.nxs.host.HostFixture.await;
@@ -180,6 +183,41 @@ class HostTransportTest {
         assertTrue(undecided.closeFuture().await(5, TimeUnit.SECONDS), "an application must decide the login");
         Thread.sleep(300);
         assertTrue(decided.isOpen(), "a decided login outlives its ticket");
+    }
+
+    @Test
+    void aChildThatActivatesRightBeforeItsHandshakeDeadlineIsNotTimedOut() throws Exception {
+        fixture.start(new HostTransport.Settings(HostTransport.Publication.FIXED, List.of(), true, false, false,
+                new TicketLedger.Limits(8192, 1000)));
+        fixture.installKey();
+        fixture.hold(fixture.mint(30).localUfrag(), CLIENT);
+        FakePeer peer = fixture.lastPeer();
+        NetherNetChildChannel child = fixture.child();
+        long pastDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1100);
+        assertEquals(TransportIdentityBinding.Result.ACCEPTED,
+                TransportIdentityBinding.verifyLogin(child, fixture.clientKey.getPublic()));
+        FakeDataLink reliable = peer.remoteChannel(ChannelParameters.reliable(NetherNetConstants.RELIABLE_CHANNEL_LABEL));
+        peer.remoteChannel(ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
+        AtomicBoolean activated = new AtomicBoolean();
+        child.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+            @Override
+            public void channelActive(ChannelHandlerContext ctx) {
+                activated.set(true);
+                ctx.fireChannelActive();
+            }
+        });
+
+        // The child activates while the loop is held past the deadline, so the first maintenance tick that sees it
+        // active is also the first one past the deadline
+        child.eventLoop().submit(() -> {
+            peer.open(reliable);
+            TimeUnit.NANOSECONDS.sleep(pastDeadline - System.nanoTime());
+            return null;
+        }).sync();
+        fixture.sync();
+        Thread.sleep(300);
+        assertTrue(activated.get(), "the child connected before the deadline");
+        assertTrue(child.isOpen(), "a child that connected in time is no stalled handshake");
     }
 
     @Test
