@@ -139,7 +139,7 @@ final class WebRtcPeer implements Peer {
         requireRole(Role.ANSWERER, "answer");
         CompletableFuture<String> stage = openStage(true);
         String stripped = SdpEdits.withoutIdentity(offer);
-        execute(() -> {
+        begin(stage, () -> {
             if (proceed(stage) && step("SetRemoteDescription", () -> connection.setRemoteDescription(
                     new RTCSessionDescription(RTCSdpType.OFFER, stripped),
                     new SetObserver("SetRemoteDescription", () -> execute(() -> createAnswer(stage)))))) {
@@ -160,7 +160,7 @@ final class WebRtcPeer implements Peer {
     public CompletionStage<String> offer() {
         requireRole(Role.OFFERER, "offer");
         CompletableFuture<String> stage = openStage(true);
-        execute(() -> {
+        begin(stage, () -> {
             if (proceed(stage)) {
                 step("CreateOffer", () -> connection.createOffer(
                         new DescriptionObserver("CreateOffer", description -> execute(() -> applyLocal(description, stage)))));
@@ -210,7 +210,7 @@ final class WebRtcPeer implements Peer {
             stage = openStage(false);
         }
         String stripped = SdpEdits.withoutIdentity(answer);
-        execute(() -> {
+        begin(stage, () -> {
             if (proceed(stage) && step("SetRemoteDescription", () -> connection.setRemoteDescription(
                     new RTCSessionDescription(RTCSdpType.ANSWER, stripped),
                     new SetObserver("SetRemoteDescription", () -> stage.complete(null))))) {
@@ -352,8 +352,10 @@ final class WebRtcPeer implements Peer {
         if (closeRequested.compareAndSet(false, true)) {
             listening = false;
             // The control thread lives until every peer of the engine has
-            // terminated, so a refusal means there is nothing left to release.
+            // terminated, so a refusal means there are no natives left to
+            // release; only the stages wait.
             if (!execute(this::terminate)) {
+                failStages();
                 terminated.complete(null);
             }
         }
@@ -366,17 +368,11 @@ final class WebRtcPeer implements Peer {
      * results settled, data channels released.
      */
     private void terminate() {
-        List<CompletableFuture<?>> stages;
         List<WebRtcLink> current;
         synchronized (lock) {
-            stages = List.copyOf(openStages);
             current = List.copyOf(links);
-            heldRemote = List.of();
-            heldLocal = List.of();
         }
-        IllegalStateException closed = new IllegalStateException("Peer closed");
-        stages.forEach(stage -> stage.completeExceptionally(closed));
-        gathered.completeExceptionally(closed);
+        failStages();
 
         List<CompletableFuture<Void>> settled = new ArrayList<>(current.size());
         for (WebRtcLink link : current) {
@@ -398,6 +394,19 @@ final class WebRtcPeer implements Peer {
         CompletableFuture.allOf(settled.toArray(CompletableFuture[]::new))
                 .completeOnTimeout(null, sendSettleTimeout.toNanos(), TimeUnit.NANOSECONDS)
                 .whenComplete((ignored, error) -> onControl(() -> abandonSends(current)));
+    }
+
+    /** Fails the open stages and drops the held candidates, once the close was requested. */
+    private void failStages() {
+        List<CompletableFuture<?>> stages;
+        synchronized (lock) {
+            stages = List.copyOf(openStages);
+            heldRemote = List.of();
+            heldLocal = List.of();
+        }
+        IllegalStateException closed = new IllegalStateException("Peer closed");
+        stages.forEach(stage -> stage.completeExceptionally(closed));
+        gathered.completeExceptionally(closed);
     }
 
     private void abandonSends(List<WebRtcLink> current) {
@@ -638,6 +647,11 @@ final class WebRtcPeer implements Peer {
         }
     }
 
+    /**
+     * A negotiation's stage. Teardown fails the stages open when it starts;
+     * a stage opened after the close request fails at once, since teardown
+     * may have passed already.
+     */
     private <T> CompletableFuture<T> openStage(boolean description) {
         CompletableFuture<T> stage = new CompletableFuture<>();
         synchronized (lock) {
@@ -647,6 +661,10 @@ final class WebRtcPeer implements Peer {
                 }
                 descriptionStarted = true;
             }
+            if (closeRequested.get()) {
+                stage.completeExceptionally(new IllegalStateException("Peer closed"));
+                return stage;
+            }
             openStages.add(stage);
         }
         stage.whenComplete((value, error) -> {
@@ -655,6 +673,13 @@ final class WebRtcPeer implements Peer {
             }
         });
         return stage;
+    }
+
+    /** Starts a negotiation on the control thread, unless its stage failed already or the engine stopped that thread. */
+    private void begin(CompletableFuture<?> stage, Runnable firstStep) {
+        if (!stage.isDone() && !execute(firstStep)) {
+            stage.completeExceptionally(new IllegalStateException("The WebRTC engine is closed"));
+        }
     }
 
     /** Whether the next step of a negotiation may run; fails the stage if not. */

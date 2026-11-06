@@ -482,6 +482,30 @@ class WebRtcPeerTest {
     }
 
     @Test
+    void negotiationsOnAClosedPeerFailAtOnce() {
+        WebRtcPeer offerer = peer(Role.OFFERER, null);
+        offerer.close();
+        control.runAll();
+
+        CompletableFuture<String> offer = offerer.offer().toCompletableFuture();
+        CompletableFuture<Void> applied = offerer.applyAnswer(ANSWER).toCompletableFuture();
+
+        assertFailedWith(offer, "Peer closed");
+        assertFailedWith(applied, "Peer closed");
+        assertEquals(0, control.pending());
+    }
+
+    @Test
+    void negotiationsFailWhenTheEngineStoppedTheControlThread() {
+        WebRtcPeer answerer = peer(Role.ANSWERER, null);
+        control.shutdown = true;
+
+        assertFailedWith(answerer.answer(OFFER).toCompletableFuture(), "The WebRTC engine is closed");
+        answerer.close();
+        assertFailedWith(answerer.gatheredLocalDescription().toCompletableFuture(), "Peer closed");
+    }
+
+    @Test
     void rolesAndOrderAreEnforced() {
         WebRtcPeer answerer = peer(Role.ANSWERER, null);
         assertThrows(IllegalStateException.class, answerer::offer);
