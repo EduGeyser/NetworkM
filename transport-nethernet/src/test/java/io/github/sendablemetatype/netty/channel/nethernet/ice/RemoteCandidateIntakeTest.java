@@ -173,6 +173,50 @@ class RemoteCandidateIntakeTest {
         assertTrue(intake.trickled("candidate:1 1 udp 2130706431 2001:db8::1 5000 typ host").isPresent());
     }
 
+    // Unusable addresses
+
+    private static final List<String> UNUSABLE = List.of("224.0.0.251", "239.255.255.250", "ff02::fb",
+            "255.255.255.255", "0.0.0.0", "::", "::ffff:224.0.0.251", "::ffff:255.255.255.255", "::ffff:0.0.0.0");
+
+    @Test
+    void serverAndClientDropCandidatesAtMulticastBroadcastOrUnspecifiedAddresses() {
+        StringBuilder offer = new StringBuilder("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n");
+        for (String address : UNUSABLE) {
+            offer.append("a=candidate:1 1 udp 2122194687 ").append(address).append(" 5000 typ host\r\n");
+        }
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client())) {
+            assertEquals(0, candidates(intake.remoteDescription(offer.toString())));
+            for (String address : UNUSABLE) {
+                assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isEmpty(),
+                        address);
+            }
+        }
+    }
+
+    @Test
+    void loopbackAndLinkLocalCandidatesStay() {
+        List<String> kept = List.of("127.0.0.1", "::1", "169.254.10.20", "fe80::1", "::ffff:169.254.10.20");
+        for (RemoteCandidateIntake intake : List.of(RemoteCandidateIntake.server(), RemoteCandidateIntake.client())) {
+            intake.remoteDescription(OFFER);
+            for (String address : kept) {
+                assertTrue(intake.trickled("candidate:2 1 udp 2122194687 " + address + " 5000 typ host").isPresent(),
+                        address);
+            }
+        }
+    }
+
+    @Test
+    void aDroppedCandidateCountsForNothing() {
+        // A reflexive candidate would mean the peer needs no guessing, and a relay would be noted
+        RemoteCandidateIntake intake = RemoteCandidateIntake.server();
+        intake.remoteDescription(HOST_ONLY_OFFER.replace("a=mid:0",
+                "a=candidate:4 1 udp 1678767103 0.0.0.0 55474 typ srflx raddr 0.0.0.0 rport 0\r\na=mid:0"));
+        intake.trickled("candidate:5 1 udp 16777215 224.0.0.1 3478 typ relay raddr 0.0.0.0 rport 0");
+
+        assertEquals(2, intake.inferredCandidates("v=0\r\n", PUBLIC_PEER).size());
+        assertFalse(intake.isPeerRelay(new InetSocketAddress("224.0.0.1", 3478)));
+    }
+
     // Relays
 
     /**

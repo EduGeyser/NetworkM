@@ -26,6 +26,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
@@ -41,6 +42,11 @@ import java.util.Set;
  * check. NetherNet gathers no TCP, so TCP candidates only use up the cap. Behind PROXY protocol
  * relays the server applies none: players reach it only through their relay, and it must never
  * contact them directly. Real clients sent only IPv4 UDP host candidates (2026-11-05 captures).
+ * <p>
+ * Server and client alike drop candidates at a multicast, limited broadcast or unspecified
+ * address: no peer can answer a check from there, and a check sent there reaches whatever
+ * listens on the sender's network rather than the peer. Loopback and link-local stay, for peers
+ * on the same host or link.
  * <p>
  * Trickled candidates carry no m-section, so they are tagged with the remote description's first
  * m-section and its {@code a=mid}: libwebrtc refuses a candidate whose mid matches no section.
@@ -62,6 +68,7 @@ public final class RemoteCandidateIntake {
      * below anything the peer itself signals.
      */
     private static final long INFERRED_PRIORITY = 100L << 24 | 255;
+    private static final byte[] LIMITED_BROADCAST = {(byte) 255, (byte) 255, (byte) 255, (byte) 255};
 
     private enum Mode {
         /** IP literals only, capped. */
@@ -140,6 +147,9 @@ public final class RemoteCandidateIntake {
                     log.debug("Dropping an unreadable remote candidate: {}", line);
                     continue;
                 }
+                if (unusable(candidate.get())) {
+                    continue;
+                }
                 note(candidate.get());
                 if (!takes(candidate.get()) || kept >= MAX_CANDIDATES) {
                     continue;
@@ -163,6 +173,9 @@ public final class RemoteCandidateIntake {
         Optional<CandidateLine> line = CandidateLine.parse(candidate);
         if (line.isEmpty()) {
             log.debug("Ignoring an unreadable remote candidate: {}", candidate);
+            return Optional.empty();
+        }
+        if (unusable(line.get())) {
             return Optional.empty();
         }
         note(line.get());
@@ -241,6 +254,26 @@ public final class RemoteCandidateIntake {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a candidate's address can never be the peer: multicast ({@code 224.0.0.0/4},
+     * {@code ff00::/8}), limited broadcast or unspecified. Its IPv4-mapped form counts as the IPv4
+     * address, as {@link CandidateLine#ipAddress} reads it. A dropped candidate is not noted
+     * either, so it neither counts as a relay nor shapes inferred candidates.
+     */
+    private static boolean unusable(CandidateLine candidate) {
+        Optional<InetAddress> address = candidate.ipAddress();
+        if (address.isEmpty()) {
+            return false;
+        }
+        InetAddress ip = address.get();
+        boolean unusable = ip.isMulticastAddress() || ip.isAnyLocalAddress()
+                || (ip instanceof Inet4Address && Arrays.equals(ip.getAddress(), LIMITED_BROADCAST));
+        if (unusable) {
+            log.debug("Dropping a remote candidate at an unusable address: {}", candidate);
+        }
+        return unusable;
     }
 
     private boolean takes(CandidateLine candidate) {
