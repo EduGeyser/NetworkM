@@ -46,6 +46,7 @@ public final class AdmissionGate {
             }
         }
 
+        /** The limits a host uses unless it has a reason to change them. */
         public static Limits defaults() {
             return new Limits(1024, 8192, 1024, 15_000);
         }
@@ -73,14 +74,17 @@ public final class AdmissionGate {
             this.loginDeadlineNanos = nanos + (admission.expiresAt() - millis) * 1_000_000L;
         }
 
+        /** The admitted ticket. */
         public TicketId ticketId() {
             return ticketId;
         }
 
+        /** The client's address this reservation holds. */
         public InetSocketAddress tuple() {
             return tuple;
         }
 
+        /** When the gate accepted the request, on the clock the caller passed. */
         public long acceptedNanos() {
             return acceptedNanos;
         }
@@ -112,6 +116,9 @@ public final class AdmissionGate {
     private int pendingAtRejection;
     private boolean pendingWarningEmitted;
 
+    /**
+     * @param validator Checks each request before the gate reserves anything for it
+     */
     public AdmissionGate(Limits limits, AdmissionValidator validator) {
         this.limits = Objects.requireNonNull(limits);
         this.validator = Objects.requireNonNull(validator);
@@ -210,6 +217,7 @@ public final class AdmissionGate {
         }
     }
 
+    /** Counts a request the endpoint rejected before it reached the gate, so {@link #stats} include it. */
     public synchronized void invalidNativeRequest() {
         invalid++;
     }
@@ -264,6 +272,7 @@ public final class AdmissionGate {
         return timedOut;
     }
 
+    /** Refuses new reservations from now on; reserved sessions carry on. */
     public synchronized void drain() {
         draining = true;
     }
@@ -285,6 +294,7 @@ public final class AdmissionGate {
         return active;
     }
 
+    /** The current counts. */
     public synchronized Stats stats() {
         return new Stats(tuples.size(), pending, claims.size(), invalid, replayRejected, capacityRejected, accepted);
     }

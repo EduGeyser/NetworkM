@@ -18,6 +18,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.transport;
 
 /** The endpoint is live but its candidates or identity changed since the capture; capture a fresh profile. */
 public final class ProfileReplacedException extends IllegalStateException {
+    /** A replacement with the standard message. */
     public ProfileReplacedException() {
         super("Host profile replaced since its capture");
     }

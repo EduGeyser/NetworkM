@@ -39,6 +39,10 @@ public final class ProviderOrigin {
         return origin;
     }
 
+    /**
+     * Whether a value is a canonical provider origin: the exact bytes the specification accepts, never
+     * normalized.
+     */
     public static boolean isCanonical(String value) {
         if (value == null || value.length() > 2048) {
             return false;
@@ -85,6 +89,9 @@ public final class ProviderOrigin {
                 || host.equals("[::1]");
     }
 
+    /**
+     * @throws IllegalArgumentException If the value is not a canonical provider origin
+     */
     public static void requireCanonical(String value) {
         if (!isCanonical(value)) {
             throw new IllegalArgumentException("Invalid canonical control origin");

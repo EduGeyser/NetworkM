@@ -158,50 +158,62 @@ public final class ProviderRuntimeConfiguration {
             return new Builder(endpoint);
         }
 
+        /** The provider's origin as configured. */
         public String endpoint() {
             return endpoint;
         }
 
+        /** The authorization token, or null for anonymous registration. */
         public String token() {
             return token;
         }
 
+        /** The endpoints to advertise; port 0 stands for the gameplay port. */
         public List<InetSocketAddress> advertiseAddresses() {
             return advertiseAddresses;
         }
 
+        /** The configured label, or null when none is configured. */
         public String label() {
             return label;
         }
 
+        /** Whether the provider may check connectivity with diagnostic joins. */
         public boolean connectionChecks() {
             return connectionChecks;
         }
 
+        /** Whether the endpoint discovers its public mapping with STUN. */
         public boolean stunDiscovery() {
             return stunDiscovery;
         }
 
+        /** Whether the provider may push assisted joins. */
         public boolean assistedJoins() {
             return assistedJoins;
         }
 
+        /** Whether stopping removes the registration. */
         public boolean deregisterOnShutdown() {
             return deregisterOnShutdown;
         }
 
+        /** Whether the host reports game outcomes for admitted tickets. */
         public boolean gameOutcomes() {
             return gameOutcomes;
         }
 
+        /** The declared location, or null for none. */
         public ProviderClient.Location location() {
             return location;
         }
 
+        /** The declared protocols, or null for none. */
         public ProviderClient.BedrockProtocols bedrockProtocols() {
             return bedrockProtocols;
         }
 
+        /** Whether players reach the host only through PROXY protocol relays. */
         public boolean relayed() {
             return relayed;
         }
@@ -314,16 +326,19 @@ public final class ProviderRuntimeConfiguration {
                 return this;
             }
 
+            /** The settings as built so far. */
             public Settings build() {
                 return new Settings(this);
             }
         }
     }
 
+    /** The provider's canonical origin. */
     public URI origin() {
         return origin;
     }
 
+    /** Where the client keeps its state file. */
     public Path stateDirectory() {
         return stateDirectory;
     }
@@ -333,10 +348,12 @@ public final class ProviderRuntimeConfiguration {
         return label;
     }
 
+    /** The gameplay UDP port handed out to players. */
     public int udpPort() {
         return udpPort;
     }
 
+    /** The routing capacity registered with the provider. */
     public int capacity() {
         return capacity;
     }
@@ -370,6 +387,7 @@ public final class ProviderRuntimeConfiguration {
         return assistedJoins(settings);
     }
 
+    /** Whether players reach the host only through PROXY protocol relays. */
     public boolean relayed() {
         return settings.relayed();
     }
@@ -384,6 +402,7 @@ public final class ProviderRuntimeConfiguration {
         return settings.assistedJoins() && !settings.relayed();
     }
 
+    /** The client configuration these settings call for. */
     public ProviderClient.Configuration clientConfiguration() {
         return ProviderClient.Configuration.builder(origin)
                 .label(label)

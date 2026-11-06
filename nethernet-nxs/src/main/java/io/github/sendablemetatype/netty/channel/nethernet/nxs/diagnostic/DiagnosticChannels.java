@@ -82,18 +82,22 @@ public final class DiagnosticChannels {
         return connected && open[0] && open[1] && !failed && !protocolFailed;
     }
 
+    /** Whether a channel failed below the diagnostic protocol. */
     public synchronized boolean failedTransport() {
         return failed;
     }
 
+    /** Whether the peer broke the diagnostic protocol. */
     public synchronized boolean protocolFailed() {
         return protocolFailed;
     }
 
+    /** The frames received so far. */
     public synchronized int receivedFrames() {
         return receivedFrames;
     }
 
+    /** The bytes received so far. */
     public synchronized int receivedBytes() {
         return receivedBytes;
     }
@@ -129,6 +133,7 @@ public final class DiagnosticChannels {
         return frame;
     }
 
+    /** Drops a received frame that was not polled. */
     public synchronized void clear() {
         incoming = null;
     }

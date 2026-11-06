@@ -11,6 +11,7 @@ public record DiagnosticHostPolicy(
         Set<Endpoint> endpoints,
         long expiresAt,
         Map<Endpoint, Long> endpointExpiries) {
+    /** A policy whose endpoints all expire with the policy. */
     public DiagnosticHostPolicy(
             Context context, List<Key> keys, Set<Endpoint> endpoints, long expiresAt) {
         this(context, keys, endpoints, expiresAt, deadlines(endpoints, expiresAt));
@@ -41,14 +42,17 @@ public record DiagnosticHostPolicy(
             }
         }
 
+        /** An assisted check of a family, which names no target address. */
         public static Endpoint assisted(int family, long candidateRevision) {
             return new Endpoint(family, "00".repeat(16), 0, candidateRevision);
         }
 
+        /** Whether this is an assisted check. */
         public boolean assisted() {
             return port == 0;
         }
 
+        /** The endpoint a token's claims target. */
         public static Endpoint from(Claims claims) {
             return new Endpoint(
                     claims.family(),

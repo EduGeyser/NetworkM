@@ -35,6 +35,7 @@ public final class DiagnosticExchange {
         }
     }
 
+    /** Starts the exchange; the prober sends its PING now. Runs once. */
     public synchronized void start() {
         if (started || failed) {
             throw invalid();
@@ -45,6 +46,11 @@ public final class DiagnosticExchange {
         }
     }
 
+    /**
+     * Takes the peer's frame: the host answers a valid PING with its PONG, the prober checks the echo.
+     *
+     * @throws IllegalArgumentException If the frame is not the one the exchange expects
+     */
     public synchronized void receive(int channel, byte[] input) {
         if (!started
                 || failed
@@ -78,18 +84,22 @@ public final class DiagnosticExchange {
         return !host && !failed && received;
     }
 
+    /** The frames sent so far. */
     public synchronized int sentFrames() {
         return sentFrames;
     }
 
+    /** The bytes sent so far. */
     public synchronized int sentBytes() {
         return sentBytes;
     }
 
+    /** The frames received so far. */
     public synchronized int receivedFrames() {
         return receivedFrames;
     }
 
+    /** The bytes received so far. */
     public synchronized int receivedBytes() {
         return receivedBytes;
     }
@@ -105,6 +115,7 @@ public final class DiagnosticExchange {
         }
     }
 
+    /** The 56-byte frame for a PING or PONG of an attempt, on channel 0. */
     public static byte[] encode(String attemptIdHex, int kind, int channel, byte[] value) {
         if (value.length != 32 || (kind != PING && kind != PONG) || channel != 0) {
             throw invalid();

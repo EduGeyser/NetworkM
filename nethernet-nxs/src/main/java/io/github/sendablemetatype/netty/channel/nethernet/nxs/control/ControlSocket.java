@@ -209,6 +209,7 @@ public final class ControlSocket {
         return closed.minimalCompletionStage();
     }
 
+    /** Queues one complete message with no guard. */
     public CompletionStage<Void> sendText(String text) {
         return sendText(text, OwnershipGuard.ALWAYS);
     }
@@ -266,6 +267,7 @@ public final class ControlSocket {
         owner.execute(() -> violate(POLICY_VIOLATION, reason));
     }
 
+    /** Ends the connection at once, without a close frame; queued sends fail. */
     public void abort() {
         owner.execute(() -> fail(new IOException("WebSocket aborted")));
     }

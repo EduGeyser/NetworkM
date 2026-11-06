@@ -108,6 +108,7 @@ public final class DiagnosticAdmissionCodec {
             Objects.requireNonNull(nanoTime);
         }
 
+        /** The system's wall and monotonic clocks. */
         public static Clock system() {
             return new Clock(System::currentTimeMillis, System::nanoTime);
         }
@@ -130,6 +131,7 @@ public final class DiagnosticAdmissionCodec {
         }
     }
 
+    /** The length of a diagnostic ufrag that carries an ICE password of this many bytes. */
     public static int ufragLength(int passwordBytes) {
         if (passwordBytes < 0 || passwordBytes > 65535) {
             throw invalid();
@@ -141,6 +143,7 @@ public final class DiagnosticAdmissionCodec {
         return "nxs-stateless-host-v1/" + context.incarnation();
     }
 
+    /** Issues a diagnostic token with a random nonce, the prober's side of diagnostic admission. */
     public static Credentials issue(
             Context context,
             Key key,
@@ -189,6 +192,11 @@ public final class DiagnosticAdmissionCodec {
         return new Credentials(credentials.localUfrag(), credentials.icePwd());
     }
 
+    /**
+     * Opens a diagnostic token for this host.
+     *
+     * @return The admission, or null when the token does not admit a check of this host now
+     */
     public static Admission open(
             Context context,
             Key key,

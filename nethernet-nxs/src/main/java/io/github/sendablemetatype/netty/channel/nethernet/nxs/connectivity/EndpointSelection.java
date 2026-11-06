@@ -167,28 +167,34 @@ public final class EndpointSelection {
         }
     }
 
+    /** The socket's bound address. */
     public InetSocketAddress bind() {
         return bind;
     }
 
+    /** Whether the operator listed the endpoints, so none are discovered. */
     public boolean configured() {
         return configured;
     }
 
+    /** The address families the socket serves. */
     public Set<AddressFamily> socketFamilies() {
         return socketFamilies;
     }
 
+    /** Every candidate, in preference order. */
     public List<Candidate> candidates() {
         return candidates;
     }
 
+    /** One family's candidates, in preference order. */
     public List<Candidate> candidates(AddressFamily family) {
         return candidates.stream()
                 .filter(c -> AddressFamily.of(c.endpoint().getAddress()) == family)
                 .toList();
     }
 
+    /** One family's candidates with a public address. */
     public List<Candidate> publicCandidates(AddressFamily family) {
         return candidates(family).stream()
                 .filter(

@@ -380,7 +380,6 @@ final class Registrar {
         }
     }
 
-    /** Proves and installs a replacement machine key, then retires the old one. */
     /** The canonical array the replacement machine key signs to prove it may take over the registration. */
     static String rotationPayload(String audience, String instanceId, String oldKeyId, JsonObject replacementJwk,
                                   long generation, String intent) {
@@ -388,6 +387,7 @@ final class Registrar {
                 ProviderCrypto.thumbprint(replacementJwk), generation, intent);
     }
 
+    /** Proves and installs a replacement machine key, then retires the old one. */
     CompletableFuture<Registration> rotateMachineKey() {
         return Async.attempt(() -> {
             runtime.requireResolved();

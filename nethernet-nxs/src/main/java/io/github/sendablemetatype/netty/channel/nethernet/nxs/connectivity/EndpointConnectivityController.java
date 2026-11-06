@@ -46,6 +46,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
             long failedTransactions,
             long lastSuccessAgeMillis,
             long freshUntilNanos) {
+        /** Whether the reading still counts as fresh at {@code nowNanos}. */
         public boolean freshAt(long nowNanos) {
             return lastSuccessAgeMillis >= 0 && nowNanos - freshUntilNanos < 0;
         }
@@ -132,6 +133,7 @@ public final class EndpointConnectivityController implements AutoCloseable {
         }
     }
 
+    /** Where each family stands now, after reading the STUN monitors. */
     public synchronized Snapshot snapshot() {
         EnumMap<AddressFamily, FamilySnapshot> result = new EnumMap<>(AddressFamily.class);
         List<StunObservation> polled = new ArrayList<>();

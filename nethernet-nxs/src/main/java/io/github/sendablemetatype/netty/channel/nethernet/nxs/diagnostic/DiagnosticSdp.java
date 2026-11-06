@@ -143,6 +143,11 @@ public record DiagnosticSdp(
                 hex(digest(bytes)));
     }
 
+    /**
+     * Reads a prober's offer and checks it against its token's claims.
+     *
+     * @throws IllegalArgumentException If the offer does not match the profile or the claims
+     */
     public static DiagnosticSdp offer(byte[] input, Claims claims, String remoteUfrag) {
         DiagnosticSdp sdp = parse(input, claims, false);
         if (!sdp.ufrag.equals(DiagnosticAdmissionCodec.ufrag(remoteUfrag))
@@ -172,6 +177,7 @@ public record DiagnosticSdp(
         return sdp;
     }
 
+    /** The endpoint the SDP names, read as the given family. */
     public InetSocketAddress endpoint(int family) {
         byte[] bytes = unhex(addressHex, 16);
         try {

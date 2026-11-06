@@ -33,6 +33,12 @@ public final class ProviderShutdown implements AutoCloseable {
     private final AtomicBoolean requested = new AtomicBoolean();
     private final Thread hook;
 
+    /**
+     * Registers a shutdown hook that stops the client and waits up to 20 seconds for it.
+     *
+     * @param cleanup     Runs once the stop completes or fails
+     * @param diagnostics Takes a message when the stop does not finish in time
+     */
     public ProviderShutdown(Supplier<? extends CompletionStage<Void>> stop, Runnable cleanup, Consumer<String> diagnostics) {
         this.stop = stop;
         this.cleanup = cleanup;

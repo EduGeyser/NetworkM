@@ -17,6 +17,7 @@ public enum CandidateMethod {
         this.wire = wire;
     }
 
+    /** The name on the wire. */
     public String wire() {
         return wire;
     }

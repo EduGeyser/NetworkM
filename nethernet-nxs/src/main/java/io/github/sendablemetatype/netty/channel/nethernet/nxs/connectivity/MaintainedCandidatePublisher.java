@@ -110,6 +110,10 @@ public final class MaintainedCandidatePublisher implements AutoCloseable {
                 && selection.socketFamilies().stream().anyMatch(f -> selection.publicCandidates(f).isEmpty());
     }
 
+    /**
+     * Points STUN discovery at numeric servers, one per family, for each family that has no public local
+     * address. Does nothing when the operator configured the endpoints.
+     */
     public synchronized void configureStunServers(Map<AddressFamily, InetSocketAddress> numericServers) {
         requireOpen();
         if (selection.configured()) {
@@ -166,6 +170,7 @@ public final class MaintainedCandidatePublisher implements AutoCloseable {
         return Map.copyOf(selected);
     }
 
+    /** The candidates to publish now, from the selection and the fresh STUN readings. */
     public synchronized Publication refresh() {
         requireOpen();
         List<HostCandidate> direct = new ArrayList<>(), reflexive = new ArrayList<>(), local = new ArrayList<>();

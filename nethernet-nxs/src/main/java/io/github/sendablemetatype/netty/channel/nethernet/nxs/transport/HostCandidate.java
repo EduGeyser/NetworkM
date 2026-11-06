@@ -26,10 +26,12 @@ public record HostCandidate(InetSocketAddress endpoint, CandidateType type) {
         }
     }
 
+    /** A host candidate. */
     public static HostCandidate host(InetSocketAddress endpoint) {
         return new HostCandidate(endpoint, CandidateType.HOST);
     }
 
+    /** The endpoint's address family. */
     public AddressFamily family() {
         return AddressFamily.of(endpoint.getAddress());
     }

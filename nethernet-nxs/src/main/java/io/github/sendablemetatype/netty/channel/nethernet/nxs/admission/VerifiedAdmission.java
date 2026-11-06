@@ -61,6 +61,7 @@ public record VerifiedAdmission(
         }
     }
 
+    /** Whether this admits a connectivity check rather than a player. */
     public boolean diagnostic() {
         return StatelessAdmissionCodec.DIAGNOSTIC_NETWORK_ID.equals(networkId);
     }

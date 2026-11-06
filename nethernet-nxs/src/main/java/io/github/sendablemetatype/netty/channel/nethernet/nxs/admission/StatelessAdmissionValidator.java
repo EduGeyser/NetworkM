@@ -242,10 +242,12 @@ public final class StatelessAdmissionValidator implements AdmissionValidator {
         }
     }
 
+    /** Whether any admission key is installed. */
     public boolean ready() {
         return !keys.isEmpty();
     }
 
+    /** The installed keys' IDs. */
     public Set<String> keyIds() {
         return keys.keySet();
     }

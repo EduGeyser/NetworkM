@@ -19,6 +19,7 @@ public enum OutcomeStage {
         this.wire = wire;
     }
 
+    /** The name on the wire. */
     public String wire() {
         return wire;
     }

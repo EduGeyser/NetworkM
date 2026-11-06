@@ -29,6 +29,7 @@ public record AdmissionPrincipal(TicketId ticketId, String networkId, String key
     public static final AttributeKey<AdmissionPrincipal> KEY =
             AttributeKey.valueOf(AdmissionPrincipal.class, "principal");
 
+    /** Who an admission let in. */
     public static AdmissionPrincipal of(AdmissionContext admission) {
         return new AdmissionPrincipal(admission.ticketId(), admission.networkId(), admission.keyId());
     }

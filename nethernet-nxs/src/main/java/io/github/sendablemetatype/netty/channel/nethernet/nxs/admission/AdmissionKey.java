@@ -20,6 +20,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.nxs.admission;
  * A provider-issued admission key epoch. Tokens under it are accepted until {@code retireAfter}.
  */
 public record AdmissionKey(String keyId, String secret, long retireAfter) {
+    /** A key that is never retired. */
     public AdmissionKey(String keyId, String secret) {
         this(keyId, secret, Long.MAX_VALUE);
     }

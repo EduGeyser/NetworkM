@@ -113,10 +113,12 @@ public final class ProviderClient implements AutoCloseable {
             }
         }
 
+        /** A builder for a provider origin. */
         public static Builder builder(URI provider) {
             return new Builder(provider);
         }
 
+        /** The provider's origin. */
         public URI provider() {
             return provider;
         }
@@ -126,38 +128,47 @@ public final class ProviderClient implements AutoCloseable {
             return label;
         }
 
+        /** The bearer token, or null for anonymous registration. */
         public String authorizationToken() {
             return authorizationToken;
         }
 
+        /** Which carrier signed operations use. */
         public ControlTransport controlTransport() {
             return controlTransport;
         }
 
+        /** Whether the host accepts diagnostic joins. */
         public boolean diagnosticAdmission() {
             return diagnosticAdmission;
         }
 
+        /** How the host found the candidates it publishes. */
         public CandidateMethod connectivityMethod() {
             return connectivityMethod;
         }
 
+        /** Whether the provider may push assisted joins. */
         public boolean assistedJoins() {
             return assistedJoins;
         }
 
+        /** Whether stopping removes the registration. */
         public boolean deregisterOnShutdown() {
             return deregisterOnShutdown;
         }
 
+        /** Whether the host reports game outcomes for admitted tickets. */
         public boolean gameOutcomes() {
             return gameOutcomes;
         }
 
+        /** The declared location, or null for none. */
         public Location location() {
             return location;
         }
 
+        /** The declared protocols, or null for none. */
         public BedrockProtocols bedrockProtocols() {
             return bedrockProtocols;
         }
@@ -204,6 +215,7 @@ public final class ProviderClient implements AutoCloseable {
                 return this;
             }
 
+            /** Selects the carrier for signed operations; HTTP unless set. */
             public Builder controlTransport(ControlTransport controlTransport) {
                 this.controlTransport = Objects.requireNonNull(controlTransport);
                 return this;
@@ -257,6 +269,7 @@ public final class ProviderClient implements AutoCloseable {
                 return this;
             }
 
+            /** The configuration, checked as a whole. */
             public Configuration build() {
                 return new Configuration(this);
             }
@@ -445,6 +458,7 @@ public final class ProviderClient implements AutoCloseable {
             return actionUrl == null ? description : description + " " + actionUrl;
         }
 
+        /** The HTTP status of the refusal. */
         public int status() {
             return status;
         }

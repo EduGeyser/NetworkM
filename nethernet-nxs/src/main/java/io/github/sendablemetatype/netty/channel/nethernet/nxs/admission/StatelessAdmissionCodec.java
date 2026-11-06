@@ -78,6 +78,7 @@ public final class StatelessAdmissionCodec {
         }
     }
 
+    /** The AES-256-GCM key for an audience, derived from the admission key's secret. */
     public static byte[] encryptionKey(byte[] secret, String audience) {
         return hmac(secret, utf8("nxs-stateless-aead-v1\0" + audience));
     }
@@ -87,6 +88,7 @@ public final class StatelessAdmissionCodec {
         return utf8("nxs-stateless-ice-v1\0" + audience + "\0");
     }
 
+    /** The ICE password the host uses with a token, derived from the secret, the audience and the token. */
     public static String icePassword(byte[] secret, String audience, String token) {
         byte[] context = icePasswordContext(audience), suffix = utf8(token),
                 input = Arrays.copyOf(context, context.length + suffix.length);
@@ -94,6 +96,11 @@ public final class StatelessAdmissionCodec {
         return BASE64.encodeToString(Arrays.copyOf(hmac(secret, input), 24));
     }
 
+    /**
+     * Encrypts claims into a token, the provider's side of stateless admission.
+     *
+     * @param nonce 12 bytes, never reused with the same key
+     */
     public static Credentials issue(
             String keyId,
             String secret,
@@ -133,6 +140,11 @@ public final class StatelessAdmissionCodec {
         }
     }
 
+    /**
+     * Decrypts a token and checks its shape.
+     *
+     * @throws IllegalArgumentException If the token is malformed or does not authenticate
+     */
     public static Claims open(
             byte[] encryptionKey, String audience, String token, String remoteUfrag) {
         if (token.length() > 256 || !token.matches("NXS1[A-Z0-9]{4}[A-Za-z0-9+/]+")) {

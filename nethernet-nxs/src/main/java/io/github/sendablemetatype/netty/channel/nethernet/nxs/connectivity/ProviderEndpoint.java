@@ -30,6 +30,13 @@ import java.util.*;
  * @param advertised The endpoints in preference order
  */
 public record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> advertised) {
+    /**
+     * The bound addresses, all interfaces for a wildcard bind, plus the configured external endpoints.
+     *
+     * @param localDevelopment Whether loopback endpoints may be advertised, for a provider on this machine
+     * @throws IOException If the bind address or a configured endpoint is unusable, or there is nothing or
+     *                     too much to advertise
+     */
     public static ProviderEndpoint resolve(InetSocketAddress bind, List<InetSocketAddress> external, boolean localDevelopment) throws IOException {
         if (bind.isUnresolved()) throw new IOException("Provider bind-address could not be resolved");
         return resolve(bind, external, localDevelopment, bind.getAddress().isAnyLocalAddress() ? interfaces() : List.of());
@@ -135,6 +142,7 @@ public record ProviderEndpoint(InetSocketAddress bind, List<InetSocketAddress> a
         return advertised.stream().map(HostCandidate::host).toList();
     }
 
+    /** What an operator should know about the advertised endpoints. */
     public List<String> warnings() {
         List<String> messages = new ArrayList<>();
         if (advertised.stream().noneMatch(endpoint -> EndpointAddress.scope(endpoint.getAddress()) == EndpointAddress.Scope.PUBLIC)) {

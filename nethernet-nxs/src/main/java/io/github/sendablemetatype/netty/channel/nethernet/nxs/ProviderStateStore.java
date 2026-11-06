@@ -34,6 +34,11 @@ public final class ProviderStateStore implements AutoCloseable {
     private final FileLock lock;
     private boolean closed;
 
+    /**
+     * Opens the state directory, creating it readable by its owner only, and locks it against a second client.
+     *
+     * @throws IOException If the directory cannot be created or another client holds it
+     */
     public ProviderStateStore(Path directory) throws IOException {
         this.directory = directory.toAbsolutePath();
         this.stateFile = this.directory.resolve("provider-state.json");

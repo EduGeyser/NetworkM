@@ -14,6 +14,7 @@ public enum AddressFamily {
         this.number = number;
     }
 
+    /** The address's family. */
     public static AddressFamily of(InetAddress address) {
         return address instanceof Inet4Address ? IPV4 : IPV6;
     }

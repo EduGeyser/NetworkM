@@ -17,6 +17,7 @@ public enum CandidateType {
         this.preference = preference;
     }
 
+    /** The name on the wire. */
     public String wire() {
         return wire;
     }
