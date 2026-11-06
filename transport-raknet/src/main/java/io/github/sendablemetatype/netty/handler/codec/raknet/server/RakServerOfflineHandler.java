@@ -94,17 +94,33 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
 
         switch (packetId) {
             case ID_UNCONNECTED_PING:
-                if (metrics != null) metrics.unconnectedPing(packet.sender());
+                if (metrics != null) {
+                    try {
+                        metrics.unconnectedPing(packet.sender());
+                    } catch (RuntimeException cause) {
+                        log.warn("Failed to report an unconnected ping from {}", packet.sender(), cause);
+                    }
+                }
                 this.onUnconnectedPing(ctx, packet, magicBuf, guid);
                 break;
             case ID_OPEN_CONNECTION_REQUEST_1:
-                if (metrics != null) metrics.connectionInitPacket(packet.sender(), ID_OPEN_CONNECTION_REQUEST_1);
+                reportConnectionInitPacket(metrics, packet.sender(), ID_OPEN_CONNECTION_REQUEST_1);
                 this.onOpenConnectionRequest1(ctx, packet, magicBuf, guid);
                 break;
             case ID_OPEN_CONNECTION_REQUEST_2:
-                if (metrics != null) metrics.connectionInitPacket(packet.sender(), ID_OPEN_CONNECTION_REQUEST_2);
+                reportConnectionInitPacket(metrics, packet.sender(), ID_OPEN_CONNECTION_REQUEST_2);
                 this.onOpenConnectionRequest2(ctx, packet, magicBuf, guid);
                 break;
+        }
+    }
+
+    private static void reportConnectionInitPacket(RakServerMetrics metrics, InetSocketAddress sender, int packetId) {
+        if (metrics != null) {
+            try {
+                metrics.connectionInitPacket(sender, packetId);
+            } catch (RuntimeException cause) {
+                log.warn("Failed to report connection packet {} from {}", packetId, sender, cause);
+            }
         }
     }
 
@@ -212,7 +228,11 @@ public class RakServerOfflineHandler extends AdvancedChannelInboundHandler<Datag
 
                 RakServerMetrics metrics = this.channel.config().getMetrics();
                 if (metrics != null) {
-                    metrics.invalidCookie(sender);
+                    try {
+                        metrics.invalidCookie(sender);
+                    } catch (RuntimeException cause) {
+                        log.warn("Failed to report an invalid cookie from {}", sender, cause);
+                    }
                 }
 
                 // Incorrect/invalid cookie provided
