@@ -257,14 +257,16 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     // ---- Sources ----
 
     /**
-     * Adds a join source whose offers must prove their key, attested or not
-     * ({@link OfferPolicy#REQUIRE_KEY_PROVEN}).
+     * Adds a join source under the policy the source names ({@link JoinSource#defaultOfferPolicy()}):
+     * offers must prove their key, attested or not ({@link OfferPolicy#REQUIRE_KEY_PROVEN}), except
+     * on LAN discovery, which also admits offers without an assertion
+     * ({@link OfferPolicy#ALLOW_UNASSERTED}).
      *
      * @param source the source; this endpoint starts it and closes it with itself
      * @see #addSource(JoinSource, OfferPolicy)
      */
     public void addSource(JoinSource source) {
-        addSource(source, OfferPolicy.REQUIRE_KEY_PROVEN);
+        addSource(source, Objects.requireNonNull(source, "source").defaultOfferPolicy());
     }
 
     /**

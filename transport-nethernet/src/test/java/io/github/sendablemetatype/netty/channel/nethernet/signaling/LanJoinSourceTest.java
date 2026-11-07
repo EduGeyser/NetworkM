@@ -186,19 +186,29 @@ class LanJoinSourceTest {
         try {
             ((NetherNetServerChannel) endpoint).addSource(source);
 
-            send("CONNECTREQUEST 42 " + OfferFixtures.offer(null, OfferFixtures.DIGEST));
-            assertEquals("CONNECTERROR 42 16", receive(), "an offer without an assertion is refused on LAN too");
+            send("CONNECTREQUEST 42 " + OfferFixtures.offer("%%%", OfferFixtures.DIGEST));
+            assertEquals("CONNECTERROR 42 16", receive(), "a malformed assertion is refused");
+            send("CONNECTREQUEST 43 " + OfferFixtures.educationOffer()
+                    .replace(OfferFixtures.DIGEST, OfferFixtures.OTHER_DIGEST));
+            assertEquals("CONNECTERROR 43 16", receive(), "a failed proof is refused");
             assertTrue(engine.peers().isEmpty());
 
-            send("CONNECTREQUEST 43 " + OfferFixtures.educationOffer());
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (engine.peers().isEmpty() && System.nanoTime() < deadline) {
-                Thread.sleep(5);
-            }
-            assertEquals(1, engine.peers().size(), "a proven key is admitted");
+            // Retail 1.26.63 sends its LAN offer with no a=identity.
+            send("CONNECTREQUEST 44 " + OfferFixtures.offer(null, OfferFixtures.DIGEST));
+            awaitPeers(engine, 1, "an offer without an assertion is admitted");
+            send("CONNECTREQUEST 45 " + OfferFixtures.educationOffer());
+            awaitPeers(engine, 2, "a proven key is admitted");
         } finally {
             endpoint.close().sync();
         }
+    }
+
+    private static void awaitPeers(FakeEngine engine, int count, String message) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (engine.peers().size() < count && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(count, engine.peers().size(), message);
     }
 
     private void send(String signal) throws Exception {

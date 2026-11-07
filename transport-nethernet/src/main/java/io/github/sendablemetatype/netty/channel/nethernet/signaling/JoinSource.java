@@ -1,6 +1,7 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
+import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -62,6 +63,16 @@ public interface JoinSource extends AutoCloseable {
      */
     default boolean oneJoinPerNetworkId() {
         return false;
+    }
+
+    /**
+     * The offer policy this source's joins get when the host adds the source without naming one
+     * ({@link io.github.sendablemetatype.netty.channel.nethernet.NetherNetServerChannel#addSource(JoinSource)}).
+     *
+     * @return {@link OfferPolicy#REQUIRE_KEY_PROVEN} by default
+     */
+    default OfferPolicy defaultOfferPolicy() {
+        return OfferPolicy.REQUIRE_KEY_PROVEN;
     }
 
     /**

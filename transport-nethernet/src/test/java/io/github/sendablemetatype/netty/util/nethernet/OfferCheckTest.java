@@ -117,6 +117,22 @@ class OfferCheckTest {
     }
 
     @Test
+    void allowUnassertedAdmitsOffersWithoutAnAssertionAndStillChecksTheRest() {
+        OfferCheckResult unasserted = RETAIL.check(offer(null, DIGEST));
+        OfferCheckResult malformed = RETAIL.check(offer("%%%", DIGEST));
+        OfferCheckResult failedProof = RETAIL.check(retailOffer().replace(DIGEST, OTHER_DIGEST));
+        assertEquals(Level.NO_ASSERTION, unasserted.level());
+        assertEquals(Level.MALFORMED, malformed.level());
+        assertEquals(Level.PROOF_FAILED, failedProof.level());
+
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(unasserted));
+        assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.ALLOW_UNASSERTED.refusal(malformed));
+        assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.ALLOW_UNASSERTED.refusal(failedProof));
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(RETAIL.check(educationOffer())));
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(RETAIL.check(retailOffer())));
+    }
+
+    @Test
     void proofCoversEveryFingerprintInOrder() {
         String sdp = offer(identity(RETAIL_IDP, retailToken(retailClaims(CLIENT_KEY.getPublic())),
                 proof(CLIENT_KEY.getPrivate(), DIGEST, OTHER_DIGEST)), DIGEST, OTHER_DIGEST);
