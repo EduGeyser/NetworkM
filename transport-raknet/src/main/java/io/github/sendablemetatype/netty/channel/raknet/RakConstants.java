@@ -125,7 +125,6 @@ public class RakConstants {
      */
     public static final long CC_MAXIMUM_THRESHOLD = 2000;
     public static final long CC_ADDITIONAL_VARIANCE = 30;
-    public static final long CC_SYN = 10;
     /**
      * Reliable messages that may be in flight from the lowest unacknowledged one on. A Bedrock client drops a
      * message more than 32768 past its lowest missing one, or past 4097 waiting out of order on its ordering channel.

@@ -125,7 +125,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private FastBinaryMinHeap<EncapsulatedPacket> outgoingPackets;
     private long[] outgoingPacketNextWeights;
-    private PriorityQueue<OrderedPacket>[] orderingHeaps;
+    private List<PriorityQueue<OrderedPacket>> orderingHeaps;
     private long currentPingTime = -1;
     private long currentPingSentAt;
     private long lastPingTime = -1;
@@ -185,10 +185,9 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         this.sequenceReadIndex = new int[maxChannels];
         this.sequenceWriteIndex = new int[maxChannels];
 
-        // Noinspection unchecked
-        this.orderingHeaps = new PriorityQueue[maxChannels];
+        this.orderingHeaps = new ArrayList<>(maxChannels);
         for (int i = 0; i < maxChannels; i++) {
-            orderingHeaps[i] = new PriorityQueue<>(64, ORDERING_COMPARATOR);
+            this.orderingHeaps.add(new PriorityQueue<>(64, ORDERING_COMPARATOR));
         }
 
         this.outgoingPackets = new FastBinaryMinHeap<>(8);
@@ -247,7 +246,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             }
         }
 
-        PriorityQueue<OrderedPacket>[] orderingHeaps = this.orderingHeaps;
+        List<PriorityQueue<OrderedPacket>> orderingHeaps = this.orderingHeaps;
         this.orderingHeaps = null;
         if (orderingHeaps != null) {
             for (PriorityQueue<OrderedPacket> orderingHeap : orderingHeaps) {
@@ -454,8 +453,6 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             }
         }
 
-        this.slidingWindow.onPacketReceived(packet.getSendTime());
-
         int sequenceIndex = packet.getSequenceIndex();
         int prevSequenceIndex = this.datagramReadIndex;
         int missedDatagrams = RakSequence.difference(sequenceIndex, prevSequenceIndex);
@@ -564,7 +561,7 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private void onOrderedReceived(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
         int orderingChannel = packet.getOrderingChannel();
-        PriorityQueue<OrderedPacket> binaryHeap = this.orderingHeaps[orderingChannel];
+        PriorityQueue<OrderedPacket> binaryHeap = this.orderingHeaps.get(orderingChannel);
         long expectedIndex = this.orderReadIndex[orderingChannel];
         int distance = RakSequence.difference(packet.getOrderingIndex(), (int) expectedIndex);
         if (distance >= MAX_RECEIVE_GAP) {
@@ -938,7 +935,6 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             buffer.writeByte(FLAG_VALID | FLAG_ACK);
             writtenAcks += RakUtils.writeAckEntries(buffer, this.outgoingAcks, ackMtu - 1);
             ctx.write(buffer);
-            this.slidingWindow.onSendAck();
         }
 
         while (!this.outgoingNaks.isEmpty()) {
