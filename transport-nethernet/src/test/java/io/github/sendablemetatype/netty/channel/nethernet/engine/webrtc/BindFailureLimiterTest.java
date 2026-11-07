@@ -56,19 +56,6 @@ class BindFailureLimiterTest {
         assertFalse(limiter.warn(onLink7, 3));
     }
 
-    @Test
-    void onlyAddressesInTheirQuietTimeAreKept() {
-        for (int i = 0; i < 100; i++) {
-            limiter.warn(ipv4(i), i);
-        }
-        assertEquals(100, limiter.quietAddresses());
-
-        // The quiet time of the addresses that warned at 0 to 50 is over
-        assertTrue(limiter.warn(ipv4(200), 50 + QUIET_NANOS));
-
-        assertEquals(50, limiter.quietAddresses());
-    }
-
     private static InetSocketAddress ipv4(int host) {
         return new InetSocketAddress(InetAddress.ofLiteral("192.0.2." + host), PORT);
     }

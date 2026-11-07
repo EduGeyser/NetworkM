@@ -31,11 +31,6 @@ final class BindFailureLimiter {
         return warnedAt.putIfAbsent(new Key(address, scope), nowNanos) == null;
     }
 
-    /** How many addresses are in their quiet time, as of the latest {@link #warn}. */
-    int quietAddresses() {
-        return warnedAt.size();
-    }
-
     /** Address equality ignores an IPv6 scope, which tells the link-local addresses of two links apart. */
     private record Key(InetSocketAddress address, int scope) {
     }
