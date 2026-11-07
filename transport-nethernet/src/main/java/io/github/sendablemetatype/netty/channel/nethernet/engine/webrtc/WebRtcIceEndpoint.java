@@ -2,6 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.webrtc.IceUdpEndpoint;
+import io.github.sendablemetatype.webrtc.IceUdpEndpoint.BindFailure;
 import io.github.sendablemetatype.webrtc.IceUdpEndpoint.PendingRequest;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -10,6 +11,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,8 @@ import java.util.function.Supplier;
  */
 final class WebRtcIceEndpoint implements IceEndpoint {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(WebRtcIceEndpoint.class);
+    /** How long a failed bind on one address stays at debug after it logged a warning. */
+    private static final Duration BIND_FAILURE_QUIET = Duration.ofMinutes(10);
 
     private final WebRtcEngine engine;
     private final IceUdpEndpoint endpoint;
@@ -37,6 +41,8 @@ final class WebRtcIceEndpoint implements IceEndpoint {
     private final Executor control;
     private final AtomicBoolean closing = new AtomicBoolean();
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
+    // Control thread only: when each address, with its scope, last logged a failed bind as a warning.
+    private final Map<String, Long> bindFailureWarnings = new HashMap<>();
 
     WebRtcIceEndpoint(WebRtcEngine engine, IceUdpEndpoint endpoint, int port, Executor control) {
         this.engine = engine;
@@ -156,13 +162,56 @@ final class WebRtcIceEndpoint implements IceEndpoint {
         });
     }
 
+    /**
+     * Logs the port's failed binds from now on. Call it on the control thread
+     * before a peer can use the endpoint, so that no failure goes unlogged.
+     */
+    void logBindFailures() {
+        applyHere("setting the bind failure handler", () -> endpoint.setBindFailureHandler(this::bindFailed, control));
+    }
+
+    /**
+     * On the control thread. webrtc-java reports a failed bind each time a peer
+     * gathers, or a STUN monitor starts, on an address where it cannot bind the
+     * port, so an address that stays taken would log once per join. Each
+     * address logs a warning at most once per {@link #BIND_FAILURE_QUIET}, and
+     * the failures in between log at debug. Nothing reports a later successful
+     * bind, so a failure that lasts logs a warning again after the quiet time.
+     */
+    private void bindFailed(BindFailure failure) {
+        long now = System.nanoTime();
+        long quiet = BIND_FAILURE_QUIET.toNanos();
+        bindFailureWarnings.values().removeIf(warned -> now - warned >= quiet);
+        // The host address keeps a link-local address's scope, which InetAddress equality ignores.
+        String address = failure.address().getAddress().getHostAddress();
+        String reason = failure.failure().getMessage();
+        if (bindFailureWarnings.putIfAbsent(address, now) == null) {
+            log.warn("Peers on the shared ICE port gather no host candidate on {} (further failures there log at "
+                    + "debug for {} min): {}", address, BIND_FAILURE_QUIET.toMinutes(), reason);
+        } else {
+            log.debug("Peers on the shared ICE port gather no host candidate on {}: {}", address, reason);
+        }
+    }
+
+    /**
+     * On the control thread: stops the bind failure log, dropping failures
+     * still queued for it, and releases the native endpoint.
+     */
+    void dispose() {
+        try {
+            endpoint.clearBindFailureHandler();
+        } finally {
+            endpoint.dispose();
+        }
+    }
+
     @Override
     public CompletionStage<Void> close() {
         if (closing.compareAndSet(false, true)) {
             try {
                 control.execute(() -> {
                     try {
-                        endpoint.dispose();
+                        dispose();
                     } catch (RuntimeException | Error e) {
                         if (!NativeErrors.isCallFailure(e)) {
                             throw e;
@@ -182,18 +231,21 @@ final class WebRtcIceEndpoint implements IceEndpoint {
 
     private void apply(String what, Runnable setting) {
         try {
-            control.execute(() -> {
-                try {
-                    setting.run();
-                } catch (RuntimeException | Error e) {
-                    if (!NativeErrors.isCallFailure(e)) {
-                        throw e;
-                    }
-                    log.warn("Error {} on the ICE endpoint: {}", what, e.toString());
-                }
-            });
+            control.execute(() -> applyHere(what, setting));
         } catch (RejectedExecutionException e) {
             log.debug("The WebRTC engine is closed; not {}", what);
+        }
+    }
+
+    /** On the control thread: a setting whose failed call is logged, not thrown. */
+    private void applyHere(String what, Runnable setting) {
+        try {
+            setting.run();
+        } catch (RuntimeException | Error e) {
+            if (!NativeErrors.isCallFailure(e)) {
+                throw e;
+            }
+            log.warn("Error {} on the ICE endpoint: {}", what, e.toString());
         }
     }
 

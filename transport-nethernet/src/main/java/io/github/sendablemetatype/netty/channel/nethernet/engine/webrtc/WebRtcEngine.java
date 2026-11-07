@@ -212,13 +212,14 @@ public final class WebRtcEngine implements NetherNetEngine {
         prepareNatives();
         IceUdpEndpoint created = new IceUdpEndpoint(config.port(), config.addresses().toArray(InetAddress[]::new));
         WebRtcIceEndpoint endpoint = new WebRtcIceEndpoint(this, created, config.port(), endpointControl);
+        endpoint.logBindFailures();
         synchronized (lock) {
             if (closed == null) {
                 endpoints.add(endpoint);
                 return endpoint;
             }
         }
-        created.dispose();
+        endpoint.dispose();
         throw closedError();
     }
 
@@ -229,8 +230,9 @@ public final class WebRtcEngine implements NetherNetEngine {
     /**
      * webrtc-java binds the endpoint's sockets only when the first peer
      * gathers on an address, and a socket it cannot bind only costs that
-     * address its candidates. Binding each address once beforehand turns a
-     * taken port into a failure here, where a server can still report it.
+     * address its candidates and logs a warning. Binding each address once
+     * beforehand turns a taken port into a failure here, where a server can
+     * still report it.
      */
     private static void requireFreePort(EndpointConfig config) {
         List<InetSocketAddress> addresses = config.addresses().isEmpty()
@@ -431,8 +433,9 @@ public final class WebRtcEngine implements NetherNetEngine {
          * {@link Severity#NONE} for none. Which of them are written stays with
          * the host's logging configuration: errors log as ERROR, warnings as
          * WARN, INFO as DEBUG and VERBOSE as TRACE. A few errors and warnings
-         * that report routine events, such as the abort every client quit
-         * logs, log as DEBUG.
+         * log as DEBUG: those that report routine events, such as the abort
+         * every client quit logs, and those the engine logs itself, such as a
+         * failed bind of the shared ICE port.
          *
          * <p>webrtc-java fixes its own threshold when it loads its library,
          * from the system property

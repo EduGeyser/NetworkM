@@ -74,7 +74,8 @@ final class NativeLogBridge {
     /**
      * libwebrtc's INFO is debugging detail and its VERBOSE diagnostic detail
      * (see {@link Severity}), so they map one level down. Errors and warnings
-     * that report routine events ({@link RoutineNativeLine}) log at DEBUG.
+     * that report routine events, or events NetworkM logs itself
+     * ({@link RoutineNativeLine}), log at DEBUG.
      */
     static void log(Severity severity, String message) {
         String line = message.stripTrailing();

@@ -19,9 +19,12 @@ import io.github.sendablemetatype.webrtc.RTCTcpCandidatePolicy;
 import io.github.sendablemetatype.webrtc.logging.Logging.Severity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.net.DatagramSocket;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,10 +32,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 @Timeout(10)
 class WebRtcEngineTest {
@@ -159,6 +168,75 @@ class WebRtcEngineTest {
         assertTrue(engine.openEndpoint(new EndpointConfig(port, List.of())).toCompletableFuture().isCompletedExceptionally());
     }
 
+    /** Needs natives. Another socket takes the endpoint's port on an address libwebrtc gathers on. */
+    @Test
+    @Timeout(30)
+    @EnabledIfSystemProperty(named = "webrtc.nativeTests", matches = "true")
+    void aFailedBindLogsOneWarningForRepeatedFailuresOnAnAddress() throws Exception {
+        Logger endpointLog = Logger.getLogger(WebRtcIceEndpoint.class.getName());
+        Logger nativeLog = Logger.getLogger(NativeLogBridge.LOGGER_NAME);
+        Level endpointLevel = endpointLog.getLevel();
+        Level nativeLevel = nativeLog.getLevel();
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        for (Logger logger : List.of(endpointLog, nativeLog)) {
+            logger.setLevel(Level.ALL);
+            logger.addHandler(capture);
+        }
+        WebRtcEngine engine = WebRtcEngine.builder().build();
+        try {
+            WebRtcIceEndpoint first = (WebRtcIceEndpoint) engine
+                    .openEndpoint(new EndpointConfig(freeUdpPort(), List.of())).toCompletableFuture()
+                    .get(5, TimeUnit.SECONDS);
+            gather(engine, first);
+            List<InetSocketAddress> bound = first.nativeEndpoint(engine).getSockets().bound();
+            assumeFalse(bound.isEmpty(), "libwebrtc gathered on no address");
+            InetAddress address = bound.stream().map(InetSocketAddress::getAddress)
+                    .filter(Inet4Address.class::isInstance).findFirst().orElse(bound.getFirst().getAddress());
+            String host = address.getHostAddress();
+
+            int port = freeUdpPort();
+            IceEndpoint second = engine.openEndpoint(new EndpointConfig(port, List.of(address)))
+                    .toCompletableFuture().get(5, TimeUnit.SECONDS);
+            try (DatagramSocket taken = new DatagramSocket(null)) {
+                taken.setReuseAddress(false);
+                taken.bind(new InetSocketAddress(address, port));
+                gather(engine, second);
+                gather(engine, second);
+                // The engine's endpoint thread logs both failures in order, so the second comes last
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (logged(records, endpointLog, Level.FINE, host).isEmpty()) {
+                    assertTrue(System.nanoTime() < deadline, "No repeated failure for " + host + " in " + records);
+                    Thread.sleep(5);
+                }
+            }
+
+            assertEquals(1, logged(records, endpointLog, Level.WARNING, host).size(), records::toString);
+            // The native line says the same for each peer, at debug
+            assertEquals(List.of(), logged(records, nativeLog, Level.WARNING, "cannot bind"));
+            assertTrue(logged(records, nativeLog, Level.FINE, "cannot bind").size() >= 2, records::toString);
+        } finally {
+            engine.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            endpointLog.removeHandler(capture);
+            nativeLog.removeHandler(capture);
+            endpointLog.setLevel(endpointLevel);
+            nativeLog.setLevel(nativeLevel);
+        }
+    }
+
     @Test
     void remoteChannelParametersComeFromTheGetters() {
         assertEquals(ChannelParameters.reliable("ReliableDataChannel"),
@@ -186,6 +264,31 @@ class WebRtcEngineTest {
         while (!log.contains(event)) {
             assertTrue(System.nanoTime() < deadline, "No " + event + " in " + log);
             Thread.sleep(5);
+        }
+    }
+
+    /** Gathers once with a peer of its own on the endpoint, which binds the port where it can. */
+    private static void gather(WebRtcEngine engine, IceEndpoint endpoint) throws Exception {
+        Peer peer = engine.createPeer(new PeerConfig(Role.OFFERER, List.of(), CandidatePolicy.DEFAULT, endpoint, null,
+                null), new FakeNative.Listener());
+        try {
+            // An offer needs a data section
+            peer.openChannel(ChannelParameters.reliable("probe"));
+            peer.offer().thenCompose(offer -> peer.gatheredLocalDescription()).toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS);
+        } finally {
+            peer.close().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    private static List<LogRecord> logged(List<LogRecord> records, Logger logger, Level level, String text) {
+        return records.stream().filter(record -> record.getLoggerName().equals(logger.getName())
+                && record.getLevel() == level && record.getMessage().contains(text)).toList();
+    }
+
+    private static int freeUdpPort() throws Exception {
+        try (DatagramSocket socket = new DatagramSocket(0)) {
+            return socket.getLocalPort();
         }
     }
 
