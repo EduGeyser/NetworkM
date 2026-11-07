@@ -453,6 +453,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             }
         }
 
+        if (!this.orderingChannelsValid(packet)) {
+            this.disconnect(TransportDisconnectReason.BAD_PACKET);
+            return;
+        }
+
         int sequenceIndex = packet.getSequenceIndex();
         int prevSequenceIndex = this.datagramReadIndex;
         int missedDatagrams = RakSequence.difference(sequenceIndex, prevSequenceIndex);
@@ -551,6 +556,22 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         }
     }
 
+    /**
+     * Whether every ordered or sequenced packet in the datagram names a channel this session keeps. The wire allows
+     * 256; only a broken or hostile peer names one beyond the configured count. Checked per packet before anything is
+     * acknowledged or buffered, split parts included: a reassembled message takes the completing part's channel.
+     */
+    private boolean orderingChannelsValid(RakDatagramPacket datagram) {
+        int channels = this.orderingHeaps.size();
+        for (EncapsulatedPacket encapsulated : datagram.getPackets()) {
+            RakReliability reliability = encapsulated.getReliability();
+            if ((reliability.isOrdered() || reliability.isSequenced()) && encapsulated.getOrderingChannel() >= channels) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private void checkForOrdered(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
         if (packet.getReliability().isOrdered() || packet.getReliability().isSequenced()) {
             this.onOrderedReceived(ctx, packet);
@@ -560,12 +581,8 @@ public class RakSessionCodec extends ChannelDuplexHandler {
     }
 
     private void onOrderedReceived(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
+        // handleDatagram checked the channel against the configured count
         int orderingChannel = packet.getOrderingChannel();
-        if (orderingChannel >= this.orderingHeaps.size()) {
-            // The wire allows 256 channels; only a broken or hostile peer names one beyond the configured count
-            this.disconnect(TransportDisconnectReason.BAD_PACKET);
-            return;
-        }
         PriorityQueue<OrderedPacket> binaryHeap = this.orderingHeaps.get(orderingChannel);
         long expectedIndex = this.orderReadIndex[orderingChannel];
         int distance = RakSequence.difference(packet.getOrderingIndex(), (int) expectedIndex);
@@ -1309,6 +1326,12 @@ public class RakSessionCodec extends ChannelDuplexHandler {
         RakReliability reliability = rakMessage.reliability();
         ByteBuf buffer = rakMessage.content();
         int orderingChannel = rakMessage.channel();
+        if ((reliability.isOrdered() || reliability.isSequenced())
+                && (orderingChannel < 0 || orderingChannel >= this.orderWriteIndex.length)) {
+            // Refused before anything is retained or a split ID taken, so the session carries on
+            throw new IllegalArgumentException("Ordering channel " + orderingChannel + " is outside 0 to "
+                    + (this.orderWriteIndex.length - 1));
+        }
 
         if (buffer.readableBytes() > maxLength) {
             // Packet requires splitting

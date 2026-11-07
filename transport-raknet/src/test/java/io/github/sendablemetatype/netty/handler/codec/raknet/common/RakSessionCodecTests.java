@@ -33,6 +33,7 @@ import java.lang.reflect.Proxy;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -285,6 +286,41 @@ class RakSessionCodecTests {
             assertEquals(RakState.DISCONNECTED, getField(s.codec, "state"));
             assertTrue(s.readOrdered().isEmpty());
             assertEquals(0, buffer.refCnt());
+            assertTrue(((Collection<?>) getField(s.codec, "outgoingAcks")).isEmpty(),
+                    "The datagram is not acknowledged");
+        }
+    }
+
+    @Test
+    void aSplitPartNamingAnOrderingChannelBeyondTheConfiguredCountDisconnects() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            // Reassembly takes the completing part's channel, so the first part has to be checked on its own
+            EncapsulatedPacket first = part(7, 0);
+            first.setReliability(RakReliability.RELIABLE_ORDERED);
+            first.setOrderingChannel((short) 255);
+            ByteBuf firstBuffer = first.getBuffer();
+            s.receive(first);
+            s.transport.checkException();
+            assertEquals(RakState.DISCONNECTED, getField(s.codec, "state"));
+            assertTrue(s.readOrdered().isEmpty());
+            assertEquals(0, firstBuffer.refCnt());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 16, 255})
+    void aWriteNamingAnOrderingChannelBeyondTheConfiguredCountFailsAlone(int orderingChannel) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            ByteBuf payload = Unpooled.buffer(4).writeByte(DATA_ID).writeZero(3);
+            var refused = s.transport.pipeline().write(new RakMessage(payload, RakReliability.RELIABLE_ORDERED,
+                    RakPriority.NORMAL, orderingChannel));
+            assertInstanceOf(IllegalArgumentException.class, refused.cause());
+            assertEquals(0, payload.refCnt());
+            assertEquals(0, getField(s.codec, "splitIndex"));
+            assertEquals(RakState.CONNECTED, getField(s.codec, "state"));
+            s.write(4, RakPriority.NORMAL, RakReliability.RELIABLE_ORDERED);
+            s.transport.flush();
+            assertEquals(1, s.readData().size(), "The session carries on");
         }
     }
 
