@@ -333,6 +333,27 @@ public final class WebRtcEngine implements NetherNetEngine {
     }
 
     /**
+     * The SLF4J logger libwebrtc's native messages go to, for a host that sets
+     * logging levels itself. Read it here rather than copying it: a shaded
+     * build relocates it.
+     *
+     * @return the logger name
+     */
+    public static String nativeLoggerName() {
+        return NativeLogBridge.LOGGER_NAME;
+    }
+
+    /**
+     * The system property webrtc-java reads its native threshold from, once,
+     * when it loads its library (see {@link Builder#nativeLogThreshold}).
+     *
+     * @return the property name
+     */
+    public static String nativeSeverityProperty() {
+        return NativeLogBridge.SEVERITY_PROPERTY;
+    }
+
+    /**
      * Engine-specific tuning. Everything a peer needs that is not specific to
      * libwebrtc is in {@link PeerConfig}.
      */
