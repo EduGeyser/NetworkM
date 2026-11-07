@@ -26,6 +26,7 @@ import io.github.sendablemetatype.netty.ThrowingMetrics;
 import io.github.sendablemetatype.netty.util.RakSequence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -308,10 +309,12 @@ class RakSessionCodecTests {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {-1, 16, 255})
-    void aWriteNamingAnOrderingChannelBeyondTheConfiguredCountFailsAlone(int orderingChannel) throws Exception {
+    @CsvSource({"-1, 4", "16, 4", "255, 4", "-1, 4000", "16, 4000", "255, 4000"})
+    void aWriteNamingAnOrderingChannelBeyondTheConfiguredCountFailsAlone(int orderingChannel, int bytes)
+            throws Exception {
         try (Session s = new Session(false, 10000)) {
-            ByteBuf payload = Unpooled.buffer(4).writeByte(DATA_ID).writeZero(3);
+            // 4000 bytes need splitting, which must not retain parts or take a split ID either
+            ByteBuf payload = Unpooled.buffer(bytes).writeByte(DATA_ID).writeZero(bytes - 1);
             var refused = s.transport.pipeline().write(new RakMessage(payload, RakReliability.RELIABLE_ORDERED,
                     RakPriority.NORMAL, orderingChannel));
             assertInstanceOf(IllegalArgumentException.class, refused.cause());
