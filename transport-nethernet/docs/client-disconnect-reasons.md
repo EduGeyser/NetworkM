@@ -8,32 +8,51 @@ Reasons and numbers are `json/DisconnectFailReason.json` in Mojang's
 [bedrock-protocol-docs](https://github.com/Mojang/bedrock-protocol-docs). Codewords and titles are
 `definitions/disconnection_errors/disconnection_error_messaging.json` in the client's assets.
 
-When HTTP signaling refuses an offer, the client picks the reason from the status:
+What the client shows for a refused join was captured on 2026-11-07 with retail 1.26.63 (Windows)
+and Education 26.33, one join per status and code, against a test build that refused every join
+with a chosen `JoinRefusal`.
 
-| Status | Client reason |
-|---|---|
-| 401 | NotAuthenticated (46) |
-| 403 | NotAllowed (45) |
-| 503 | ServerFull (25) |
+When HTTP signaling refuses an offer, retail picks the reason from the status. Three statuses have
+reasons of their own; every other refused status tested shows NetherNetClientSignalingError:
 
-This status table is upstream's record for 1.26.50. NetworkM has not confirmed it with a
-capture yet. NetworkM's `JoinRefusal` statuses fit it as follows. Over Xbox RPC and LAN the
-refusal goes out as a `CONNECTERROR` signal with the NetherNet error code instead (positions in
-the client's signaling error enumeration, as go-nethernet's `signal.go` lists them); which reason
-the client shows for each code is not recorded either. NXS joins get neither: a refused
-stateless join's connectivity check is dropped, and a refused assisted join fails its answer to
-the provider.
-
-| `JoinRefusal` | Status | Client reason by the table above | Error code |
+| Status | Client reason | Codeword | What the player reads |
 |---|---|---|---|
-| `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) | 16, IncomingConnectionIgnored |
-| `HOST_REFUSED` (the host's join filter) | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored |
-| `CAPACITY` | 503 | ServerFull (25), also for the throttle, a full identity check executor, an endpoint that is not ready or is closing, and a removed source | 16, IncomingConnectionIgnored |
-| `BAD_OFFER` | 400 | not recorded | 13, FailedToSetRemoteDescription |
-| `DUPLICATE` | 409 | not recorded | 16, IncomingConnectionIgnored |
-| `TRUST_SOURCE_UNREACHABLE` | 500 | not recorded | 35, GenericFailure |
-| `INTERNAL` | 500 | not recorded | 11, FailedToCreateAnswer |
-| `NO_ANSWER_IN_TIME` | 504 | not recorded | 2, NegotiationTimeout |
+| 401 | NotAuthenticated (46) | Guardian | "An error has occurred." / "You need to authenticate to Microsoft services." |
+| 403 | NotAllowed (45) | Spyglass | "Unable to connect." / "You're not invited to play on this server." |
+| 503 | ServerFull (25) | Hopper | "The World you are trying to join is full." |
+| 400, 409, 500, 504 | NetherNetClientSignalingError (115) | Door | "Multiplayer Connection Failed" / "Your client is having trouble establishing a connection to multiplayer services. ..." |
+
+Over Xbox RPC and LAN the refusal goes out as a `CONNECTERROR` signal with a NetherNet error code
+(positions in the client's signaling error enumeration, as go-nethernet's `signal.go` lists them).
+Over Xbox RPC retail maps each code it knows to a reason of its own, all with the "Multiplayer
+Connection Failed" message (LAN is not captured yet):
+
+| Error code | Client reason | Codeword |
+|---|---|---|
+| 2, NegotiationTimeout | NetherNetNegotiationTimeout (86) | Door |
+| 11, FailedToCreateAnswer | NetherNetFailedToCreateAnswer (92) | NetherNet |
+| 13, FailedToSetRemoteDescription | NetherNetFailedToSetRemoteDescription (94) | NetherNet |
+| 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) | NetherNet |
+| 35, GenericFailure | none: the signal is ignored, and after about 88 s the client shows Timeout (32), codeword Kelp, "Connection timed out." | |
+
+Education 26.33 shows one screen for every refusal, over HTTP and Xbox RPC alike: "Multiplayer
+Connection Failed" with the multiplayer services message and an OK button, without a codeword or
+details. It ignores code 35 as well and shows "Connection timed out." at its timeout. Neither client
+retried a refused join. Retail's details page shows `NetworkType` 2 for HTTP and 3 for Xbox RPC.
+
+NXS joins get neither a status nor a code: a refused stateless join's connectivity check is
+dropped, and a refused assisted join fails its answer to the provider.
+
+| `JoinRefusal` | Status | Retail reason over HTTP | Error code | Retail reason over Xbox RPC |
+|---|---|---|---|---|
+| `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
+| `HOST_REFUSED` (the host's join filter) | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
+| `CAPACITY` | 503 | ServerFull (25), also for the throttle, a full identity check executor, an endpoint that is not ready or is closing, and a removed source | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
+| `BAD_OFFER` | 400 | NetherNetClientSignalingError (115) | 13, FailedToSetRemoteDescription | NetherNetFailedToSetRemoteDescription (94) |
+| `DUPLICATE` | 409 | NetherNetClientSignalingError (115) | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
+| `TRUST_SOURCE_UNREACHABLE` | 500 | NetherNetClientSignalingError (115) | 11, FailedToCreateAnswer (35 until 2026-11-07, which clients ignore) | NetherNetFailedToCreateAnswer (92) |
+| `INTERNAL` | 500 | NetherNetClientSignalingError (115) | 11, FailedToCreateAnswer | NetherNetFailedToCreateAnswer (92) |
+| `NO_ANSWER_IN_TIME` | 504 | NetherNetClientSignalingError (115) | 2, NegotiationTimeout | NetherNetNegotiationTimeout (86) |
 
 Rows 0 to 149 were last updated for 1.26.50. Rows 150 to 158 come from bedrock-protocol-docs
 alone: reason 150 is in 1.26.60 and later (commit `f8d1496b`, 1.26.62), reasons 151 to 158 only
