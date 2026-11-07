@@ -572,10 +572,9 @@ malformed percent escapes, invalid UTF-8 and unescaped path delimiters receive
 HTTP 400.
 
 Generated IDs are decimal strings. LAN discovery uses uint64 IDs in its binary
-wire format. The numeric `NetherNetAddress` constructor and
-`getNetworkIdAsLong()` remain available for that representation; use
-`getNetworkId()` when handling opaque IDs. Two `NetherNetAddress`es are equal
-when their network IDs are.
+wire format and converts them at that boundary; everywhere else a network ID is
+an opaque string, read with `NetherNetAddress.getNetworkId()`. Two
+`NetherNetAddress`es are equal when their network IDs are.
 
 ### Connection IDs
 

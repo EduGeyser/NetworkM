@@ -14,12 +14,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class NetherNetAddressTest {
 
     @Test
-    void addressesWithOneNetworkIdAreEqualHoweverTheyWereMade() {
-        NetherNetAddress numeric = new NetherNetAddress(-1L);
-        NetherNetAddress text = new NetherNetAddress("18446744073709551615");
-        assertEquals(numeric, text);
-        assertEquals(numeric.hashCode(), text.hashCode());
-        assertEquals("value", Map.of(numeric, "value").get(text));
+    void addressesWithOneNetworkIdAreEqual() {
+        NetherNetAddress one = new NetherNetAddress("18446744073709551615");
+        NetherNetAddress other = new NetherNetAddress("18446744073709551615");
+        assertEquals(one, other);
+        assertEquals(one.hashCode(), other.hashCode());
+        assertEquals("value", Map.of(one, "value").get(other));
         assertTrue(Set.of(new NetherNetAddress("A1B2C3")).contains(new NetherNetAddress("A1B2C3")));
     }
 

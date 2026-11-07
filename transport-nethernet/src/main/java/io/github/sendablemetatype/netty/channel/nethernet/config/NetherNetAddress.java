@@ -15,15 +15,6 @@ public final class NetherNetAddress extends SocketAddress {
     private final String networkId;
 
     /**
-     * Creates a NetherNetAddress from a numeric Network ID.
-     *
-     * @param networkId The numeric Network ID.
-     */
-    public NetherNetAddress(long networkId) {
-        this.networkId = Long.toUnsignedString(networkId);
-    }
-
-    /**
      * Creates a NetherNetAddress from an opaque Network ID, preserving its value.
      *
      * @param networkId The string Network ID.
@@ -39,17 +30,6 @@ public final class NetherNetAddress extends SocketAddress {
      */
     public String getNetworkId() {
         return networkId;
-    }
-
-    /**
-     * Converts a numeric Network ID to its unsigned 64-bit representation.
-     * Opaque IDs should be read with {@link #getNetworkId()} instead.
-     *
-     * @return the long value
-     * @throws NumberFormatException if the ID is not an unsigned decimal 64-bit integer.
-     */
-    public long getNetworkIdAsLong() {
-        return Long.parseUnsignedLong(networkId);
     }
 
     @Override
