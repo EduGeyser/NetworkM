@@ -11,7 +11,6 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,8 +40,8 @@ final class WebRtcIceEndpoint implements IceEndpoint {
     private final Executor control;
     private final AtomicBoolean closing = new AtomicBoolean();
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
-    // Control thread only: when each address, with its scope, last logged a failed bind as a warning.
-    private final Map<String, Long> bindFailureWarnings = new HashMap<>();
+    // Control thread only.
+    private final BindFailureLimiter bindFailureLimiter = new BindFailureLimiter(BIND_FAILURE_QUIET);
 
     WebRtcIceEndpoint(WebRtcEngine engine, IceUdpEndpoint endpoint, int port, Executor control) {
         this.engine = engine;
@@ -179,13 +178,10 @@ final class WebRtcIceEndpoint implements IceEndpoint {
      * bind, so a failure that lasts logs a warning again after the quiet time.
      */
     private void bindFailed(BindFailure failure) {
-        long now = System.nanoTime();
-        long quiet = BIND_FAILURE_QUIET.toNanos();
-        bindFailureWarnings.values().removeIf(warned -> now - warned >= quiet);
-        // The host address keeps a link-local address's scope, which InetAddress equality ignores.
+        // The host address names a link-local address's scope
         String address = failure.address().getAddress().getHostAddress();
         String reason = failure.failure().getMessage();
-        if (bindFailureWarnings.putIfAbsent(address, now) == null) {
+        if (bindFailureLimiter.warn(failure.address(), System.nanoTime())) {
             log.warn("Peers on the shared ICE port gather no host candidate on {} (further failures there log at "
                     + "debug for {} min): {}", address, BIND_FAILURE_QUIET.toMinutes(), reason);
         } else {
