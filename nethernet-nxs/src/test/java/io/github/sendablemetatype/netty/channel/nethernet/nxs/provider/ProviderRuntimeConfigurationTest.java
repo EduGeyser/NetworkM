@@ -144,20 +144,20 @@ class ProviderRuntimeConfigurationTest {
     }
 
     @Test
-    void readsTokenFilesOnlyThroughThePrefixAndWithoutLeakingThem(@TempDir Path dir) throws Exception {
+    void readsTokenFilesAndNeverLeaksTheToken(@TempDir Path dir) throws Exception {
         Files.writeString(dir.resolve("token"), "file-secret\n");
-        assertEquals("file-secret",
-                runtime(dir, settings(PROVIDER, "file:token", List.of(), null)).clientConfiguration().authorizationToken());
-        assertEquals("file-secret", runtime(dir, settings(PROVIDER, "file:" + dir.resolve("token"), List.of(), null))
+        for (String reference : List.of("file:token", "file:" + dir.resolve("token"), "./token",
+                dir.resolve("token").toString())) {
+            assertEquals("file-secret", runtime(dir, settings(PROVIDER, reference, List.of(), null))
+                    .clientConfiguration().authorizationToken(), reference);
+        }
+        // Any other value is the token itself, even with a file of that name beside the configuration
+        assertEquals("token", runtime(dir, settings(PROVIDER, "token", List.of(), null))
                 .clientConfiguration().authorizationToken());
-        // Without the prefix a value is the token itself, even one that starts like a path
-        assertEquals("/token-that-starts-with-a-slash", runtime(dir,
-                settings(PROVIDER, "/token-that-starts-with-a-slash", List.of(), null))
-                .clientConfiguration().authorizationToken());
-        // unless it names a file, which is then not sent as the token
-        IOException path = assertThrows(IOException.class, () -> runtime(dir, settings(PROVIDER, "token", List.of(),
-                null)));
-        assertTrue(path.getMessage().contains("file:<path>"), path.getMessage());
+        // A value that starts with '/' names a file, as upstream reads it
+        IOException path = assertThrows(IOException.class, () -> runtime(dir, settings(PROVIDER,
+                "/token-that-starts-with-a-slash", List.of(), null)));
+        assertTrue(path.getMessage().startsWith("nxs.token names the file"), path.getMessage());
         for (String value : List.of("file:missing", "file:", "bad secret")) {
             IOException failure = assertThrows(IOException.class,
                     () -> runtime(dir, settings(PROVIDER, value, List.of(), null)));

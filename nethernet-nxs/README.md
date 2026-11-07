@@ -66,10 +66,10 @@ its fixtures define them. The Java API is NetworkM's own.
   sends one PING and checks the echo on the selected path. It probes public
   destinations only, private and loopback ones too under local development.
 - **Settings** (`provider`): `ProviderRuntimeConfiguration` maps a host's NXS
-  settings to the client and host configuration. A secret is the value itself or
-  `file:<path>`, a path relative to the configuration directory unless absolute;
-  a value without the prefix that names an existing file or directory, or starts
-  with a Windows drive, is refused rather than sent as the secret.
+  settings to the client and host configuration. A secret names a file when it
+  starts with `file:`, `/`, `./` or `../`, or is an absolute path (upstream
+  CloudburstMC/Network's rule), a relative path resolving against the
+  configuration directory; any other value is the secret itself.
 
 ## Behind PROXY protocol relays
 
