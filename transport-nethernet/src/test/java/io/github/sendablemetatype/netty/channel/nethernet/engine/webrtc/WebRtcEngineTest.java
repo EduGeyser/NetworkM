@@ -67,6 +67,8 @@ class WebRtcEngineTest {
         assertFalse(allocator.isIpv6Enabled());
         assertFalse(allocator.isFlagEnabled(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6_ON_WIFI));
         assertTrue(allocator.isFlagEnabled(PortAllocatorConfig.PORTALLOCATOR_DISABLE_LINK_LOCAL_NETWORKS));
+        assertTrue(allocator.isFlagEnabled(PortAllocatorConfig.PORTALLOCATOR_ENABLE_ANY_ADDRESS_PORTS),
+                "a peer with ports of its own keeps any-address ports");
         assertEquals(List.of(address), allocator.allowedAddresses);
         assertEquals(40000, allocator.minPort);
         assertEquals(40100, allocator.maxPort);
@@ -74,6 +76,19 @@ class WebRtcEngineTest {
         assertEquals("CERT", configuration.certificates.getFirst().getCertificate());
         assertNull(configuration.iceEndpoint);
         engine.close().toCompletableFuture().join();
+    }
+
+    @Test
+    void aPeerOnASharedEndpointGathersWithoutAnyAddressPorts() throws Exception {
+        CandidatePolicy policy = new CandidatePolicy(true, List.of(), new CandidatePolicy.PortRange(40000, 40100));
+
+        PortAllocatorConfig allocator = WebRtcEngine.allocator(WebRtcEngine.DEFAULT_PORT_ALLOCATOR_FLAGS, policy, true);
+
+        assertFalse(allocator.isFlagEnabled(PortAllocatorConfig.PORTALLOCATOR_ENABLE_ANY_ADDRESS_PORTS));
+        assertTrue(allocator.isFlagEnabled(PortAllocatorConfig.PORTALLOCATOR_ENABLE_SHARED_SOCKET));
+        assertTrue(allocator.isIpv6Enabled());
+        assertEquals(0, allocator.minPort, "the endpoint owns the port");
+        assertEquals(0, allocator.maxPort);
     }
 
     @Test
