@@ -136,6 +136,18 @@ What follows from this:
   countdown header that is not one less than the previous segment's. Nothing
   else about a message makes it close (Decompiled, same builds).
 
+## The Bedrock login on top
+
+- **Education needs `ServerToClientHandshake` over NetherNet too.** Its JWT
+  carries the server token from Education's server list (MESS) as
+  `signedToken`, and the Education client does not finish the login without it
+  (Owner observation, 2026-09-17). Neither client turns on Bedrock encryption
+  over NetherNet, since DTLS already encrypts the connection: EduGeyser sent
+  the handshake to every client for months without enabling encryption, and
+  retail and Education players joined (Owner observation).
+- Retail joins with no handshake packet at all: upstream Geyser sends none on
+  NetherNet (Reported).
+
 ## Networks
 
 - Clients behind NAT that maps per destination, as on many institutional Wi-Fi
