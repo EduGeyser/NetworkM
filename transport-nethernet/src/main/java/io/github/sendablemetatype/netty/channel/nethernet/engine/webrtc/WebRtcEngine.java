@@ -62,7 +62,8 @@ public final class WebRtcEngine implements NetherNetEngine {
     /**
      * The port allocator flags NetworkM's channels have used so far: no TCP,
      * IPv6 also on Wi-Fi, any-address ports, one socket per network, no costly
-     * or link-local networks.
+     * or link-local networks. A peer on a shared ICE endpoint gathers without
+     * any-address ports, see {@link #allocator}.
      */
     public static final int DEFAULT_PORT_ALLOCATOR_FLAGS = PortAllocatorConfig.PORTALLOCATOR_DISABLE_TCP
             | PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6
@@ -140,21 +141,7 @@ public final class WebRtcEngine implements NetherNetEngine {
             configuration.iceServers.add(iceServer);
         }
 
-        CandidatePolicy policy = config.candidates();
-        PortAllocatorConfig allocator = new PortAllocatorConfig();
-        allocator.flags = portAllocatorFlags | PortAllocatorConfig.PORTALLOCATOR_DISABLE_TCP;
-        if (policy.ipv6()) {
-            allocator.setFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6);
-        } else {
-            allocator.clearFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6);
-            allocator.clearFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6_ON_WIFI);
-        }
-        allocator.allowedAddresses = new ArrayList<>(policy.addresses());
-        if (config.endpoint() == null && policy.ports() != null) {
-            allocator.minPort = policy.ports().min();
-            allocator.maxPort = policy.ports().max();
-        }
-        configuration.portAllocatorConfig = allocator;
+        configuration.portAllocatorConfig = allocator(portAllocatorFlags, config.candidates(), config.endpoint() != null);
 
         DtlsIdentity identity = config.identity();
         if (identity != null) {
@@ -168,6 +155,37 @@ public final class WebRtcEngine implements NetherNetEngine {
             configuration.iceEndpoint = endpoint.nativeEndpoint(this);
         }
         return configuration;
+    }
+
+    /**
+     * The port allocator of a peer: the engine's flags without TCP, IPv6 as the policy says, the
+     * policy's addresses, and its ports unless the peer is on a shared endpoint.
+     *
+     * <p>A peer on a shared endpoint gathers without any-address ports. Each one asks the endpoint
+     * for a wildcard socket on the port the per-address sockets already hold: libwebrtc's UDP
+     * sockets set no {@code SO_REUSEADDR}, so on Linux and macOS that bind fails for every peer,
+     * and if it ever bound first, the per-address binds would fail instead. The per-address ports
+     * cover every network the allocator enumerates, and when it finds none, libwebrtc falls back to
+     * the any address without the flag ({@code basic_port_allocator.cc}). Peers with ports of their
+     * own keep the flag.
+     */
+    static PortAllocatorConfig allocator(int flags, CandidatePolicy policy, boolean sharedEndpoint) {
+        PortAllocatorConfig allocator = new PortAllocatorConfig();
+        allocator.flags = flags | PortAllocatorConfig.PORTALLOCATOR_DISABLE_TCP;
+        if (policy.ipv6()) {
+            allocator.setFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6);
+        } else {
+            allocator.clearFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6);
+            allocator.clearFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_IPV6_ON_WIFI);
+        }
+        allocator.allowedAddresses = new ArrayList<>(policy.addresses());
+        if (sharedEndpoint) {
+            allocator.clearFlag(PortAllocatorConfig.PORTALLOCATOR_ENABLE_ANY_ADDRESS_PORTS);
+        } else if (policy.ports() != null) {
+            allocator.minPort = policy.ports().min();
+            allocator.maxPort = policy.ports().max();
+        }
+        return allocator;
     }
 
     @Override
