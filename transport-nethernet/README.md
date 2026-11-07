@@ -862,15 +862,22 @@ classifier for the test JVM, for example:
 CI selects the native classifier for each runner and includes these tests in
 the build and release checks.
 
+### Projects using NetworkM
+
+- [EduGeyser/EduGeyser](https://github.com/EduGeyser/EduGeyser): Uses server, with HTTP and Xbox signaling, to let Bedrock and Minecraft Education players join a Java server.
+
 ### Upstream integration examples
 
-These references were inherited from NetworkCompatible. They illustrate
-upstream API usage; adapt their imports, dependencies and API calls for NetworkM.
+These projects use upstream CloudburstMC/Network or its NetworkCompatible fork,
+not NetworkM. They illustrate upstream API usage; adapt their imports,
+dependencies and API calls for NetworkM.
 
 - [Kas-tle/ProxyPass](https://github.com/Kas-tle/ProxyPass): Uses server and client to debug game packets over various connection types.
 - [MCXboxBroadcast/Broadcaster](https://github.com/MCXboxBroadcast/Broadcaster): Uses server to allow Bedrock clients to transfer to other Bedrock servers via Xbox Live.
 - [ViaVersion/ViaFabricPlus](https://github.com/ViaVersion/ViaFabricPlus): Uses client to connect to LAN games and Realms.
 - [ViaVersion/ViaProxy](https://github.com/ViaVersion/ViaProxy): Uses client to connect to LAN games and Realms.
+- [WaterdogPE/WaterdogPE](https://github.com/WaterdogPE/WaterdogPE): Uses server and client to proxy Bedrock players between servers.
+- [GeyserMC/Geyser](https://github.com/GeyserMC/Geyser): Uses server to let Bedrock players join a Java server.
 
 ## Packet flow
 
