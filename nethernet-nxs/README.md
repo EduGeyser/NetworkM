@@ -40,7 +40,11 @@ its fixtures define them. The Java API is NetworkM's own.
   answer from the fingerprint the profile publishes. `NxsHost.open` takes it.
   `DtlsCertificate.loadOrCreate(path)` creates an ECDSA P-256 certificate signed
   with SHA-256 on the first start, owner-only, and keeps it; a good place is
-  `dtls-certificate.pem` next to the server identity key. `DtlsCertificate.load`
+  `dtls-certificate.pem` next to the server identity key.
+  `DtlsCertificate.loadOrCreate(certificate, privateKey)` does the same with
+  two files, the layout upstream's provider host keeps (`host-cert.pem` and
+  `host-key.pem` in the provider state directory), so a host that moves between
+  the two libraries keeps its certificate. `DtlsCertificate.load`
   and `DtlsCertificate.of` take a supplied PEM certificate and key. Keep one
   certificate per endpoint: clients that hold the published profile expect it.
 - **Stateless admission** (`admission`): `StatelessAdmissionCodec` reads and

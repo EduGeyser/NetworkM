@@ -1,13 +1,20 @@
 package io.github.sendablemetatype.netty.util.nethernet;
 
+import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.netty.pkitesting.CertificateBuilder;
 import io.netty.pkitesting.X509Bundle;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.asn1.sec.ECPrivateKey;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
+import org.bouncycastle.openssl.PEMParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,6 +45,9 @@ import java.util.stream.IntStream;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -180,6 +190,128 @@ class DtlsCertificateTest {
 
         assertThrows(GeneralSecurityException.class, () -> DtlsCertificate.loadOrCreate(file));
         assertEquals(tampered, Files.readString(file), "a failed load keeps the operator's file");
+    }
+
+    @Test
+    void keepsAPairInTwoFilesWhereUpstreamsProviderHostKeepsIt(@TempDir Path dir) throws Exception {
+        Path state = dir.resolve("provider-state");
+        Path certificateFile = state.resolve("host-cert.pem");
+        Path keyFile = state.resolve("host-key.pem");
+
+        DtlsCertificate created = DtlsCertificate.loadOrCreate(certificateFile, keyFile);
+        String certificate = Files.readString(certificateFile);
+        String key = Files.readString(keyFile);
+        DtlsCertificate reloaded = DtlsCertificate.loadOrCreate(certificateFile, keyFile);
+
+        assertArrayEquals(created.sha256(), reloaded.sha256(), "a new certificate would fail every published profile");
+        assertEquals(certificate, Files.readString(certificateFile), "an existing certificate is never rewritten");
+        assertEquals(key, Files.readString(keyFile), "an existing key is never rewritten");
+        assertEquals(new DtlsIdentity(certificate, key), created.dtls());
+        try (var files = Files.list(state)) {
+            assertEquals(Set.of(certificateFile, keyFile), files.collect(Collectors.toSet()), "no temporary file is left");
+        }
+        // Upstream's NativeHostIdentity reads the key as one PKCS#8 block with BouncyCastle, the certificate with the JDK
+        try (PEMParser parser = new PEMParser(new StringReader(key))) {
+            assertInstanceOf(PrivateKeyInfo.class, parser.readObject());
+            assertNull(parser.readObject());
+        }
+        assertEquals("SHA256withECDSA", parse(certificate).getSigAlgName());
+        if (Files.getFileStore(dir).supportsFileAttributeView(PosixFileAttributeView.class)) {
+            assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(keyFile)));
+        } else {
+            List<AclEntry> acl = Files.getFileAttributeView(keyFile, AclFileAttributeView.class).getAcl();
+            assertEquals(1, acl.size(), () -> "only the owner may read the key: " + acl);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aNewKeyCarriesItsPublicPoint(boolean twoFiles, @TempDir Path dir) throws Exception {
+        DtlsCertificate certificate = twoFiles
+                ? DtlsCertificate.loadOrCreate(dir.resolve("host-cert.pem"), dir.resolve("host-key.pem"))
+                : DtlsCertificate.loadOrCreate(dir.resolve("dtls-certificate.pem"));
+
+        PrivateKeyInfo key;
+        try (PEMParser parser = new PEMParser(new StringReader(certificate.dtls().privateKeyPem()))) {
+            key = (PrivateKeyInfo) parser.readObject();
+        }
+        ECPrivateKey sec1 = ECPrivateKey.getInstance(key.parsePrivateKey());
+        byte[] point = SubjectPublicKeyInfo.getInstance(parse(certificate.dtls().certificatePem()).getPublicKey()
+                .getEncoded()).getPublicKeyData().getOctets();
+        assertNotNull(sec1.getPublicKey(), "the JDK's encoding leaves the point out");
+        assertArrayEquals(point, sec1.getPublicKey().getOctets());
+    }
+
+    @Test
+    void loadsAPairUpstreamCreatedAsItIs(@TempDir Path dir) throws Exception {
+        // What upstream's ProviderHostIdentity writes: a certificate and the JDK's PKCS#8 key, without the point
+        X509Bundle bundle = bundle(CertificateBuilder.Algorithm.ecp256);
+        Path certificateFile = Files.writeString(dir.resolve("host-cert.pem"), bundle.getCertificatePEM());
+        Path keyFile = Files.writeString(dir.resolve("host-key.pem"), bundle.getPrivateKeyPEM());
+
+        DtlsCertificate loaded = DtlsCertificate.loadOrCreate(certificateFile, keyFile);
+
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(parse(bundle.getCertificatePEM()).getEncoded()),
+                loaded.sha256());
+        assertEquals(bundle.getCertificatePEM(), Files.readString(certificateFile));
+        assertEquals(bundle.getPrivateKeyPEM(), Files.readString(keyFile));
+    }
+
+    @Test
+    void makesTheCertificateForAKeyThatHasNone(@TempDir Path dir) throws Exception {
+        // As a crash between the two writes, or another creator between them, leaves it
+        String key = otherKey();
+        Path keyFile = Files.writeString(dir.resolve("host-key.pem"), key);
+        Path certificateFile = dir.resolve("host-cert.pem");
+
+        DtlsCertificate created = DtlsCertificate.loadOrCreate(certificateFile, keyFile);
+
+        assertEquals(key, Files.readString(keyFile), "the key stays");
+        assertEquals(Files.readString(certificateFile), created.dtls().certificatePem());
+        // of() checked that the key signs for the certificate's public key
+        assertArrayEquals(created.sha256(), DtlsCertificate.load(certificateFile, keyFile).sha256());
+    }
+
+    @Test
+    void refusesACertificateWithoutItsKey(@TempDir Path dir) throws Exception {
+        Path certificateFile = dir.resolve("host-cert.pem");
+        Path keyFile = dir.resolve("host-key.pem");
+        DtlsCertificate.loadOrCreate(certificateFile, keyFile);
+        String certificate = Files.readString(certificateFile);
+        Files.delete(keyFile);
+
+        IOException refused = assertThrows(IOException.class, () -> DtlsCertificate.loadOrCreate(certificateFile, keyFile));
+        assertTrue(refused.getMessage().contains("Restore the key"), refused.getMessage());
+        assertEquals(certificate, Files.readString(certificateFile));
+        assertFalse(Files.exists(keyFile), "a new key would not match the certificate clients hold");
+    }
+
+    @Test
+    void concurrentCreatorsOfAPairAllEndUpWithTheWinnersCertificate(@TempDir Path dir) throws Exception {
+        Path certificateFile = dir.resolve("host-cert.pem");
+        Path keyFile = dir.resolve("host-key.pem");
+        int racers = 8;
+        CyclicBarrier start = new CyclicBarrier(racers);
+        ExecutorService pool = Executors.newFixedThreadPool(racers);
+        try {
+            Callable<String> racer = () -> {
+                start.await();
+                return HexFormat.of().formatHex(DtlsCertificate.loadOrCreate(certificateFile, keyFile).sha256());
+            };
+            Set<String> fingerprints = pool.invokeAll(IntStream.range(0, racers).mapToObj(i -> racer).toList())
+                    .stream().map(result -> {
+                        try {
+                            return result.get();
+                        } catch (Exception e) {
+                            throw new AssertionError("a racer failed instead of loading the winner's pair", e);
+                        }
+                    }).collect(Collectors.toSet());
+
+            assertEquals(Set.of(HexFormat.of().formatHex(DtlsCertificate.load(certificateFile, keyFile).sha256())),
+                    fingerprints);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private static String otherKey() throws Exception {
