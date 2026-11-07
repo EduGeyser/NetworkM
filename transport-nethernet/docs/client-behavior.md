@@ -36,6 +36,7 @@ Sources:
 | Xbox signaling uses only the JSON-RPC protocol (Type 7). 26.20 did only Type 7 in rtm516's tests; any Type 3 support left would work differently than in 26.10. | 26.20 | Reported (rtm516, 2026-05-13) |
 | The older WebSocket signaling (Type 3, `signal.franchise.minecraft-services.net`) is gone from retail since about May 2026. Education kept it only while it stayed on 1.21.133. | retail 26.20 and later, Education 26.x | Owner observation (2026-11) |
 | Education reaches a server through its server listing (MESS), which returns an IP address, or by connection ID over Xbox RPC. It uses the same probe: NetherNet first, RakNet as fallback. | Education 26.x | Owner observation |
+| Education does no LAN discovery: while the owner went through every Play screen, its process held no UDP socket at all, and a LAN server advertising a v7 record with `selfSignedAuth` set got no request from it. | Education 26.33 | Captured (2026-11-07) |
 | Retail no longer joins over RakNet, probably since 26.60. | retail 26.60 and later | Owner observation (2026-11) |
 | While the Play screen is open, the client sends a LAN discovery request every 2 s from one socket, broadcast on every interface: requests arrived from both the Wi-Fi and the WSL virtual adapter addresses with the same source port. Its LAN offer comes from that same socket. | retail 1.26.63 | Captured (2026-11-07) |
 
