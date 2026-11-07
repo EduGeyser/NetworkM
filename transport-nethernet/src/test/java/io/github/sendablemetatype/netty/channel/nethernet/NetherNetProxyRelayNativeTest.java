@@ -31,7 +31,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerListener;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerState;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc.WebRtcEngine;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.ServerIdentity;
@@ -111,7 +111,7 @@ class NetherNetProxyRelayNativeTest {
                 .option(NetherChannelOption.NETHER_SERVER_IDENTITY, ServerIdentity.ephemeral("test"))
                 .option(NetherChannelOption.NETHER_SERVER_OFFER_CHECK, new OfferCheck(List.of()))
                 .option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, new TrustedProxies(
-                        IpRangeSet.parse(List.of(lan.getHostAddress())), IpRangeSet.empty()))
+                        TrustedProxies.parseList(List.of(lan.getHostAddress())), ProxyList.NONE))
                 .option(NetherChannelOption.NETHER_SERVER_ADVERTISED_ADDRESSES, List.of(relay.address()))
                 .childHandler(new ChannelInitializer<Channel>() {
                     @Override

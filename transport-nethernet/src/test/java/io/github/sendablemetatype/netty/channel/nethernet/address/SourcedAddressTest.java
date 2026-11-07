@@ -1,7 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.address;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import org.junit.jupiter.api.Test;
 
@@ -14,8 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class SourcedAddressTest {
     private static final InetSocketAddress PROXY = new InetSocketAddress("10.0.0.2", 40000);
     private static final InetSocketAddress CLIENT = new InetSocketAddress("203.0.113.7", 54321);
-    private static final TrustedProxies BOTH_ROLES = new TrustedProxies(IpRangeSet.parse(List.of("10.0.0.0/8")),
-            IpRangeSet.parse(List.of("10.0.0.0/8")));
+    private static final TrustedProxies BOTH_ROLES = new TrustedProxies(TrustedProxies.parseList(List.of("10.0.0.0/8")),
+            TrustedProxies.parseList(List.of("10.0.0.0/8")));
 
     @Test
     void aProxyProtocolHeaderWinsOverForwardedFor() {

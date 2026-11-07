@@ -10,7 +10,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
@@ -261,7 +261,7 @@ class NetherNetServerAddressingTest {
     @Test
     void proxyRelaysFrontTheSharedPortAndNoRemoteCandidateIsApplied() throws Exception {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+                new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE));
         harness.bind();
         FakeJoinSource.Reply reply = harness.source(true).offer("1", HOST_ONLY_OFFER);
         FakePeer peer = harness.negotiating();
@@ -285,7 +285,7 @@ class NetherNetServerAddressingTest {
         harness.engine.answerWith(ANSWER);
         harness.engine.gatherWith(GATHERED_WITH_TURN);
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+                new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE));
         harness.bind();
     }
 
@@ -340,7 +340,7 @@ class NetherNetServerAddressingTest {
     @Test
     void proxyRelaysNeedTheSharedPort() {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                        new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()))
+                        new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE))
                 .option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
         assertInstanceOf(IllegalStateException.class, bind.cause());

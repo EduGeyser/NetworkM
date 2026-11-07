@@ -2,7 +2,7 @@ package io.github.sendablemetatype.netty.channel.nethernet;
 
 import io.github.sendablemetatype.netty.channel.nethernet.config.NetherChannelOption;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.FakeIceEndpoint;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
 import io.netty.channel.ChannelFuture;
@@ -109,7 +109,7 @@ class NetherNetServerStunTest {
     void discoveryIsRefusedBehindProxyRelays() {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_STUN_SERVERS, List.of(SERVER))
                 .option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                        new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+                        new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE));
         assertBindFails();
     }
 

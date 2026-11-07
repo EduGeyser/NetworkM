@@ -28,6 +28,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
@@ -67,15 +68,19 @@ public final class IpRangeSet {
     /**
      * Parses the entries, logging and skipping any that are not an address, a CIDR range or a
      * name that resolves. A list of only bad entries matches nothing. Blocks while names resolve.
+     * {@link TrustedProxies#parseList} also reports which entries it skipped.
      *
      * @param entries Addresses, CIDR ranges or host names
      * @return The parsed set
      */
     public static IpRangeSet parse(Collection<String> entries) {
-        return parse(entries, InetAddress::getAllByName);
+        return parse(entries, InetAddress::getAllByName, entry -> { });
     }
 
-    static IpRangeSet parse(Collection<String> entries, Resolver resolver) {
+    /**
+     * @param unreadable Takes each entry that was skipped, trimmed
+     */
+    static IpRangeSet parse(Collection<String> entries, Resolver resolver, Consumer<String> unreadable) {
         if (entries == null || entries.isEmpty()) {
             return EMPTY;
         }
@@ -92,6 +97,7 @@ public final class IpRangeSet {
             } catch (UnknownHostException | IllegalArgumentException e) {
                 log.warn("Ignoring {}, which is not an address, a CIDR range or a name that resolves: {}",
                         trimmed, e.getMessage());
+                unreadable.accept(trimmed);
             }
         }
         return ranges.isEmpty() ? EMPTY : new IpRangeSet(List.copyOf(ranges.values()));

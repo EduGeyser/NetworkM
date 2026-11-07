@@ -195,10 +195,13 @@ remote candidate at all.
 header is read, one of peers whose `X-Forwarded-For` is read. Parse each list
 once at startup with `TrustedProxies.parseList`, off any I/O thread: entries are
 addresses, CIDR ranges, host names or `https://` URLs listing more entries;
-`http://` URLs are refused. On the endpoint, the PROXY protocol list names the
-relays in front of the shared ICE port: the port reads their PROXY protocol v2
-headers, and players reach the server only through a relay or TURN, so the
-origin's address never appears in an answer. This needs the shared ICE port.
+`http://` URLs are refused. An entry that cannot be read (not an address, a
+CIDR range or a name that resolves, or a list that cannot be fetched or names
+nothing) is logged and skipped, and the parsed `ProxyList` names it. On the
+endpoint, the PROXY protocol list names the relays in front of the shared ICE
+port: the port reads their PROXY protocol v2 headers, and players reach the
+server only through a relay or TURN, so the origin's address never appears in
+an answer. This needs the shared ICE port.
 HTTP signaling reads its own list (`NetherNetHttpSignaling.Builder.trustedProxies`);
 pass it the same parsed value. With `NETHER_SERVER_PREFER_PROXIED_ADDRESS` (false
 by default), a child keeps reporting the client address a trusted signaling proxy

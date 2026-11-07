@@ -1,6 +1,6 @@
 package io.github.sendablemetatype.netty.channel.nethernet.signaling;
 
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -21,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * source the proxy declares (ruling E-5), on embedded connections from the proxy.
  */
 class HttpProxiedClientCountTest {
-    private static final TrustedProxies FORWARDER = new TrustedProxies(IpRangeSet.empty(),
-            IpRangeSet.parse(List.of(EmbeddedHttp.CLIENT.getAddress().getHostAddress())));
+    private static final TrustedProxies FORWARDER = new TrustedProxies(ProxyList.NONE,
+            TrustedProxies.parseList(List.of(EmbeddedHttp.CLIENT.getAddress().getHostAddress())));
 
     private final EventLoopGroup worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
     private final RecordingSink sink = new RecordingSink();

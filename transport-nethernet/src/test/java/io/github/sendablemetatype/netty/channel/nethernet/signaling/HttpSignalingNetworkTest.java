@@ -4,7 +4,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.AddressSource;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.EmbeddedHttp.Response;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.http.TlsHandshakeFailure;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -49,9 +49,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class HttpSignalingNetworkTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";
     private static final TrustedProxies PROXY_PROTOCOL_FROM_LOOPBACK =
-            new TrustedProxies(IpRangeSet.parse(List.of("127.0.0.1")), IpRangeSet.empty());
+            new TrustedProxies(TrustedProxies.parseList(List.of("127.0.0.1")), ProxyList.NONE);
     private static final TrustedProxies FORWARDED_FOR_FROM_LOOPBACK =
-            new TrustedProxies(IpRangeSet.empty(), IpRangeSet.parse(List.of("127.0.0.1")));
+            new TrustedProxies(ProxyList.NONE, TrustedProxies.parseList(List.of("127.0.0.1")));
 
     private static X509Bundle authority;
     private static SslContext serverContext;
@@ -303,7 +303,7 @@ class HttpSignalingNetworkTest {
 
     @Test
     void proxyProtocolWinsOverForwardedFor() throws Exception {
-        IpRangeSet loopback = IpRangeSet.parse(List.of("127.0.0.1"));
+        ProxyList loopback = TrustedProxies.parseList(List.of("127.0.0.1"));
         start(NetherNetHttpSignaling.builder(worker).trustedProxies(new TrustedProxies(loopback, loopback)));
 
         SocketHttp.write(plain(), SocketHttp.proxyV1("203.0.113.7", 51000),
