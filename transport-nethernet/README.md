@@ -139,7 +139,9 @@ it after the bind found it free), or a `ClosedChannelException` when the
 endpoint closed first. It does not mean the port is held: the WebRTC engine
 binds the UDP socket on each local address when the first peer gathers there, so
 a process that takes the port in between costs the joins that gather while it
-holds it their host candidates on that address, unreported.
+holds it their host candidates on that address. The engine logs such a failed
+bind as a warning with the address and the system's reason, at most once per
+address in ten minutes; the failures in between log at debug.
 Set
 `NETHER_SERVER_SHARED_ICE_PORT` to false to give each session ports of its own
 from `NETHER_CANDIDATE_POLICY`'s port window, the way BDS allocates them
@@ -873,9 +875,11 @@ builder sets the lowest severity forwarded at all, `WARNING` by default.
 A few errors and warnings report routine events, so they log as DEBUG: the
 abort libwebrtc logs at ERROR when a client quits (a peer-reported
 "User-Initiated Abort"), STUN and TURN host lookups that fail on an IPv6
-network, and TURN permissions the server refuses with 403. The bridge matches
-them by libwebrtc source file and message text; every other line keeps its
-level.
+network, and TURN permissions the server refuses with 403. webrtc-java's
+warning for a failed bind of the shared ICE port also logs as DEBUG: it repeats
+for every peer that gathers on the address, and the engine logs the failure
+itself (see [Server endpoint](#server-endpoint)). The bridge matches these lines
+by source file and message text; every other line keeps its level.
 
 webrtc-java fixes its own threshold once, when it loads its native library, from
 the system property `io.github.sendablemetatype.webrtc.logging.severity`. If the
