@@ -23,8 +23,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * What LAN discovery answers requests with: a fixed record, encoded once, or a {@link LanAdvertiser}
  * asked per request through {@link ProviderCalls}, with a deadline of its own and the same bound as
- * HTTP's status provider. When the advertiser does not deliver, the last server data it delivered in time goes
- * out instead, or no response while there is none. Each advertiser has a fallback of its own, so
+ * HTTP's status provider. When the advertiser does not deliver, the last server data it delivered in time for
+ * everyone goes out instead, or no response while there is none; data it chose for one requester
+ * ({@link LanAdvertisement#advertiseToRequester}) is never repeated to another. Each advertiser has a fallback of its own, so
  * a call to one that was replaced never reaches its successor's. Only v7 server data is advertised
  * (ruling F-3).
  */
@@ -51,6 +52,8 @@ final class LanAdvertisements {
         Reply reply(LanDiscoveryRequest request) {
             return switch (advertiser.advertise(request)) {
                 case LanAdvertisement.Advertise(var data) -> new Produced(encoded(data));
+                // Sent, not Produced, so it never becomes the fallback another requester gets
+                case LanAdvertisement.AdvertiseToRequester(var data) -> new Sent(Optional.of(encode(data)));
                 case LanAdvertisement.Decline _ -> new Sent(Optional.empty());
                 case null -> throw new NullPointerException("The LAN advertiser answered null");
             };

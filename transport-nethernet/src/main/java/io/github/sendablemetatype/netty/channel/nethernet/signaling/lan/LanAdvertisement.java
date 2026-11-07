@@ -16,6 +16,18 @@ public sealed interface LanAdvertisement {
     }
 
     /**
+     * Answers this request alone with this server data, chosen for the requester (its address or
+     * network ID). It is never repeated to another requester: when a later call misses its
+     * deadline, the fallback is the last data answered with {@link #advertise}, or no response.
+     *
+     * @param data the advertisement
+     * @return the answer
+     */
+    static LanAdvertisement advertiseToRequester(LanServerData.V7 data) {
+        return new AdvertiseToRequester(data);
+    }
+
+    /**
      * Sends no response: the requester does not list this server.
      *
      * @return the answer
@@ -31,6 +43,17 @@ public sealed interface LanAdvertisement {
      */
     record Advertise(LanServerData.V7 data) implements LanAdvertisement {
         public Advertise {
+            Objects.requireNonNull(data, "data");
+        }
+    }
+
+    /**
+     * Answers this request alone with this server data; see {@link #advertiseToRequester}.
+     *
+     * @param data the advertisement
+     */
+    record AdvertiseToRequester(LanServerData.V7 data) implements LanAdvertisement {
+        public AdvertiseToRequester {
             Objects.requireNonNull(data, "data");
         }
     }

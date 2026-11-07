@@ -551,13 +551,15 @@ replaces the other:
   counterpart of HTTP's status provider, so the player count can be live and a
   requester can be left without a response. It gets a `LanDiscoveryRequest`
   with the requester's address and announced network ID, and answers with
-  `LanAdvertisement.advertise(data)` or `LanAdvertisement.decline()` (no
+  `LanAdvertisement.advertise(data)`, `LanAdvertisement.advertiseToRequester(data)`
+  for data chosen for that requester, or `LanAdvertisement.decline()` (no
   response). It runs off the I/O threads, at most 64 calls at once, each with a
   deadline: 1 s, or the `Duration` of `setAdvertiser(advertiser, timeout)`, which
   must be positive. A call that misses its deadline, throws, answers null or
   returns data too large for one datagram, and a request beyond the 64, get the
-  last data this advertiser produced in time, or no response while there is
-  none. Each advertiser keeps its own last data, so a replaced advertiser's
+  last data this advertiser produced in time with `advertise`, or no response
+  while there is none; data answered with `advertiseToRequester` is never
+  repeated to another requester. Each advertiser keeps its own last data, so a replaced advertiser's
   fallback never reaches its successor's requests. Anyone on the network can
   send discovery requests, so keep each call cheap, for example by returning a
   cached record.

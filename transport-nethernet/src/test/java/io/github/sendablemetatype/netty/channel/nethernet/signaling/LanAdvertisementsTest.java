@@ -79,6 +79,26 @@ class LanAdvertisementsTest {
     }
 
     @Test
+    void dataChosenForOneRequesterIsNeverRepeatedToAnother() {
+        boolean[] personal = {false};
+        advertisements.ask(request -> personal[0]
+                ? LanAdvertisement.advertiseToRequester(data(7))
+                : LanAdvertisement.advertise(data(1)), DEADLINE);
+        CompletableFuture<Optional<byte[]>> shared = ask();
+        calls.remove().run();
+        assertArrayEquals(payload(data(1)), shared.join().orElseThrow());
+
+        personal[0] = true;
+        CompletableFuture<Optional<byte[]>> mine = ask();
+        calls.remove().run();
+        assertArrayEquals(payload(data(7)), mine.join().orElseThrow(), "the requester gets its own data");
+
+        CompletableFuture<Optional<byte[]>> late = ask();
+        passDeadline();
+        assertArrayEquals(payload(data(1)), late.join().orElseThrow(), "the fallback is the shared data");
+    }
+
+    @Test
     void aCallToTheReplacedAdvertiserDoesNotBecomeTheNewOnesFallback() {
         advertisements.ask(request -> LanAdvertisement.advertise(data(1)), DEADLINE);
         CompletableFuture<Optional<byte[]>> replaced = ask();
