@@ -13,6 +13,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.github.sendablemetatype.netty.channel.raknet.RakChannel;
 import io.github.sendablemetatype.netty.channel.raknet.RakPriority;
 import io.github.sendablemetatype.netty.channel.raknet.RakReliability;
+import io.github.sendablemetatype.netty.channel.raknet.RakState;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakClientConfig;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakSessionConfig;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
@@ -268,6 +269,22 @@ class RakSessionCodecTests {
             } finally {
                 nack.release();
             }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {16, 255})
+    void anOrderingChannelBeyondTheConfiguredCountDisconnects(int orderingChannel) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            EncapsulatedPacket packet = ordered(0, 0);
+            packet.setOrderingChannel((short) orderingChannel);
+            ByteBuf buffer = packet.getBuffer();
+            s.receive(packet);
+            s.transport.checkException();
+            // The embedded transport completes the disconnect notification at once, so the session is already closed
+            assertEquals(RakState.DISCONNECTED, getField(s.codec, "state"));
+            assertTrue(s.readOrdered().isEmpty());
+            assertEquals(0, buffer.refCnt());
         }
     }
 

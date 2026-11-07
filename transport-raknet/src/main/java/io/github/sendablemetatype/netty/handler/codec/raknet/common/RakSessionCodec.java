@@ -561,6 +561,11 @@ public class RakSessionCodec extends ChannelDuplexHandler {
 
     private void onOrderedReceived(ChannelHandlerContext ctx, EncapsulatedPacket packet) {
         int orderingChannel = packet.getOrderingChannel();
+        if (orderingChannel >= this.orderingHeaps.size()) {
+            // The wire allows 256 channels; only a broken or hostile peer names one beyond the configured count
+            this.disconnect(TransportDisconnectReason.BAD_PACKET);
+            return;
+        }
         PriorityQueue<OrderedPacket> binaryHeap = this.orderingHeaps.get(orderingChannel);
         long expectedIndex = this.orderReadIndex[orderingChannel];
         int distance = RakSequence.difference(packet.getOrderingIndex(), (int) expectedIndex);
