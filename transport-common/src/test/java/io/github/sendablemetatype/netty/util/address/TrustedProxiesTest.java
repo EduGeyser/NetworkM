@@ -36,7 +36,7 @@ class TrustedProxiesTest {
     private static final InetSocketAddress LOCAL_PROXY = new InetSocketAddress("127.0.0.1", 40000);
 
     private static TrustedProxies forwarders(String... ranges) {
-        return new TrustedProxies(IpRangeSet.empty(), IpRangeSet.parse(List.of(ranges)));
+        return new TrustedProxies(ProxyList.NONE, TrustedProxies.parseList(List.of(ranges)));
     }
 
     private static Optional<InetSocketAddress> client(TrustedProxies trusted, String... lines) {
@@ -52,18 +52,19 @@ class TrustedProxiesTest {
     @Test
     void readsOneAddressPerLineFromAList() throws Exception {
         List<URI> fetched = new ArrayList<>();
-        IpRangeSet trusted = IpRangeSet.parse(TrustedProxies.expand(List.of("192.0.2.1", "https://lists.example/proxies"),
-                uri -> {
-                    fetched.add(uri);
-                    return "198.51.100.7\n# a comment\n\n203.0.113.0/24\n";
-                }));
+        ProxyList list = TrustedProxies.parseList(List.of("192.0.2.1", "https://lists.example/proxies"), uri -> {
+            fetched.add(uri);
+            return "198.51.100.7\n# a comment\n\n203.0.113.0/24\n";
+        });
 
         assertEquals(List.of(URI.create("https://lists.example/proxies")), fetched);
+        IpRangeSet trusted = list.ranges();
         assertTrue(trusted.contains(InetAddress.getByName("192.0.2.1")));
         assertTrue(trusted.contains(InetAddress.getByName("198.51.100.7")));
         assertTrue(trusted.contains(InetAddress.getByName("203.0.113.9")));
-        // Comments and blank lines are not addresses
+        // Comments and blank lines are not addresses, nor entries that could not be read
         assertFalse(trusted.contains(InetAddress.getByName("198.51.100.8")));
+        assertEquals(List.of(), list.unreadable());
     }
 
     @Test
@@ -77,31 +78,53 @@ class TrustedProxiesTest {
     }
 
     @Test
-    void widensTrustNoFurtherWhenAListCannotBeFetched() throws Exception {
-        IpRangeSet trusted = IpRangeSet.parse(TrustedProxies.expand(List.of("192.0.2.1", "https://lists.example/a"),
-                uri -> {
-                    throw new IOException("returned HTTP 503");
-                }));
+    void widensTrustNoFurtherWhenAListCannotBeFetched() {
+        ProxyList list = TrustedProxies.parseList(List.of("192.0.2.1", "https://lists.example/a"), uri -> {
+            throw new IOException("returned HTTP 503");
+        });
 
-        assertTrue(trusted.contains(InetAddress.getByName("192.0.2.1")));
-        assertEquals(List.of("192.0.2.1/32"), trusted.entries());
+        assertEquals(List.of("192.0.2.1/32"), list.ranges().entries());
+        assertEquals(List.of("https://lists.example/a"), list.unreadable());
+        assertFalse(list.allUnreadable(), "the address was read");
     }
 
     @Test
-    void keepsEntriesThatAreNotUrls() {
-        assertEquals(List.of("192.0.2.1", "10.0.0.0/8"),
-                TrustedProxies.expand(Arrays.asList("192.0.2.1", null, "", "  ", " 10.0.0.0/8 "), uri -> {
-                    throw new AssertionError("nothing to fetch");
-                }));
-        assertTrue(TrustedProxies.parseList(null).isEmpty());
+    void namesTheEntriesItCouldNotRead() {
+        ProxyList list = TrustedProxies.parseList(List.of(" 10.0.0.0/99 ", "https://lists.example/a",
+                "https://lists.example/empty"), uri -> switch (uri.getPath()) {
+                    case "/a" -> "not an address\n192.0.2.300\n";
+                    case "/empty" -> "# nothing listed yet\n\n";
+                    default -> throw new AssertionError(uri);
+                });
+
+        assertTrue(list.ranges().isEmpty());
+        // An empty list counts as unreadable: a list exists to name proxies
+        assertEquals(List.of("https://lists.example/empty", "10.0.0.0/99", "not an address", "192.0.2.300"),
+                list.unreadable());
+        assertTrue(list.allUnreadable());
+    }
+
+    @Test
+    void anUnconfiguredListIsNotUnreadable() {
+        ProxyList list = TrustedProxies.parseList(Arrays.asList("192.0.2.1", null, "", "  ", " 10.0.0.0/8 "), uri -> {
+            throw new AssertionError("nothing to fetch");
+        });
+
+        assertEquals(List.of("192.0.2.1/32", "10.0.0.0/8"), list.ranges().entries());
+        assertEquals(List.of(), list.unreadable());
+        for (ProxyList unconfigured : List.of(TrustedProxies.parseList(null),
+                TrustedProxies.parseList(Arrays.asList(null, " ")), ProxyList.NONE)) {
+            assertTrue(unconfigured.ranges().isEmpty());
+            assertFalse(unconfigured.allUnreadable(), "blank entries name nothing");
+        }
     }
 
     // Roles
 
     @Test
     void eachListTrustsItsOwnRoleOnly() {
-        TrustedProxies trusted = new TrustedProxies(IpRangeSet.parse(List.of("10.0.0.0/8")),
-                IpRangeSet.parse(List.of("192.168.0.0/16")));
+        TrustedProxies trusted = new TrustedProxies(TrustedProxies.parseList(List.of("10.0.0.0/8")),
+                TrustedProxies.parseList(List.of("192.168.0.0/16")));
         InetSocketAddress haproxy = new InetSocketAddress("10.1.2.3", 1);
         InetSocketAddress forwarder = new InetSocketAddress("192.168.1.2", 1);
 

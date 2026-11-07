@@ -10,7 +10,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.TransportPath.CandidateType;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.Join;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.RemoteSignal;
-import io.github.sendablemetatype.netty.util.address.IpRangeSet;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.address.TrustedProxies;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferFixtures;
@@ -261,7 +261,7 @@ class NetherNetServerAddressingTest {
     @Test
     void proxyRelaysFrontTheSharedPortAndNoRemoteCandidateIsApplied() throws Exception {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+                new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE));
         harness.bind();
         FakeJoinSource.Reply reply = harness.source(true).offer("1", HOST_ONLY_OFFER);
         FakePeer peer = harness.negotiating();
@@ -285,7 +285,7 @@ class NetherNetServerAddressingTest {
         harness.engine.answerWith(ANSWER);
         harness.engine.gatherWith(GATHERED_WITH_TURN);
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()));
+                new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE));
         harness.bind();
     }
 
@@ -340,9 +340,44 @@ class NetherNetServerAddressingTest {
     @Test
     void proxyRelaysNeedTheSharedPort() {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES,
-                        new TrustedProxies(IpRangeSet.parse(List.of("192.0.2.10")), IpRangeSet.empty()))
+                        new TrustedProxies(TrustedProxies.parseList(List.of("192.0.2.10")), ProxyList.NONE))
                 .option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
         assertInstanceOf(IllegalStateException.class, bind.cause());
+    }
+
+    @Test
+    void relaysNoneOfWhichCouldBeReadRefuseTheBind() {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, new TrustedProxies(
+                TrustedProxies.parseList(List.of("10.0.0.0/99", "192.0.2.300")), ProxyList.NONE));
+        ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
+
+        // Bound without them, the endpoint would take players directly and announce this host
+        assertInstanceOf(UnreadableRelaysException.class, bind.cause());
+        assertEquals(List.of(), harness.engine.endpoints(), "refused before the ICE port opened");
+    }
+
+    @Test
+    void aPartlyReadableRelayListBindsWithTheRelaysItRead() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, new TrustedProxies(
+                TrustedProxies.parseList(List.of("192.0.2.10", "10.0.0.0/99")), ProxyList.NONE));
+        harness.bind();
+        harness.source(true).offer("1", HOST_ONLY_OFFER);
+        FakePeer peer = harness.negotiating();
+
+        assertEquals(List.of("192.0.2.10/32"), harness.engine.endpoints().getFirst().relays());
+        assertFalse(peer.remoteOffers().getFirst().contains("a=candidate"), "players are reached only through it");
+    }
+
+    @Test
+    void anEmptyRelayListBindsWithoutRelays() throws Exception {
+        // How a host runs without relays on purpose, also after a list none of whose relays could be read
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, TrustedProxies.NONE);
+        harness.bind();
+        harness.source(true).offer("1", HOST_ONLY_OFFER);
+        FakePeer peer = harness.negotiating();
+
+        assertEquals(List.of(), harness.engine.endpoints().getFirst().relays());
+        assertTrue(peer.remoteOffers().getFirst().contains("192.168.1.20 51234 typ host"), "players connect directly");
     }
 }

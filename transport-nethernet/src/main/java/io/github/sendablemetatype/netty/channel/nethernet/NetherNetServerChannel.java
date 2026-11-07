@@ -31,7 +31,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinAlreadyS
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSink;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.JoinSource;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.SharedIcePort;
-import io.github.sendablemetatype.netty.util.address.TrustedProxies;
+import io.github.sendablemetatype.netty.util.address.ProxyList;
 import io.github.sendablemetatype.netty.util.nethernet.IdentityRefusal;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheck;
 import io.github.sendablemetatype.netty.util.nethernet.OfferCheckResult;
@@ -686,8 +686,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                     + "or to ServerIdentity.ephemeral(domain) if plain HTTP players may be asked to trust the "
                     + "server again after every restart");
         }
-        TrustedProxies proxies = config.getTrustedProxies();
-        boolean relayed = !proxies.proxyProtocol().isEmpty();
+        ProxyList relays = config.getTrustedProxies().proxyProtocol();
+        if (relays.allUnreadable()) {
+            throw new UnreadableRelaysException();
+        }
+        boolean relayed = !relays.ranges().isEmpty();
         boolean shared = config.isSharedIcePort();
         if (relayed && !shared) {
             throw new IllegalStateException("PROXY protocol relays for media need the shared ICE port");
@@ -738,8 +741,8 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         Thread.ofVirtual().name("nethernet-issuer-keys").start(offerCheck::prefetch);
         ServerJoin.Settings answers = new ServerJoin.Settings(identity, config.isInferPeerCandidates(), icePort,
                 relayed);
-        BindPlan plan = new BindPlan(answers, relayed ? proxies.proxyProtocol().entries() : List.of(), offerCheck,
-                stunServers, config.getStunMaxAge());
+        BindPlan plan = new BindPlan(answers, relays.ranges().entries(), offerCheck, stunServers,
+                config.getStunMaxAge());
 
         CompletableFuture<IceEndpoint> opened = opening == null ? CompletableFuture.completedFuture(null)
                 : opening.toCompletableFuture();

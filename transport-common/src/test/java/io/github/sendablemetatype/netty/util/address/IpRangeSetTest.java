@@ -50,7 +50,7 @@ class IpRangeSetTest {
                 addresses[i] = EndpointAddress.parse(answer[i]);
             }
             return addresses;
-        });
+        }, entry -> { });
     }
 
     @Test
