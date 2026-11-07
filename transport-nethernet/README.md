@@ -358,13 +358,17 @@ Once the chain is verified, decide it against the transport, once per Login:
 ```java
 switch (TransportIdentityBinding.verifyLogin(channel, loginChainKey)) {
     case ACCEPTED -> { } // the login comes from the client that opened this transport
+    case UNBOUND -> { } // the offer proved no key: the Login chain alone decides
     case NOT_NETHERNET -> { } // not NetherNet: that transport's own authentication applies
-    case MISMATCH, UNBOUND, SPENT -> channel.close();
+    case MISMATCH, SPENT -> channel.close();
 }
 ```
 
-This switch closes every unbound join, LAN joins without an assertion included.
-An application that lets those log in relies on the Login chain alone for them.
+A join is unbound when its offer proved no key. LAN discovery admits offers
+without an assertion by default, because retail sends its LAN offer without
+one, so closing unbound joins would refuse every LAN player at login. The switch
+admits them and leaves the decision to the Login chain. A mismatch is what a
+Login replayed from another player looks like, so it closes.
 
 The check finds the binding by attribute, so wrapper channels that delegate
 attributes work. A binding with a key is spent by its first decision. An unbound
