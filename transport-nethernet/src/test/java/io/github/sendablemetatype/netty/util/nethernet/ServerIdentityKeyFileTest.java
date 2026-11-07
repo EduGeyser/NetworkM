@@ -210,6 +210,37 @@ class ServerIdentityKeyFileTest {
     }
 
     @Test
+    void movesAKeyIntoTheFormOpensslWrites(@TempDir Path dir) throws Exception {
+        Path old = write(dir, EDUGEYSER);
+        Path moved = dir.resolve("identity.pem");
+
+        assertTrue(ServerIdentity.load(old, "self").writeKeyFile(moved));
+
+        // One EC PRIVATE KEY block with the point, which a reader that takes only the first block
+        // and requires the point (upstream's) accepts
+        assertEquals(SEC1, Files.readString(moved).replace("\r\n", "\n"));
+        assertEquals(FINGERPRINT, ServerIdentity.loadOrCreate(moved, "self").fingerprint());
+        assertEquals(EDUGEYSER, Files.readString(old), "loading and writing leave the source alone");
+    }
+
+    @Test
+    void writingTheKeyNeverReplacesAFile(@TempDir Path dir) throws Exception {
+        Path existing = write(dir, EDUGEYSER);
+        ServerIdentity other = ServerIdentity.of(keyPair("EC", "secp384r1"), "self");
+
+        assertFalse(other.writeKeyFile(existing));
+        assertEquals(EDUGEYSER, Files.readString(existing));
+    }
+
+    @Test
+    void loadingNeverCreatesAKey(@TempDir Path dir) {
+        Path missing = dir.resolve("identity.pem");
+
+        assertThrows(IOException.class, () -> ServerIdentity.load(missing, "self"));
+        assertFalse(Files.exists(missing));
+    }
+
+    @Test
     void concurrentCreatorsAllEndUpWithTheWinnersKey(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("identity.pem");
         int racers = 8;

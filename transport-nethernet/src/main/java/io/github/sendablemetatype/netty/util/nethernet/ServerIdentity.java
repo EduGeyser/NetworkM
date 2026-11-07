@@ -45,6 +45,7 @@ import java.util.Objects;
 public final class ServerIdentity {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(ServerIdentity.class);
 
+    private final KeyPair pair;
     private final AssertionSigner signer;
     private final ECPublicKey publicKey;
     private final String domain;
@@ -52,6 +53,7 @@ public final class ServerIdentity {
 
     private ServerIdentity(KeyPair pair, String domain) throws GeneralSecurityException {
         this.domain = Objects.requireNonNull(domain, "domain");
+        this.pair = pair;
         this.signer = new AssertionSigner(pair, "server identity");
         this.publicKey = signer.publicKey();
         this.token = buildToken();
@@ -83,6 +85,40 @@ public final class ServerIdentity {
                 PemKeys.read(Files.readString(path, StandardCharsets.UTF_8), path.toString()), domain);
         log.info("{} the NetherNet server identity key {} (SHA-256 {})", origin.verb(), path, identity.fingerprint());
         return identity;
+    }
+
+    /**
+     * Loads the identity key from a PEM file that exists, in any form {@link PemKeys} describes.
+     * Unlike {@link #loadOrCreate} it never creates the file and never changes it, so it suits a key
+     * that is about to move to another file (see {@link #writeKeyFile}).
+     *
+     * @param keyFile the PEM file to load
+     * @param domain  the name the identity carries as {@code idp.domain} and {@code iss}
+     * @return the identity
+     * @throws IOException              if the file does not exist or cannot be read
+     * @throws GeneralSecurityException if the file holds no usable secp384r1 key
+     */
+    public static ServerIdentity load(Path keyFile, String domain) throws IOException, GeneralSecurityException {
+        Path path = keyFile.toAbsolutePath();
+        return new ServerIdentity(PemKeys.read(Files.readString(path, StandardCharsets.UTF_8), path.toString()), domain);
+    }
+
+    /**
+     * Writes this identity's key to a new file, in the form {@link #loadOrCreate} creates: SEC1 with
+     * its public point, a single PEM block, which upstream CloudburstMC/Network's reader also
+     * requires. The file is created the way {@link #loadOrCreate} creates one: owner-only, synced,
+     * never through a symbolic link, and linked into place only if no file appeared there
+     * meanwhile. A file that exists is never replaced; as with {@link #loadOrCreate}, it is made
+     * owner-only on POSIX when others can read it.
+     *
+     * @param keyFile the file to create
+     * @return true when this call created the file, false when a file already existed there
+     * @throws IOException              if the file cannot be created
+     * @throws GeneralSecurityException if the key cannot be encoded
+     */
+    public boolean writeKeyFile(Path keyFile) throws IOException, GeneralSecurityException {
+        return KeyFile.ensure(keyFile.toAbsolutePath(), "the identity key", () -> PemKeys.writeSec1(pair))
+                == KeyFile.Origin.CREATED;
     }
 
     /**
