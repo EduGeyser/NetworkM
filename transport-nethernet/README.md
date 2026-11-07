@@ -290,10 +290,15 @@ attests retail tokens against Minecraft's authorization service. For other
 issuers, build `new OfferCheck(issuers)` with `TrustedIssuer.jwks(...)` or
 `TrustedIssuer.fixedKey(...)`.
 
-**Policies.** `OfferPolicy.REQUIRE_KEY_PROVEN` is the default for every source:
-it admits `KEY_PROVEN` and `ATTESTED`. Education clients send a self-signed
-token that no issuer attests and pass on their proof
-([client behavior](docs/client-behavior.md#the-clients-offer)).
+**Policies.** `addSource(source)` gives a source the policy its
+`JoinSource.defaultOfferPolicy()` names; `addSource(source, policy)` sets one.
+The default is `OfferPolicy.REQUIRE_KEY_PROVEN`: it admits `KEY_PROVEN` and
+`ATTESTED`. Education clients send a self-signed token that no issuer attests
+and pass on their proof
+([client behavior](docs/client-behavior.md#the-clients-offer)). LAN discovery
+names `OfferPolicy.ALLOW_UNASSERTED`, which also admits `NO_ASSERTION`: retail
+sends its LAN offer with no `a=identity`, and vanilla BDS admits it. It still
+refuses malformed assertions and failed proofs.
 `OfferPolicy.REQUIRE_ATTESTED` admits only `ATTESTED`, which refuses every
 Education client and every join while the issuer's keys are unreachable. A
 custom `OfferPolicy` returns an `IdentityRefusal` to refuse; it runs on the event
@@ -343,7 +348,9 @@ another player could be replayed over a new connection. Every child carries a
 `TransportIdentityBinding` in `TransportIdentityBinding.ATTRIBUTE`, bound to the
 key the offer proved, or unbound when it proved none. Real clients sign the Login
 with the offer's `cpk`, retail and Education alike
-([client behavior](docs/client-behavior.md#the-clients-offer)).
+([client behavior](docs/client-behavior.md#the-clients-offer)). A LAN join
+admitted without an assertion, as LAN discovery allows by default, proves no
+key, so its binding is unbound.
 
 Applications own Login authentication; NetworkM does not parse Login packets.
 Once the chain is verified, decide it against the transport, once per Login:
@@ -356,9 +363,14 @@ switch (TransportIdentityBinding.verifyLogin(channel, loginChainKey)) {
 }
 ```
 
+This switch closes every unbound join, LAN joins without an assertion included.
+An application that lets those log in relies on the Login chain alone for them.
+
 The check finds the binding by attribute, so wrapper channels that delegate
-attributes work. A binding is spent by its first decision. An application that
-admits a login through its own trusted forwarding path calls
+attributes work. A binding with a key is spent by its first decision. An unbound
+join has no binding to spend: every check answers `UNBOUND`, so an application
+that admits unbound logins must allow one Login per connection itself. An
+application that admits a login through its own trusted forwarding path calls
 `TransportIdentityBinding.acceptForwardedIdentity(channel)` instead.
 `TransportIdentityBinding.state(channel)` reports where a binding stands without
 spending it.
@@ -542,12 +554,25 @@ came from, which is then pinned: the join takes later signals only from that
 address and the client's network ID. Anyone on the network can forge a datagram's
 source, so joins carry it as `AddressSource.SIGNALING_LAN`.
 
+Retail sends its LAN offer with no `a=identity`
+([client behavior](docs/client-behavior.md#the-clients-offer)), so the source's
+joins admit offers without an assertion by default
+(`OfferPolicy.ALLOW_UNASSERTED`, see [Admission](#admission)). An assertion that
+is present is still checked. Such joins carry no key, so their
+[login key binding](#login-key-binding) is unbound. Their answers carry the
+server identity like every other answer, and retail 1.26.63 accepts them
+([client behavior](docs/client-behavior.md#what-the-client-requires-of-the-answer)).
+
 Discovery responses use binary server data v7, the layout BDS 1.26.50 and later
 send. `LanServerData.V7` (package `signaling.lan`) is the LAN record, separate
 from the HTTP status document; the two need not match. The authentication flags
 describe the endpoint's admission policy; they enable nothing.
-`NetherNetServerDataCodec` and the scanner read v6 and v7. The v7 layout is not
-yet confirmed against a current retail capture.
+`NetherNetServerDataCodec` and the scanner read v6 and v7. The v7 layout is
+confirmed against 1.26.63 (captured 2026-11-07): the codec decodes BDS
+1.26.63.1's discovery response in full as v7, and retail 1.26.63 lists a v7
+record NetworkM encodes. Retail shows the level name as the title,
+`<server name>'s world` below it, tags for the game mode and "LAN world", and no
+player count.
 
 A source answers every discovery request in one of two ways; setting one
 replaces the other:
@@ -782,8 +807,9 @@ Channel channel = new Bootstrap()
 `client(engineSupplier, signalingSupplier)` do the same and also choose the
 engine.
 
-**Identity.** Vanilla BDS and this library's endpoints refuse an offer without an
-identity. `NETHER_CLIENT_IDENTITY` takes a `ClientIdentity` built with
+**Identity.** Vanilla BDS refuses an offer without an identity over HTTP, and
+this library's endpoints refuse one by default on every path but LAN. Over LAN
+both admit it, since retail sends its LAN offer without one. `NETHER_CLIENT_IDENTITY` takes a `ClientIdentity` built with
 `ClientIdentity.of(keyPair, token, idpDomain)`: a secp384r1 key pair and a token
 whose `cpk` names it, either a retail multiplayer token or one the caller signs
 itself, as Education does. `of` throws `GeneralSecurityException` when the key is

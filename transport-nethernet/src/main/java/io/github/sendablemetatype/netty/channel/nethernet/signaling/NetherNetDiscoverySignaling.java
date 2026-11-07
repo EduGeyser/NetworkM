@@ -5,6 +5,7 @@ import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanAdvertiser;
 import io.github.sendablemetatype.netty.channel.nethernet.signaling.lan.LanServerData;
+import io.github.sendablemetatype.netty.util.nethernet.OfferPolicy;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.util.ReferenceCountUtil;
@@ -304,6 +305,16 @@ public class NetherNetDiscoverySignaling implements NetherNetClientSignaling, Jo
     @Override
     public List<IceServer> iceServers() {
         return List.of();
+    }
+
+    /**
+     * {@link OfferPolicy#ALLOW_UNASSERTED}: retail 1.26.63 sends its LAN offer with no
+     * {@code a=identity}, and vanilla BDS 1.26.63.1 admits it (captured 2026-11-07). An assertion
+     * that is present is still checked.
+     */
+    @Override
+    public OfferPolicy defaultOfferPolicy() {
+        return OfferPolicy.ALLOW_UNASSERTED;
     }
 
     /**

@@ -117,6 +117,22 @@ class OfferCheckTest {
     }
 
     @Test
+    void allowUnassertedAdmitsOffersWithoutAnAssertionAndStillChecksTheRest() {
+        OfferCheckResult unasserted = RETAIL.check(offer(null, DIGEST));
+        OfferCheckResult malformed = RETAIL.check(offer("%%%", DIGEST));
+        OfferCheckResult failedProof = RETAIL.check(retailOffer().replace(DIGEST, OTHER_DIGEST));
+        assertEquals(Level.NO_ASSERTION, unasserted.level());
+        assertEquals(Level.MALFORMED, malformed.level());
+        assertEquals(Level.PROOF_FAILED, failedProof.level());
+
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(unasserted));
+        assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.ALLOW_UNASSERTED.refusal(malformed));
+        assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.ALLOW_UNASSERTED.refusal(failedProof));
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(RETAIL.check(educationOffer())));
+        assertEquals(Optional.empty(), OfferPolicy.ALLOW_UNASSERTED.refusal(RETAIL.check(retailOffer())));
+    }
+
+    @Test
     void proofCoversEveryFingerprintInOrder() {
         String sdp = offer(identity(RETAIL_IDP, retailToken(retailClaims(CLIENT_KEY.getPublic())),
                 proof(CLIENT_KEY.getPrivate(), DIGEST, OTHER_DIGEST)), DIGEST, OTHER_DIGEST);
@@ -159,7 +175,7 @@ class OfferCheckTest {
     @ParameterizedTest
     @ValueSource(strings = {"duplicate-identity", "media-identity", "missing-fingerprint", "indented-line",
             "invalid-digest", "not-base64", "not-json", "duplicate-json-member", "missing-token", "attached-proof",
-            "empty-signature"})
+            "empty-signature", "bare-identity", "empty-identity"})
     void malformedOffersStopAtParsing(String shape) {
         String valid = retailOffer();
         String identityLine = valid.lines().filter(line -> line.startsWith("a=identity:")).findFirst().orElseThrow();
@@ -180,12 +196,15 @@ class OfferCheckTest {
             case "attached-proof" -> offer(identity(RETAIL_IDP, token, sign(canonical(DIGEST), CLIENT_KEY.getPrivate(),
                     AlgorithmIdentifiers.ECDSA_USING_P384_CURVE_AND_SHA384, Map.of())), DIGEST);
             case "empty-signature" -> offer(identity(RETAIL_IDP, token, "header.."), DIGEST);
+            case "bare-identity" -> valid.replace(identityLine, "a=identity");
+            case "empty-identity" -> valid.replace(identityLine, "a=identity:");
             default -> throw new AssertionError(shape);
         };
         OfferCheckResult result = RETAIL.check(sdp);
 
         assertEquals(Level.MALFORMED, result.level(), () -> shape + " gave " + result);
         assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.REQUIRE_KEY_PROVEN.refusal(result));
+        assertEquals(Optional.of(IdentityRefusal.IDENTITY_INVALID), OfferPolicy.ALLOW_UNASSERTED.refusal(result));
     }
 
     @ParameterizedTest

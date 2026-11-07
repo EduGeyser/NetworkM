@@ -9,9 +9,21 @@ import java.util.Optional;
 @FunctionalInterface
 public interface OfferPolicy {
     /**
-     * The default (ruling C-3): admit every offer whose key is proven, attested or not; refuse
-     * offers without an assertion, malformed ones and failed proofs. Education 26.33 offers carry
-     * a self-signed token that no issuer attests, and pass on their proof.
+     * Admits offers without an assertion and every offer whose key is proven, attested or not;
+     * refuses malformed assertions and failed proofs. LAN discovery's default: retail 1.26.63 sends
+     * its LAN offer with no {@code a=identity} (captured 2026-11-07), and vanilla BDS admits it. A
+     * join admitted without an assertion has no client key, so its login binding is unbound.
+     */
+    OfferPolicy ALLOW_UNASSERTED = result -> switch (result.level()) {
+        case MALFORMED, PROOF_FAILED -> Optional.of(IdentityRefusal.IDENTITY_INVALID);
+        case NO_ASSERTION, KEY_PROVEN, ATTESTED -> Optional.empty();
+    };
+
+    /**
+     * The default for every source but LAN discovery (ruling C-3): admit every offer whose key is
+     * proven, attested or not; refuse offers without an assertion, malformed ones and failed
+     * proofs. Education 26.33 offers carry a self-signed token that no issuer attests, and pass on
+     * their proof.
      */
     OfferPolicy REQUIRE_KEY_PROVEN = result -> switch (result.level()) {
         case NO_ASSERTION -> Optional.of(IdentityRefusal.IDENTITY_MISSING);

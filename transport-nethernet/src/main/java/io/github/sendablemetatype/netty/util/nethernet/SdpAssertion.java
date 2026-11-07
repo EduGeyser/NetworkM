@@ -33,7 +33,8 @@ record SdpAssertion(String idpDomain, String idpProtocol, String token, String f
     /** Bounds parsing work on any signaling path; real offers measured 2.0 to 2.5 KB (2026-11-05). */
     static final int MAX_SDP_CHARS = 1 << 20;
 
-    private static final String IDENTITY_PREFIX = "a=identity:";
+    private static final String IDENTITY_ATTRIBUTE = "a=identity";
+    private static final String IDENTITY_PREFIX = IDENTITY_ATTRIBUTE + ":";
     private static final String FINGERPRINT_PREFIX = "a=fingerprint:";
 
     /** A step that cannot go on, with the reason the result reports. */
@@ -66,12 +67,14 @@ record SdpAssertion(String idpDomain, String idpProtocol, String token, String f
                 throw new Stop(Reason.MALFORMED_SDP);
             }
             if (line.startsWith("m=")) media = true;
-            if (line.startsWith(IDENTITY_PREFIX)) {
+            // A bare a=identity is the attribute without a value: malformed, not absent, so a policy
+            // that admits offers without an assertion cannot be reached with it.
+            if (line.equals(IDENTITY_ATTRIBUTE) || line.startsWith(IDENTITY_PREFIX)) {
                 // The guide places the attribute at session level, and real offers carry exactly one there.
                 if (identity != null || media) {
                     throw new Stop(Reason.MALFORMED_SDP);
                 }
-                identity = line.substring(IDENTITY_PREFIX.length());
+                identity = line.equals(IDENTITY_ATTRIBUTE) ? "" : line.substring(IDENTITY_PREFIX.length());
             } else if (line.startsWith(FINGERPRINT_PREFIX)) {
                 fingerprints.add(fingerprintEntry(line).orElseThrow(() -> new Stop(Reason.MALFORMED_SDP)));
             }

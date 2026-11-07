@@ -37,6 +37,7 @@ Sources:
 | The older WebSocket signaling (Type 3, `signal.franchise.minecraft-services.net`) is gone from retail since about May 2026. Education kept it only while it stayed on 1.21.133. | retail 26.20 and later, Education 26.x | Owner observation (2026-11) |
 | Education reaches a server through its server listing (MESS), which returns an IP address, or by connection ID over Xbox RPC. It uses the same probe: NetherNet first, RakNet as fallback. | Education 26.x | Owner observation |
 | Retail no longer joins over RakNet, probably since 26.60. | retail 26.60 and later | Owner observation (2026-11) |
+| While the Play screen is open, the client sends a LAN discovery request every 2 s from one socket, broadcast on every interface: requests arrived from both the Wi-Fi and the WSL virtual adapter addresses with the same source port. Its LAN offer comes from that same socket. | retail 1.26.63 | Captured (2026-11-07) |
 
 ## The client's offer
 
@@ -45,6 +46,10 @@ RPC alike. All offers use `a=setup:actpass`, `a=max-message-size:262144` and
 `a=group:BUNDLE 0`. HTTP offers carry host candidates and
 `a=ice-options:trickle`; the Xbox RPC offer carries none and trickles every
 candidate (Captured).
+
+The LAN offer differs: retail 1.26.63 sends its `CONNECTREQUEST` over LAN
+discovery with no `a=identity` at all, while the same client always sends one
+over HTTP and Xbox RPC (Captured, 2026-11-07).
 
 The `a=identity` value is base64 JSON with an `idp` block and an `assertion`
 string; the assertion holds a token and a detached JWS over the SDP's
@@ -71,6 +76,9 @@ What follows from this:
   retail and Education, over HTTP and over Xbox RPC (Captured). Comparing the two
   at login is what stops a Login captured from another player from being replayed
   over a new connection, and it covers Education too.
+- A retail LAN offer has no `cpk`, so a LAN join has no key to compare at
+  login. NetworkM's LAN discovery admits such offers by default, as BDS does,
+  and their login binding is unbound.
 - go-nethernet reported `cpk` as a JWK on some build; the captured clients send
   an SPKI string. Accepting both is the safe choice.
 
@@ -80,7 +88,14 @@ What follows from this:
   not invited to play on this server" when an answer lacks it, over Xbox RPC as
   well as HTTP. Before 26.40 only HTTP signaling required it (Reported by rtm516
   in Kas-tle/NetworkCompatible #12 and verified against a real 26.40 client,
-  2026-08). The guide says the same: every answer, HTTPS or not.
+  2026-08). The guide says the same: every answer, HTTPS or not. This does not
+  hold on LAN: retail 1.26.63 joined BDS 1.26.63.1 over LAN with an answer that
+  had no `a=identity` (Captured, 2026-11-07). It accepts a LAN answer that
+  carries one too: retail 1.26.63 sent its LAN offer without `a=identity` to a
+  NetworkM endpoint whose LAN source admitted it, NetworkM answered with its
+  usual `a=identity` (a self-created server key, `idp.domain` `LanCapture`),
+  ICE, DTLS, SCTP and the data channel were up within 94 ms, and the client
+  sent RequestNetworkSettings (protocol 2225) (Captured, 2026-11-07).
 - **Trust on first use over plain HTTP.** Since the 26.4x previews (July 2026)
   the client accepts plain HTTP signaling. It pins the server's identity key
   (`cpk` of the answer's token) and asks the player once to trust it. Over HTTPS
@@ -184,14 +199,19 @@ What follows from this:
   offers DTLS 1.2 only, with ChaCha20 suites first and no post-quantum groups.
   Its SCTP INIT uses ports 5000/5000, `a_rwnd` 5242880 and 65535 streams each
   way (Measured, BDS 1.26.45.1 and 1.26.60.21).
-- BDS rejects an offer without `a=identity` with `200`, `application/sdp`, body
-  `37` (`ErrorCodeIdentityNotAllowed`), whatever `online-mode` is set to
-  (Measured, BDS 1.26.45.1 and 1.26.60.21).
+- Over HTTP, BDS rejects an offer without `a=identity` with `200`,
+  `application/sdp`, body `37` (`ErrorCodeIdentityNotAllowed`), whatever
+  `online-mode` is set to (Measured, BDS 1.26.45.1 and 1.26.60.21).
+- Over LAN, BDS 1.26.63.1 answers an offer without `a=identity` at once, its
+  LAN answer carries no `a=identity` either, and retail 1.26.63 joins it
+  (Captured, 2026-11-07).
 - BDS answers a LAN discovery request with server data in one layout version:
   v6 from BDS 1.26.45.1, v7 from the 1.26.60.21 preview, which adds the protocol
   and version, drops the transport layer and writes player counts as varints
-  (Measured, 2026-09-06). Retail BDS and clients past 1.26.60 are not captured
-  yet.
+  (Measured, 2026-09-06). BDS 1.26.63.1 answers in v7 (Captured, 2026-11-07).
+- Retail 1.26.63 does not list a server that answers only with a v6 record and
+  sends it no offer, also after a client restart, while it lists a v7 one
+  (Captured, 2026-11-07).
 - A 1.26.51 client lists a LAN server that answers only in an older version but
   never sends it an offer (Reported: upstream CloudburstMC/Network,
   `ServerData.java`).
