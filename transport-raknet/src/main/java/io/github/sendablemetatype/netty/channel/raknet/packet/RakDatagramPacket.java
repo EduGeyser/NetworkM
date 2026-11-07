@@ -36,8 +36,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
     private final Recycler.Handle<RakDatagramPacket> handle;
     private final List<EncapsulatedPacket> packets = new ArrayList<>();
     private byte flags = FLAG_VALID;
-    // Session-local monotonic milliseconds, not wire timestamps.
-    private long sendTime;
     private int sequenceIndex = -1;
 
     public static RakDatagramPacket newInstance() {
@@ -92,7 +90,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
         }
         this.packets.clear();
         this.flags = FLAG_VALID;
-        this.sendTime = 0;
         this.sequenceIndex = -1;
         setRefCnt(1);
         this.handle.recycle(this);
@@ -122,14 +119,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
         this.flags |= flag;
     }
 
-    public long getSendTime() {
-        return sendTime;
-    }
-
-    public void setSendTime(long sendTime) {
-        this.sendTime = sendTime;
-    }
-
     public int getSequenceIndex() {
         return this.sequenceIndex;
     }
@@ -144,7 +133,6 @@ public class RakDatagramPacket extends AbstractReferenceCounted {
                 "handle=" + handle +
                 ", packets=" + packets +
                 ", flags=" + flags +
-                ", sendTime=" + sendTime +
                 ", sequenceIndex=" + sequenceIndex +
                 '}';
     }

@@ -26,9 +26,7 @@ public class RakSlidingWindow {
     private double cwnd;
     private double ssThresh;
     private double estimatedRTT = -1;
-    private double lastRTT = -1;
     private double deviationRTT = -1;
-    private long oldestUnsentAck;
     private long nextCongestionControlBlock;
     private boolean backoffThisBlock;
     private int unackedBytes;
@@ -50,12 +48,6 @@ public class RakSlidingWindow {
             return (int) (this.cwnd - this.unackedBytes);
         } else {
             return 0;
-        }
-    }
-
-    public void onPacketReceived(long curTime) {
-        if (this.oldestUnsentAck == 0) {
-            this.oldestUnsentAck = curTime;
         }
     }
 
@@ -109,7 +101,6 @@ public class RakSlidingWindow {
      * @param curSequenceIndex the next datagram number to be sent
      */
     public void onAck(long rtt, int size, int sequenceIndex, long curSequenceIndex) {
-        this.lastRTT = rtt;
         this.unackedBytes -= size;
         // Every transmission has its own datagram number, so a sample from a resend is as valid as any
         this.rtoBackoff = 0;
@@ -152,10 +143,6 @@ public class RakSlidingWindow {
         return this.cwnd <= this.ssThresh || this.ssThresh == 0;
     }
 
-    public void onSendAck() {
-        this.oldestUnsentAck = 0;
-    }
-
     public long getRtoForRetransmission() {
         if (this.estimatedRTT == -1) {
             return CC_MAXIMUM_THRESHOLD;
@@ -168,20 +155,6 @@ public class RakSlidingWindow {
 
     public double getRTT() {
         return this.estimatedRTT;
-    }
-
-    public boolean shouldSendAcks(long curTime) {
-        long rto = this.getSenderRtoForAck();
-
-        return rto == -1 || curTime >= this.oldestUnsentAck + CC_SYN;
-    }
-
-    public long getSenderRtoForAck() {
-        if (this.lastRTT == -1) {
-            return -1;
-        } else {
-            return (long) (this.lastRTT + CC_SYN);
-        }
     }
 
     public int getUnackedBytes() {
