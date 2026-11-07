@@ -19,8 +19,12 @@ package io.github.sendablemetatype.netty.util.nethernet;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.jcajce.provider.asymmetric.util.EC5Util;
+import org.bouncycastle.math.ec.FixedPointCombMultiplier;
 import org.bouncycastle.operator.OperatorCreationException;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.util.io.pem.PemObject;
@@ -39,11 +43,15 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPrivateKey;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECPoint;
+import java.security.spec.ECPublicKeySpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.time.Instant;
@@ -62,8 +70,10 @@ import java.util.regex.Pattern;
  * <p>
  * libwebrtc takes the fingerprint's digest from the certificate's signature algorithm
  * ({@code rtc_base/ssl_fingerprint.cc}). Only certificates signed with SHA-256 are accepted, so the SHA-256
- * fingerprint is the one the peers announce. A server creates its certificate once with {@link #loadOrCreate}, or
- * supplies one as PEM with {@link #load} or {@link #of}.
+ * fingerprint is the one the peers announce. A server creates its certificate once with
+ * {@link #loadOrCreate(Path)} or {@link #loadOrCreate(Path, Path)}, or supplies one as PEM with {@link #load} or
+ * {@link #of}. A key this class creates is PKCS#8 with its public point embedded, which every PEM reader takes; the
+ * JDK's own encoding leaves the point out.
  */
 public final class DtlsCertificate {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(DtlsCertificate.class);
@@ -121,6 +131,44 @@ public final class DtlsCertificate {
         DtlsCertificate certificate = combined(Files.readString(path, StandardCharsets.US_ASCII), path.toString());
         log.info("{} the NetherNet DTLS certificate {} ({})", origin.verb(), path, certificate.fingerprint());
         return certificate;
+    }
+
+    /**
+     * Loads the certificate and key from two PEM files, creating them when neither exists. This is the layout
+     * upstream CloudburstMC/Network's provider host keeps ({@code host-cert.pem} and {@code host-key.pem} in its state
+     * directory), so a host that moves between the two libraries keeps its certificate. Both files are handled as
+     * {@link #loadOrCreate(Path)} handles its one: never replaced once they exist, created owner-only.
+     * <p>
+     * The key is created first and the certificate is made for whatever key the file then holds. A creator that
+     * finds an EC key without a certificate, after a crash between the two writes or while another creator is between
+     * them, makes the certificate for that key, and creators racing on the certificate all load the winner's, which is
+     * for the same key. A certificate without its key is refused: a new pair would change the fingerprint clients
+     * hold.
+     *
+     * @param certificate the certificate file
+     * @param privateKey  its private key file, PKCS#8 ({@code BEGIN PRIVATE KEY})
+     * @return the certificate
+     * @throws IOException              if a file cannot be read or created, is larger than 64 KiB, or the certificate
+     *                                  exists without its key
+     * @throws GeneralSecurityException if the files hold no usable certificate and key, see {@link #of}
+     */
+    public static DtlsCertificate loadOrCreate(Path certificate, Path privateKey)
+            throws IOException, GeneralSecurityException {
+        Path certificatePath = certificate.toAbsolutePath();
+        Path keyPath = privateKey.toAbsolutePath();
+        if (Files.exists(certificatePath) && !Files.exists(keyPath)) {
+            throw new IOException("The DTLS certificate " + certificatePath + " has no private key at " + keyPath
+                    + ". Restore the key, or remove the certificate to create a new pair");
+        }
+        KeyFile.ensure(keyPath, "the DTLS private key", () -> keyPem(newKeyPair()));
+        if (Files.size(keyPath) > MAX_PEM_LENGTH) {
+            throw new IOException("Oversized DTLS private key file " + keyPath);
+        }
+        KeyFile.Origin origin = KeyFile.ensure(certificatePath, "the DTLS certificate", () -> pem("CERTIFICATE",
+                selfSigned(keyPairOf(Files.readString(keyPath, StandardCharsets.US_ASCII), keyPath))));
+        DtlsCertificate loaded = load(certificatePath, keyPath);
+        log.info("{} the NetherNet DTLS certificate {} ({})", origin.verb(), certificatePath, loaded.fingerprint());
+        return loaded;
     }
 
     /**
@@ -218,27 +266,77 @@ public final class DtlsCertificate {
     }
 
     private static String generate() throws IOException, GeneralSecurityException {
+        KeyPair pair = newKeyPair();
+        return pem("CERTIFICATE", selfSigned(pair)) + keyPem(pair);
+    }
+
+    private static String keyPem(KeyPair pair) throws IOException {
+        byte[] key = pkcs8WithPoint(pair);
+        try {
+            return pem("PRIVATE KEY", key);
+        } finally {
+            Arrays.fill(key, (byte) 0);
+        }
+    }
+
+    private static KeyPair newKeyPair() throws GeneralSecurityException {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
         generator.initialize(new ECGenParameterSpec("secp256r1"));
-        KeyPair pair = generator.generateKeyPair();
+        return generator.generateKeyPair();
+    }
+
+    /** A certificate for the pair that never expires, as {@link #loadOrCreate(Path)} describes it. */
+    private static byte[] selfSigned(KeyPair pair) throws IOException, GeneralSecurityException {
         // A day back, as libwebrtc does for its own, for peers whose clock is behind
         Date notBefore = Date.from(Instant.now().minus(Duration.ofDays(1)));
         BigInteger serial = new BigInteger(64, new SecureRandom()).add(BigInteger.ONE);
-        byte[] certificate;
         try {
-            certificate = new JcaX509v3CertificateBuilder(SUBJECT, serial, notBefore, NOT_AFTER, SUBJECT,
-                    pair.getPublic())
+            return new JcaX509v3CertificateBuilder(SUBJECT, serial, notBefore, NOT_AFTER, SUBJECT, pair.getPublic())
                     .build(new JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate()))
                     .getEncoded();
         } catch (OperatorCreationException e) {
             throw new GeneralSecurityException("Cannot sign the DTLS certificate", e);
         }
-        byte[] key = pair.getPrivate().getEncoded();
+    }
+
+    /** The JDK's PKCS#8 with the public point the JDK leaves out, as OpenSSL writes EC keys. */
+    private static byte[] pkcs8WithPoint(KeyPair pair) throws IOException {
+        byte[] encoded = pair.getPrivate().getEncoded();
         try {
-            return pem("CERTIFICATE", certificate) + pem("PRIVATE KEY", key);
+            PrivateKeyInfo info = PrivateKeyInfo.getInstance(encoded);
+            var sec1 = org.bouncycastle.asn1.sec.ECPrivateKey.getInstance(info.parsePrivateKey());
+            SubjectPublicKeyInfo publicKey = SubjectPublicKeyInfo.getInstance(pair.getPublic().getEncoded());
+            int orderBits = ((ECPrivateKey) pair.getPrivate()).getParams().getOrder().bitLength();
+            return new PrivateKeyInfo(info.getPrivateKeyAlgorithm(), new org.bouncycastle.asn1.sec.ECPrivateKey(
+                    orderBits, sec1.getKey(), publicKey.getPublicKeyData(), null)).getEncoded();
         } finally {
-            Arrays.fill(key, (byte) 0);
+            Arrays.fill(encoded, (byte) 0);
         }
+    }
+
+    /**
+     * The key in a PKCS#8 PEM with its public half derived from the private scalar, for a key file that has no
+     * certificate yet.
+     *
+     * @throws GeneralSecurityException if the file holds no EC key: the certificate of another key has to be supplied
+     */
+    private static KeyPair keyPairOf(String pem, Path source) throws GeneralSecurityException {
+        if (pem.length() > MAX_PEM_LENGTH) {
+            throw new GeneralSecurityException("Oversized DTLS private key " + source);
+        }
+        ECPrivateKey key;
+        try {
+            key = (ECPrivateKey) privateKey(pem, "EC");
+        } catch (GeneralSecurityException e) {
+            throw new GeneralSecurityException("The DTLS private key " + source + " has no certificate, and one is"
+                    + " made here only for a PKCS#8 EC key: " + e.getMessage(), e);
+        }
+        var point = new FixedPointCombMultiplier().multiply(EC5Util.convertSpec(key.getParams()).getG(), key.getS())
+                .normalize();
+        PublicKey publicKey = KeyFactory.getInstance("EC").generatePublic(new ECPublicKeySpec(
+                new ECPoint(point.getAffineXCoord().toBigInteger(), point.getAffineYCoord().toBigInteger()),
+                key.getParams()));
+        return new KeyPair(publicKey, key);
     }
 
     private static String pem(String type, byte[] der) {
