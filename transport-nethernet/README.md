@@ -367,8 +367,10 @@ This switch closes every unbound join, LAN joins without an assertion included.
 An application that lets those log in relies on the Login chain alone for them.
 
 The check finds the binding by attribute, so wrapper channels that delegate
-attributes work. A binding is spent by its first decision. An application that
-admits a login through its own trusted forwarding path calls
+attributes work. A binding with a key is spent by its first decision. An unbound
+join has no binding to spend: every check answers `UNBOUND`, so an application
+that admits unbound logins must allow one Login per connection itself. An
+application that admits a login through its own trusted forwarding path calls
 `TransportIdentityBinding.acceptForwardedIdentity(channel)` instead.
 `TransportIdentityBinding.state(channel)` reports where a binding stands without
 spending it.
@@ -805,8 +807,9 @@ Channel channel = new Bootstrap()
 `client(engineSupplier, signalingSupplier)` do the same and also choose the
 engine.
 
-**Identity.** Vanilla BDS and this library's endpoints refuse an offer without an
-identity. `NETHER_CLIENT_IDENTITY` takes a `ClientIdentity` built with
+**Identity.** Vanilla BDS refuses an offer without an identity over HTTP, and
+this library's endpoints refuse one by default on every path but LAN. Over LAN
+both admit it, since retail sends its LAN offer without one. `NETHER_CLIENT_IDENTITY` takes a `ClientIdentity` built with
 `ClientIdentity.of(keyPair, token, idpDomain)`: a secp384r1 key pair and a token
 whose `cpk` names it, either a retail multiplayer token or one the caller signs
 itself, as Education does. `of` throws `GeneralSecurityException` when the key is
