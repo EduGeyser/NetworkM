@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** A configured secret: a value, or a file reference, and never a path taken for the value. */
+/** A configured secret: the value itself, or a file it names, by upstream CloudburstMC/Network's rule. */
 class SecretValueTest {
 
     @Test
@@ -24,43 +24,62 @@ class SecretValueTest {
     }
 
     @Test
-    void refusesAValueThatNamesAnExistingFileOrDirectoryWithoutThePrefix(@TempDir Path dir) throws Exception {
+    void readsABarePathThatStartsAtTheRoot(@TempDir Path dir) throws Exception {
+        Path token = Files.writeString(dir.resolve("token"), "from-file\n");
+        // An absolute path on POSIX; on Windows the root of the configuration directory's drive
+        String rooted = "/" + token.getRoot().relativize(token).toString().replace('\\', '/');
+
+        assertEquals("from-file", SecretValue.resolve(rooted, dir));
+    }
+
+    @Test
+    void readsBarePathsRelativeToTheConfigurationDirectory(@TempDir Path dir) throws Exception {
+        Path config = Files.createDirectory(dir.resolve("config"));
+        Files.writeString(config.resolve("token"), "inside");
+        Files.writeString(dir.resolve("outside"), "outside");
+
+        assertEquals("inside", SecretValue.resolve("./token", config));
+        assertEquals("outside", SecretValue.resolve("../outside", config));
+    }
+
+    @Test
+    void readsAWindowsDrivePathWhereThePlatformHasDrives(@TempDir Path dir) throws Exception {
+        String drivePath = "C:\\nxs\\token";
+        if (!Path.of(drivePath).isAbsolute()) {
+            // Not absolute elsewhere, so it is the secret itself, as upstream reads it
+            assertEquals(drivePath, SecretValue.resolve(drivePath, dir));
+            return;
+        }
+        Path token = Files.writeString(dir.resolve("token"), "from-file");
+        assertTrue(token.toString().matches("[A-Za-z]:\\\\.*"), token::toString);
+
+        assertEquals("from-file", SecretValue.resolve(token.toString(), null));
+    }
+
+    @Test
+    void takesAnyOtherValueAsTheSecret(@TempDir Path dir) throws Exception {
+        // Even when a file of that name exists: only the forms above name a file
         Files.writeString(dir.resolve("token"), "from-file");
-        Files.createDirectory(dir.resolve("secrets"));
-        for (String value : List.of("token", "./token", "secrets", dir.resolve("token").toString(),
-                dir.resolve("secrets").toString())) {
-            IOException refused = assertThrows(IOException.class, () -> SecretValue.resolve(value, dir), value);
-            assertTrue(refused.getMessage().contains("file:<path>"), refused.getMessage());
-            assertFalse(refused.getMessage().contains(value), "the message names the value");
-        }
-        // An absolute path needs no configuration directory to be recognized
-        assertThrows(IOException.class, () -> SecretValue.resolve(dir.resolve("token").toString(), null));
-    }
-
-    @Test
-    void refusesAWindowsDrivePathEvenWhenNothingIsThere(@TempDir Path dir) {
-        // A bearer token has no ':', so a drive is never a token's start
-        for (String value : List.of("C:\\nxs\\missing-token", "d:/nxs/missing-token")) {
-            IOException refused = assertThrows(IOException.class, () -> SecretValue.resolve(value, dir), value);
-            assertFalse(refused.getMessage().contains(value));
-        }
-    }
-
-    @Test
-    void keepsSecretsThatStartLikePathsButNameNothing(@TempDir Path dir) throws Exception {
-        // Base64 and b64token secrets may start with '/' or '~/', and '~' is never expanded to a home directory
-        for (String value : List.of("/9j4AAQSkZJRgABAQ+/token", "~/abc.def_ghi-jkl", "abc/def==", "token")) {
+        for (String value : List.of("token", "~/abc.def_ghi-jkl", "abc/def==", "file")) {
             assertEquals(value, SecretValue.resolve(value, dir), value);
         }
-        assertEquals("token", SecretValue.resolve("token", null), "a relative value needs a directory to name a file");
     }
 
     @Test
-    void failsWithoutTheValueWhenAReferencedFileCannotBeRead(@TempDir Path dir) throws Exception {
+    void namesTheUnreadablePathButNeverTheValue(@TempDir Path dir) throws Exception {
+        IOException missing = assertThrows(IOException.class, () -> SecretValue.resolve("file:absent-x7", dir));
+        assertTrue(missing.getMessage().contains(dir.resolve("absent-x7").toString()), missing.getMessage());
+        assertFalse(missing.getMessage().contains("file:"), missing.getMessage());
+
+        // A base64 secret that starts with '/' names a file, so it has to be put in one
+        IOException slash = assertThrows(IOException.class, () -> SecretValue.resolve("/9j4AAQSkZJRgABAQ+/token", dir));
+        assertTrue(slash.getMessage().contains("cannot be read"), slash.getMessage());
+
         Files.writeString(dir.resolve("huge"), "x".repeat(16385));
-        for (String value : List.of("file:absent-x7", "file:", "file:huge")) {
-            IOException refused = assertThrows(IOException.class, () -> SecretValue.resolve(value, dir), value);
-            assertFalse(refused.getMessage().contains("absent-x7") || refused.getMessage().contains("huge"));
-        }
+        IOException huge = assertThrows(IOException.class, () -> SecretValue.resolve("./huge", dir));
+        assertTrue(huge.getMessage().contains("larger than 16384 bytes"), huge.getMessage());
+
+        IOException folder = assertThrows(IOException.class, () -> SecretValue.resolve("file:", dir));
+        assertTrue(folder.getMessage().contains("not a regular file"), folder.getMessage());
     }
 }
