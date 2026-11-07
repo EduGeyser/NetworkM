@@ -10,6 +10,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -71,9 +72,12 @@ class SecretValueTest {
         assertTrue(missing.getMessage().contains(dir.resolve("absent-x7").toString()), missing.getMessage());
         assertFalse(missing.getMessage().contains("file:"), missing.getMessage());
 
-        // A base64 secret that starts with '/' names a file, so it has to be put in one
+        // A base64 secret that starts with '/' names a file, so it has to be put in one; with nothing there, the
+        // value may be the secret itself and is never shown, not even through the cause
         IOException slash = assertThrows(IOException.class, () -> SecretValue.resolve("/9j4AAQSkZJRgABAQ+/token", dir));
-        assertTrue(slash.getMessage().contains("cannot be read"), slash.getMessage());
+        assertTrue(slash.getMessage().contains("no file is there"), slash.getMessage());
+        assertFalse(slash.getMessage().contains("9j4AAQ"), slash.getMessage());
+        assertNull(slash.getCause());
 
         Files.writeString(dir.resolve("huge"), "x".repeat(16385));
         IOException huge = assertThrows(IOException.class, () -> SecretValue.resolve("./huge", dir));

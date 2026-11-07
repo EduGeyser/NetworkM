@@ -46,7 +46,8 @@ final class SecretValue {
      *                  directory
      * @return The secret: the content of the file the value names, else the value unchanged
      * @throws IOException If the value names a file that is not a regular file of at most 16 KiB or cannot be read.
-     *                     The message names the path, never the value.
+     *                     The message names the path only for a {@code file:} reference or when something exists
+     *                     there, since a value that only looks like a path may be the secret itself.
      */
     static String resolve(String value, Path directory) throws IOException {
         if (value == null || value.isBlank()) {
@@ -72,7 +73,20 @@ final class SecretValue {
             }
             return stripLineTerminator(Files.readString(source));
         } catch (IOException | RuntimeException e) {
+            if (!trimmed.startsWith(FILE) && !exists(source)) {
+                // A literal secret that only looks like a path must not reach the log, nor its cause's message
+                throw new IOException("looks like a file path, but no file is there. It is not shown, since it may be"
+                        + " the secret itself; to name a file, write file:<path>");
+            }
             throw new IOException("names the file " + source + ", which cannot be read (" + e.getMessage() + ")", e);
+        }
+    }
+
+    private static boolean exists(Path path) {
+        try {
+            return Files.exists(path);
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 

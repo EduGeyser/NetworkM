@@ -154,10 +154,11 @@ class ProviderRuntimeConfigurationTest {
         // Any other value is the token itself, even with a file of that name beside the configuration
         assertEquals("token", runtime(dir, settings(PROVIDER, "token", List.of(), null))
                 .clientConfiguration().authorizationToken());
-        // A value that starts with '/' names a file, as upstream reads it
+        // A value that starts with '/' names a file, as upstream reads it; with nothing there it is never shown
         IOException path = assertThrows(IOException.class, () -> runtime(dir, settings(PROVIDER,
                 "/token-that-starts-with-a-slash", List.of(), null)));
-        assertTrue(path.getMessage().startsWith("nxs.token names the file"), path.getMessage());
+        assertTrue(path.getMessage().startsWith("nxs.token looks like a file path"), path.getMessage());
+        assertFalse(path.toString().contains("token-that-starts"), path.toString());
         for (String value : List.of("file:missing", "file:", "bad secret")) {
             IOException failure = assertThrows(IOException.class,
                     () -> runtime(dir, settings(PROVIDER, value, List.of(), null)));
