@@ -24,8 +24,8 @@ reasons of their own; every other refused status tested shows NetherNetClientSig
 
 Over Xbox RPC and LAN the refusal goes out as a `CONNECTERROR` signal with a NetherNet error code
 (positions in the client's signaling error enumeration, as go-nethernet's `signal.go` lists them).
-Over Xbox RPC retail maps each code it knows to a reason of its own, all with the "Multiplayer
-Connection Failed" message (LAN is not captured yet):
+Retail maps each code it knows to a reason of its own, the same over Xbox RPC and LAN, all with
+the "Multiplayer Connection Failed" message (code 35 captured over Xbox RPC only):
 
 | Error code | Client reason | Codeword |
 |---|---|---|
@@ -38,12 +38,13 @@ Connection Failed" message (LAN is not captured yet):
 Education 26.33 shows one screen for every refusal, over HTTP and Xbox RPC alike: "Multiplayer
 Connection Failed" with the multiplayer services message and an OK button, without a codeword or
 details. It ignores code 35 as well and shows "Connection timed out." at its timeout. Neither client
-retried a refused join. Retail's details page shows `NetworkType` 2 for HTTP and 3 for Xbox RPC.
+retried a refused join. Retail's details page shows `NetworkType` 1 for LAN, 2 for HTTP and 3 for
+Xbox RPC. Education does no LAN discovery, so it never joins over LAN.
 
 NXS joins get neither a status nor a code: a refused stateless join's connectivity check is
 dropped, and a refused assisted join fails its answer to the provider.
 
-| `JoinRefusal` | Status | Retail reason over HTTP | Error code | Retail reason over Xbox RPC |
+| `JoinRefusal` | Status | Retail reason over HTTP | Error code | Retail reason over Xbox RPC and LAN |
 |---|---|---|---|---|
 | `IDENTITY_MISSING`, `IDENTITY_INVALID` | 401 | NotAuthenticated (46) | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
 | `HOST_REFUSED` (the host's join filter) | 403 | NotAllowed (45) | 16, IncomingConnectionIgnored | NetherNetIncomingConnectionIgnored (97) |
