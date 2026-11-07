@@ -453,8 +453,6 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             }
         }
 
-        this.slidingWindow.onPacketReceived(packet.getSendTime());
-
         int sequenceIndex = packet.getSequenceIndex();
         int prevSequenceIndex = this.datagramReadIndex;
         int missedDatagrams = RakSequence.difference(sequenceIndex, prevSequenceIndex);
@@ -937,7 +935,6 @@ public class RakSessionCodec extends ChannelDuplexHandler {
             buffer.writeByte(FLAG_VALID | FLAG_ACK);
             writtenAcks += RakUtils.writeAckEntries(buffer, this.outgoingAcks, ackMtu - 1);
             ctx.write(buffer);
-            this.slidingWindow.onSendAck();
         }
 
         while (!this.outgoingNaks.isEmpty()) {
