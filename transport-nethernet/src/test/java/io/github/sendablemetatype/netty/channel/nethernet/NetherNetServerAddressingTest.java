@@ -345,4 +345,39 @@ class NetherNetServerAddressingTest {
         ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
         assertInstanceOf(IllegalStateException.class, bind.cause());
     }
+
+    @Test
+    void relaysNoneOfWhichCouldBeReadRefuseTheBind() {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, new TrustedProxies(
+                TrustedProxies.parseList(List.of("10.0.0.0/99", "192.0.2.300")), ProxyList.NONE));
+        ChannelFuture bind = harness.bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).awaitUninterruptibly();
+
+        // Bound without them, the endpoint would take players directly and announce this host
+        assertInstanceOf(UnreadableRelaysException.class, bind.cause());
+        assertEquals(List.of(), harness.engine.endpoints(), "refused before the ICE port opened");
+    }
+
+    @Test
+    void aPartlyReadableRelayListBindsWithTheRelaysItRead() throws Exception {
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, new TrustedProxies(
+                TrustedProxies.parseList(List.of("192.0.2.10", "10.0.0.0/99")), ProxyList.NONE));
+        harness.bind();
+        harness.source(true).offer("1", HOST_ONLY_OFFER);
+        FakePeer peer = harness.negotiating();
+
+        assertEquals(List.of("192.0.2.10/32"), harness.engine.endpoints().getFirst().relays());
+        assertFalse(peer.remoteOffers().getFirst().contains("a=candidate"), "players are reached only through it");
+    }
+
+    @Test
+    void anEmptyRelayListBindsWithoutRelays() throws Exception {
+        // How a host runs without relays on purpose, also after a list none of whose relays could be read
+        harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_TRUSTED_PROXIES, TrustedProxies.NONE);
+        harness.bind();
+        harness.source(true).offer("1", HOST_ONLY_OFFER);
+        FakePeer peer = harness.negotiating();
+
+        assertEquals(List.of(), harness.engine.endpoints().getFirst().relays());
+        assertTrue(peer.remoteOffers().getFirst().contains("192.168.1.20 51234 typ host"), "players connect directly");
+    }
 }

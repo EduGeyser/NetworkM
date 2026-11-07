@@ -201,7 +201,11 @@ nothing) is logged and skipped, and the parsed `ProxyList` names it. On the
 endpoint, the PROXY protocol list names the relays in front of the shared ICE
 port: the port reads their PROXY protocol v2 headers, and players reach the
 server only through a relay or TURN, so the origin's address never appears in
-an answer. This needs the shared ICE port.
+an answer. This needs the shared ICE port. A relay list that named entries none
+of which could be read fails the bind with `UnreadableRelaysException`, since
+the endpoint would otherwise take players directly; one with some readable
+entries binds with those. To bind without relays on purpose, pass
+`ProxyList.NONE` for the list, as `TrustedProxies.NONE` does.
 HTTP signaling reads its own list (`NetherNetHttpSignaling.Builder.trustedProxies`);
 pass it the same parsed value. With `NETHER_SERVER_PREFER_PROXIED_ADDRESS` (false
 by default), a child keeps reporting the client address a trusted signaling proxy

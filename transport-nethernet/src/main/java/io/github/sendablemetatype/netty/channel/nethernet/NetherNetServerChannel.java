@@ -687,6 +687,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                     + "server again after every restart");
         }
         ProxyList relays = config.getTrustedProxies().proxyProtocol();
+        if (relays.allUnreadable()) {
+            throw new UnreadableRelaysException();
+        }
         boolean relayed = !relays.ranges().isEmpty();
         boolean shared = config.isSharedIcePort();
         if (relayed && !shared) {
