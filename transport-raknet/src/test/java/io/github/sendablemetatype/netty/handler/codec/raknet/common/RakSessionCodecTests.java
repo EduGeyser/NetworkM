@@ -13,6 +13,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.github.sendablemetatype.netty.channel.raknet.RakChannel;
 import io.github.sendablemetatype.netty.channel.raknet.RakPriority;
 import io.github.sendablemetatype.netty.channel.raknet.RakReliability;
+import io.github.sendablemetatype.netty.channel.raknet.RakState;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakClientConfig;
 import io.github.sendablemetatype.netty.channel.raknet.config.DefaultRakSessionConfig;
 import io.github.sendablemetatype.netty.channel.raknet.config.RakChannelMetrics;
@@ -25,6 +26,7 @@ import io.github.sendablemetatype.netty.ThrowingMetrics;
 import io.github.sendablemetatype.netty.util.RakSequence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -32,6 +34,7 @@ import java.lang.reflect.Proxy;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -268,6 +271,59 @@ class RakSessionCodecTests {
             } finally {
                 nack.release();
             }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {16, 255})
+    void anOrderingChannelBeyondTheConfiguredCountDisconnects(int orderingChannel) throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            EncapsulatedPacket packet = ordered(0, 0);
+            packet.setOrderingChannel((short) orderingChannel);
+            ByteBuf buffer = packet.getBuffer();
+            s.receive(packet);
+            s.transport.checkException();
+            // The embedded transport completes the disconnect notification at once, so the session is already closed
+            assertEquals(RakState.DISCONNECTED, getField(s.codec, "state"));
+            assertTrue(s.readOrdered().isEmpty());
+            assertEquals(0, buffer.refCnt());
+            assertTrue(((Collection<?>) getField(s.codec, "outgoingAcks")).isEmpty(),
+                    "The datagram is not acknowledged");
+        }
+    }
+
+    @Test
+    void aSplitPartNamingAnOrderingChannelBeyondTheConfiguredCountDisconnects() throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            // Reassembly takes the completing part's channel, so the first part has to be checked on its own
+            EncapsulatedPacket first = part(7, 0);
+            first.setReliability(RakReliability.RELIABLE_ORDERED);
+            first.setOrderingChannel((short) 255);
+            ByteBuf firstBuffer = first.getBuffer();
+            s.receive(first);
+            s.transport.checkException();
+            assertEquals(RakState.DISCONNECTED, getField(s.codec, "state"));
+            assertTrue(s.readOrdered().isEmpty());
+            assertEquals(0, firstBuffer.refCnt());
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"-1, 4", "16, 4", "255, 4", "-1, 4000", "16, 4000", "255, 4000"})
+    void aWriteNamingAnOrderingChannelBeyondTheConfiguredCountFailsAlone(int orderingChannel, int bytes)
+            throws Exception {
+        try (Session s = new Session(false, 10000)) {
+            // 4000 bytes need splitting, which must not retain parts or take a split ID either
+            ByteBuf payload = Unpooled.buffer(bytes).writeByte(DATA_ID).writeZero(bytes - 1);
+            var refused = s.transport.pipeline().write(new RakMessage(payload, RakReliability.RELIABLE_ORDERED,
+                    RakPriority.NORMAL, orderingChannel));
+            assertInstanceOf(IllegalArgumentException.class, refused.cause());
+            assertEquals(0, payload.refCnt());
+            assertEquals(0, getField(s.codec, "splitIndex"));
+            assertEquals(RakState.CONNECTED, getField(s.codec, "state"));
+            s.write(4, RakPriority.NORMAL, RakReliability.RELIABLE_ORDERED);
+            s.transport.flush();
+            assertEquals(1, s.readData().size(), "The session carries on");
         }
     }
 

@@ -17,7 +17,17 @@ ACKs release queued data promptly. Retransmission, idle timeout, and incomplete
 split expiry have separate deadlines. A resend goes out under a new datagram
 number, and an ACK for any of a datagram's last 16 transmissions acknowledges
 it. While resends fall due without ACKs, the retransmission timeout doubles up
-to 2 s, so an ACK still counts up to about 21 s after its transmission.
+to 2 s, so an ACK still counts up to about 21 s after its transmission. Longer
+round trips are not supported: no game is playable at that latency, and a
+client's connection attempt times out after 10 s by default. Resends that a NACK
+asks for go out at once, without that doubling, much as TCP's fast retransmit
+does: a NACK shows the peer is reachable. A NACK sets the slow-start threshold to
+three quarters of the window, unless a timeout already cut the window in that
+congestion block. Resends that fall due together double the timeout once, as RFC
+6298 backs off once per timer expiry. A received datagram whose ordered or
+sequenced part names an ordering channel beyond the configured count ends the
+session with `BAD_PACKET`, before it is acknowledged; a write naming such a
+channel fails, and the session carries on.
 Split and ordering buffers retain the
 configurable byte limits. A received split message may have up to 8192 fragments,
 a sent one at most 2048. `maxMessageSize()` returns the largest message a write
