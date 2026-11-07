@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A child goes active once the reliable data channel is open and the unreliable one opened or
@@ -81,7 +82,8 @@ class NetherNetChildActivationTest {
                 ChannelParameters.unreliable(NetherNetConstants.UNRELIABLE_CHANNEL_LABEL));
         fixture.peer.linkClosed(fixture.unreliable, CloseCause.REMOTE_CLOSED);
         clock.runPendingTasks();
-        // The write on the closed channel ends the connection with the close's reason.
-        assertEquals(List.of("active", "CLOSED_BY_REMOTE_PEER", "inactive"), events);
+        // The write on the closed channel fails alone; the connection stays up over the reliable channel.
+        assertEquals(List.of("active"), events);
+        assertTrue(fixture.child.isActive());
     }
 }

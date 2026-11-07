@@ -127,6 +127,19 @@ class NetherNetDisconnectReasonTest {
         }
     }
 
+    /** The connection carries on over the reliable channel; only the unreliable write fails. */
+    @Test
+    void aWriteOnTheClosedUnreliableChannelFailsOnlyThatWrite() {
+        try (ActiveChild h = new ActiveChild()) {
+            h.peer.linkClosed(h.unreliable(), CloseCause.REMOTE_CLOSED);
+            ChannelFuture write = h.channel.writeAndFlush(new NetherNetPacket(payload(1), false));
+            h.run();
+            assertTrue(write.isDone() && !write.isSuccess(), "the unreliable write must fail");
+            assertTrue(h.channel.isActive());
+            assertEquals(List.of("active"), h.events);
+        }
+    }
+
     @Test
     void aHandlerThatWritesOnTheReasonDoesNotFireItAgain() {
         try (ActiveChild h = new ActiveChild(child -> child.pipeline().addLast(new ChannelInboundHandlerAdapter() {

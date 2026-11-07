@@ -400,11 +400,12 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     }
 
     /**
-     * The engine refused a segment, so the stream cannot go on. A segment refused because the
-     * remote peer closed the data channel it went to ends the connection with the reason of that
+     * The engine refused a reliable segment, so the stream cannot go on. A segment refused because
+     * the remote peer closed the data channel it went to ends the connection with the reason of that
      * close: when a client quits while a write is in flight, the write can fail before the close
      * event arrives, and the reason must not depend on which comes first. Any other refusal is a
-     * transport failure. Any thread.
+     * transport failure. A refused unreliable write fails only itself (see
+     * {@link PendingWrite#settle}). Any thread.
      */
     private void sendRefused(IOException failure) {
         TransportDisconnectReason reason = failure instanceof DataLinkClosedException closed
@@ -923,10 +924,17 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
             PendingWrite write = unsubmittedHead;
             DataLink link = write.reliable ? reliableLink : unreliableLink;
             if (link == null) {
-                write.accept(new IllegalStateException("The NetherNet "
-                        + (write.reliable ? "reliable" : "unreliable") + " data channel is unavailable"));
-                closeIfEnded();
-                return;
+                IllegalStateException unavailable = new IllegalStateException("The NetherNet "
+                        + (write.reliable ? "reliable" : "unreliable") + " data channel is unavailable");
+                if (write.reliable) {
+                    write.accept(unavailable);
+                    closeIfEnded();
+                    return;
+                }
+                // Fails only this write; the connection goes on over the reliable channel
+                removeUnsubmitted(write);
+                write.accept(unavailable);
+                continue;
             }
             // Paced per segment: one message can be far larger than the engine queue.
             while (write.hasNextSegment()) {
@@ -1091,8 +1099,18 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
         try {
             Object msg;
             while (isOpen() && (msg = in.current()) != null) {
-                if (msg instanceof PendingWrite write && write.result != PendingWrite.SUCCESS) {
-                    break;
+                if (msg instanceof PendingWrite write) {
+                    Object result = write.result;
+                    if (result instanceof IOException failure && !write.reliable) {
+                        // A refused unreliable write fails alone, and the connection goes on
+                        in.remove(failure);
+                        continue;
+                    }
+                    if (result != PendingWrite.SUCCESS) {
+                        // Pending, or a refused reliable write: that one ends the connection,
+                        // whose close fails it after the reason fired
+                        break;
+                    }
                 }
                 // Netty replaces cancelled entries with an empty ByteBuf.
                 in.remove();
@@ -1254,7 +1272,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
             if (cause != null && result == null) {
                 IOException io = cause instanceof IOException e ? e
                         : new IOException("Failed to send NetherNet message", cause);
-                if (FAILURE.compareAndSet(this, null, io)) {
+                // An unreliable message may be lost by design, and a connection whose unreliable
+                // channel closed carries on over the reliable one (vanilla never sends on it), so
+                // only a refused reliable write ends the connection
+                if (FAILURE.compareAndSet(this, null, io) && reliable) {
                     channel.sendRefused(io);
                 }
             }
