@@ -237,7 +237,8 @@ public final class NetherNetHttpSignaling implements JoinSource {
                 }
                 bound = true;
             }
-            log.info("HTTP signaling listening on {}", bind.channel().localAddress());
+            // Debug: the host says where it serves in its own words
+            log.debug("HTTP signaling listening on {}", bind.channel().localAddress());
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();

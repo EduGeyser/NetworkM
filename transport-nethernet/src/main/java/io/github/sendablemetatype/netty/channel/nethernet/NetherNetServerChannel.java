@@ -900,7 +900,13 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // (SharedIcePort.claimHeldChecks) turns each into an authenticated join, which takes the same
         // throttle and budget as every other join.
         this.bound = new Bound(plan.answers(), endpoint, plan.offerCheck(), checkExecutors.get(), discovery);
-        log.info("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}", localAddress,
+        // Debug: the host says where it serves in its own words, and the identity's fingerprint is already
+        // logged at info where the key is loaded (ServerIdentity)
+        InetAddress boundHost = localAddress.getAddress();
+        log.debug("NetherNet endpoint bound to {} ({}), server identity SHA-256 {}",
+                boundHost == null || boundHost.isAnyLocalAddress()
+                        ? "UDP port " + localAddress.getPort() + " on every local address, IPv4 and IPv6"
+                        : localAddress,
                 endpoint != null ? "shared ICE port" : "ICE ports per session",
                 plan.answers().identity().fingerprint());
 
