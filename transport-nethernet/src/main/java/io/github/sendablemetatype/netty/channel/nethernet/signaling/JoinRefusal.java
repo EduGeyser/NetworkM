@@ -12,8 +12,8 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
  * {@link #DUPLICATE} added by the later endpoint and HTTP rulings. The error codes are positions
  * in the vanilla client's signaling error enumeration, as go-nethernet lists it
  * ({@code signal.go}, {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a
- * signed 32-bit decimal number. Which message each status or code makes the client show is still to be
- * captured (real-client check 6).
+ * signed 32-bit decimal number. Every code here is one the client acts on at once; what it shows for
+ * each status and code is in {@code docs/client-disconnect-reasons.md} (captured 2026-11-07).
  */
 public enum JoinRefusal {
     /** The offer carried no identity assertion. */
@@ -24,8 +24,12 @@ public enum JoinRefusal {
     HOST_REFUSED(403, JoinRefusal.INCOMING_CONNECTION_IGNORED),
     /** No room: capacity, pending joins or the per-address throttle. */
     CAPACITY(503, JoinRefusal.INCOMING_CONNECTION_IGNORED),
-    /** The identity could not be checked because its issuer's keys were unreachable. */
-    TRUST_SOURCE_UNREACHABLE(500, JoinRefusal.GENERIC_FAILURE),
+    /**
+     * The identity could not be checked because its issuer's keys were unreachable. Its error code
+     * is FailedToCreateAnswer, as for {@link #INTERNAL}: retail 1.26.63 and Education 26.33 ignore
+     * GenericFailure (35) and wait for their own timeout instead (captured 2026-11-07).
+     */
+    TRUST_SOURCE_UNREACHABLE(500, JoinRefusal.FAILED_TO_CREATE_ANSWER),
     /** No answer was ready in time. */
     NO_ANSWER_IN_TIME(504, JoinRefusal.NEGOTIATION_TIMEOUT),
     /**
@@ -48,7 +52,6 @@ public enum JoinRefusal {
     private static final int FAILED_TO_CREATE_ANSWER = 11;
     private static final int FAILED_TO_SET_REMOTE_DESCRIPTION = 13;
     private static final int INCOMING_CONNECTION_IGNORED = 16;
-    private static final int GENERIC_FAILURE = 35;
 
     private final int httpStatus;
     private final int errorCode;

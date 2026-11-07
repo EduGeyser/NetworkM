@@ -313,9 +313,8 @@ HTTPS from one over plain HTTP.
 `JoinRefusal`: an HTTP status with an empty body over HTTP, a `CONNECTERROR`
 signal with a NetherNet error code over Xbox RPC and LAN. NXS sends neither: a
 refused stateless join's check is dropped, and a refused assisted join fails its
-answer to the provider. Which message each status or code makes the client show
-is not captured yet. Upstream Network's record of the reasons clients pick for
-401, 403 and 503, and where each status here fits it, is in
+answer to the provider. What retail and Education clients show for each status
+and code (captured 2026-11-07) is in
 [docs/client-disconnect-reasons.md](docs/client-disconnect-reasons.md).
 
 | `JoinRefusal` | HTTP | Error code | When |
@@ -324,15 +323,17 @@ is not captured yet. Upstream Network's record of the reasons clients pick for
 | `IDENTITY_INVALID` | 401 | 16 | Malformed assertion, failed proof, or not attested where the policy requires it. |
 | `HOST_REFUSED` | 403 | 16 | The join filter refused the join. |
 | `CAPACITY` | 503 | 16 | Throttle, budget, a full check executor, endpoint not ready or closing, or the source was removed. |
-| `TRUST_SOURCE_UNREACHABLE` | 500 | 35 | Attestation was required and the issuer's keys could not be fetched. |
+| `TRUST_SOURCE_UNREACHABLE` | 500 | 11 | Attestation was required and the issuer's keys could not be fetched. |
 | `NO_ANSWER_IN_TIME` | 504 | 2 | The identity check, the join filter, or the answer missed its deadline. |
 | `BAD_OFFER` | 400 | 13 | The offer is unusable: empty, for a network ID that does not decode, an SDP the identity check cannot read, an unusable `a=max-message-size`, or a description the engine refused. |
 | `DUPLICATE` | 409 | 16 | Another offer for the same network ID is still pending (HTTP). |
 | `INTERNAL` | 500 | 11 | A failure on the server while answering, or a join filter that threw. |
 
 Error code 2 is NegotiationTimeout, 11 FailedToCreateAnswer, 13
-FailedToSetRemoteDescription, 16 IncomingConnectionIgnored and 35 GenericFailure,
-positions in the client's signaling error enumeration as go-nethernet lists it.
+FailedToSetRemoteDescription and 16 IncomingConnectionIgnored, positions in the
+client's signaling error enumeration as go-nethernet lists it. Clients act on each
+of them at once. GenericFailure (35) is not used: retail and Education ignore it
+and wait for their own timeout.
 
 ### Login key binding
 
