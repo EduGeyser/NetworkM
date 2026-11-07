@@ -174,9 +174,7 @@ class WebRtcEngineTest {
     @EnabledIfSystemProperty(named = "webrtc.nativeTests", matches = "true")
     void aFailedBindLogsOneWarningForRepeatedFailuresOnAnAddress() throws Exception {
         Logger endpointLog = Logger.getLogger(WebRtcIceEndpoint.class.getName());
-        Logger nativeLog = Logger.getLogger(NativeLogBridge.LOGGER_NAME);
         Level endpointLevel = endpointLog.getLevel();
-        Level nativeLevel = nativeLog.getLevel();
         List<LogRecord> records = new CopyOnWriteArrayList<>();
         Handler capture = new Handler() {
             @Override
@@ -192,10 +190,8 @@ class WebRtcEngineTest {
             public void close() {
             }
         };
-        for (Logger logger : List.of(endpointLog, nativeLog)) {
-            logger.setLevel(Level.ALL);
-            logger.addHandler(capture);
-        }
+        endpointLog.setLevel(Level.ALL);
+        endpointLog.addHandler(capture);
         WebRtcEngine engine = WebRtcEngine.builder().build();
         try {
             WebRtcIceEndpoint first = (WebRtcIceEndpoint) engine
@@ -218,22 +214,17 @@ class WebRtcEngineTest {
                 gather(engine, second);
                 // The engine's endpoint thread logs both failures in order, so the second comes last
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (logged(records, endpointLog, Level.FINE, host).isEmpty()) {
+                while (logged(records, Level.FINE, host).isEmpty()) {
                     assertTrue(System.nanoTime() < deadline, "No repeated failure for " + host + " in " + records);
                     Thread.sleep(5);
                 }
             }
 
-            assertEquals(1, logged(records, endpointLog, Level.WARNING, host).size(), records::toString);
-            // The native line says the same for each peer, at debug
-            assertEquals(List.of(), logged(records, nativeLog, Level.WARNING, "cannot bind"));
-            assertTrue(logged(records, nativeLog, Level.FINE, "cannot bind").size() >= 2, records::toString);
+            assertEquals(1, logged(records, Level.WARNING, host).size(), records::toString);
         } finally {
             engine.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
             endpointLog.removeHandler(capture);
-            nativeLog.removeHandler(capture);
             endpointLog.setLevel(endpointLevel);
-            nativeLog.setLevel(nativeLevel);
         }
     }
 
@@ -281,9 +272,9 @@ class WebRtcEngineTest {
         }
     }
 
-    private static List<LogRecord> logged(List<LogRecord> records, Logger logger, Level level, String text) {
-        return records.stream().filter(record -> record.getLoggerName().equals(logger.getName())
-                && record.getLevel() == level && record.getMessage().contains(text)).toList();
+    private static List<LogRecord> logged(List<LogRecord> records, Level level, String text) {
+        return records.stream().filter(record -> record.getLevel() == level && record.getMessage().contains(text))
+                .toList();
     }
 
     private static int freeUdpPort() throws Exception {

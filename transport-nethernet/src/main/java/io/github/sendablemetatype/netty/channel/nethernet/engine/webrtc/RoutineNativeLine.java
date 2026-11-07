@@ -12,17 +12,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Native lines that report routine NetherNet events at ERROR or WARNING, or
- * events NetworkM logs itself. {@link NativeLogBridge} logs them at DEBUG;
- * every other line keeps its level.
+ * libwebrtc lines that report routine NetherNet events at ERROR or WARNING.
+ * {@link NativeLogBridge} logs them at DEBUG; every other line keeps its level.
  *
  * <p>A line matches by the source file named in the prefix libwebrtc writes
  * before each message, {@code (file.cc:line): }, and a fixed part of the
  * message. Line numbers move between WebRTC versions, so they are not part of
  * the match. Sources and line numbers below are from WebRTC main
- * {@code 885c77558b} (2026-11-06), unless an entry names webrtc-java; the
- * texts are the same in the branch webrtc-java builds. When libwebrtc changes
- * a text, its line stops matching and logs at its own level again.
+ * {@code 885c77558b} (2026-11-06); the texts are the same in the branch
+ * webrtc-java builds. When libwebrtc changes a text, its line stops matching
+ * and logs at its own level again.
  */
 enum RoutineNativeLine {
     /**
@@ -101,18 +100,7 @@ enum RoutineNativeLine {
      */
     HOST_CHOSEN_ICE_CREDENTIALS("sdp_munging_detector.cc",
             Pattern.compile("^SDP munging: ice-(?:ufrag|pwd) does not match last created description\\.$"),
-            false),
-    /**
-     * webrtc-java's {@code src/api/IceUdpEndpoint.cpp:366} (fork commit
-     * {@code 2f7f3373}), WARNING, for example
-     * {@code ICE UDP endpoint cannot bind 192.168.1.20:19132: Address already in use}.
-     * The shared endpoint writes it for every peer that gathers on an address
-     * where it cannot bind the port, so a lasting failure would log once per
-     * join. {@link WebRtcIceEndpoint} logs the same failure from the
-     * endpoint's bind failure handler, at most once per address and quiet
-     * time.
-     */
-    ICE_PORT_BIND_FAILED("IceUdpEndpoint.cpp", Pattern.compile("^ICE UDP endpoint cannot bind "), false);
+            false);
 
     /** The prefix libwebrtc writes before a message: the source file name and line. */
     private static final Pattern SOURCE = Pattern.compile("\\(([\\w.+-]+):\\d+\\): ");

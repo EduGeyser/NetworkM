@@ -433,9 +433,8 @@ public final class WebRtcEngine implements NetherNetEngine {
          * {@link Severity#NONE} for none. Which of them are written stays with
          * the host's logging configuration: errors log as ERROR, warnings as
          * WARN, INFO as DEBUG and VERBOSE as TRACE. A few errors and warnings
-         * log as DEBUG: those that report routine events, such as the abort
-         * every client quit logs, and those the engine logs itself, such as a
-         * failed bind of the shared ICE port.
+         * that report routine events, such as the abort every client quit
+         * logs, log as DEBUG.
          *
          * <p>webrtc-java fixes its own threshold when it loads its library,
          * from the system property

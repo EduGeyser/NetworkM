@@ -20,9 +20,6 @@ class RoutineNativeLineTest {
             "(turn_port.cc:1933): Received TURN CreatePermission error response, code=403; pruned connection.",
             "(sdp_munging_detector.cc:54): SDP munging: ice-ufrag does not match last created description.",
             "(sdp_munging_detector.cc:59): SDP munging: ice-pwd does not match last created description.",
-            // webrtc-java's shared endpoint, from fork commit 2f7f3373
-            "(IceUdpEndpoint.cpp:366): ICE UDP endpoint cannot bind 192.168.1.20:19132: Address already in use",
-            "(IceUdpEndpoint.cpp:366): ICE UDP endpoint cannot bind [2001:db8::20]:19132: Cannot assign requested address",
     })
     void routineLinesMatch(String line) {
         assertTrue(RoutineNativeLine.matches(line, () -> true), line);
@@ -47,7 +44,6 @@ class RoutineNativeLineTest {
             "(sdp_munging_detector.cc:69): SDP munging: DTLS role does not match last created description.",
             // A routine message from another source file, and a line without a source prefix
             "(turn_port.cc:561): DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=Close called).",
-            "(turn_port.cc:366): ICE UDP endpoint cannot bind 192.168.1.20:19132: Address already in use",
             "DcSctpTransport3->OnAborted(error=PEER_REPORTED, message=User-Initiated Abort, reason=Close called).",
     })
     void otherLinesDoNotMatch(String line) {

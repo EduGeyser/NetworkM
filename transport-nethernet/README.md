@@ -875,11 +875,9 @@ builder sets the lowest severity forwarded at all, `WARNING` by default.
 A few errors and warnings report routine events, so they log as DEBUG: the
 abort libwebrtc logs at ERROR when a client quits (a peer-reported
 "User-Initiated Abort"), STUN and TURN host lookups that fail on an IPv6
-network, and TURN permissions the server refuses with 403. webrtc-java's
-warning for a failed bind of the shared ICE port also logs as DEBUG: it repeats
-for every peer that gathers on the address, and the engine logs the failure
-itself (see [Server endpoint](#server-endpoint)). The bridge matches these lines
-by source file and message text; every other line keeps its level.
+network, and TURN permissions the server refuses with 403. The bridge matches
+them by libwebrtc source file and message text; every other line keeps its
+level.
 
 webrtc-java fixes its own threshold once, when it loads its native library, from
 the system property `io.github.sendablemetatype.webrtc.logging.severity`. If the
