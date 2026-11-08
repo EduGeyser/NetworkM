@@ -86,7 +86,7 @@ class RemoteAddressTrackerTest {
         assertEquals(direct, tracker.reported());
     }
 
-    /** P10 / G-3: the transport peer actually connected, as with a proxy, never what the client claims. */
+    /** The transport peer actually connected, as with a proxy, never what the client claims. */
     @Test
     void aTurnPairReportsTheRelayWhateverSignalingSaid() {
         SourcedAddress turn = new SourcedAddress(TURN, AddressSource.TURN, null);

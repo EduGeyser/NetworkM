@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** STUN discovery on the shared ICE port of a real libwebrtc endpoint (ruling G-6, item 1). */
+/** STUN discovery on the shared ICE port of a real libwebrtc endpoint. */
 @EnabledIfSystemProperty(named = "webrtc.nativeTests", matches = "true")
 @Timeout(60)
 class NetherNetStunNativeTest {

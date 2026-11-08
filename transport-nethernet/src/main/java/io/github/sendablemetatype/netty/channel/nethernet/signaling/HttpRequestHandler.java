@@ -39,7 +39,7 @@ import java.util.function.Supplier;
  * Serves the requests of one HTTP signaling connection: {@code GET /v1/join} for the status, and
  * {@code POST /v1/join/{networkId}} with an offer, handed to the endpoint as a {@link Join} whose
  * reply path writes the HTTP response. Everything else is a {@code 404}, as on vanilla. Bodies of
- * refusals are empty (ruling E-7).
+ * refusals are empty.
  * <p>
  * Requests are answered in order: one that arrives while another waits for its response is held
  * until that response is written. {@link HttpRequestBudget} lets through at most two.
@@ -195,7 +195,7 @@ final class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpReque
         Join.Addressed addressed = new Join.Addressed(request.headers().get(HttpHeaderNames.HOST), localPort,
                 signaling.trustedProxies().isProxy(peer), connection.tls,
                 ClientInfo.fromQuery(parameters(request.uri())).orElse(null));
-        // From the end of the request, also for one that waited behind a status request (E-4)
+        // From the end of the request, also for one that waited behind a status request
         long remainingNanos = receivedNanos + signaling.negotiationTimeout().toNanos()
                 - ctx.executor().ticker().nanoTime();
         if (remainingNanos <= 0) {

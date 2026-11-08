@@ -18,8 +18,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * threads, bounded, each with a deadline. A call that fails, misses its deadline or finds no room
  * is answered with the last shared document served for the same {@code Host}, or with an empty
  * {@code 200}; never with an error status, since a failed status request costs the client
- * NetherNet (ruling E-6). A document counts as served once its response was written, which the
- * request handler reports with {@link #served}. A document the provider served
+ * NetherNet. A document counts as served once its response was written, which the request
+ * handler reports with {@link #served}. A document the provider served
  * {@linkplain StatusAnswer#serveToRequester to its requester alone} is never repeated: it may
  * carry what the provider chose for that requester, and a fallback goes to whoever else names
  * the Host.
@@ -83,8 +83,8 @@ final class HttpStatusService {
 
     /**
      * Records a document whose response was written, the only kind a fallback may repeat: one
-     * for a client that left, or past its deadline, never reached anybody (E-6). A document for
-     * its requester alone is not recorded.
+     * for a client that left, or past its deadline, never reached anybody. A document for its
+     * requester alone is not recorded.
      *
      * @param request  the request it answered
      * @param document the document as {@link #query} gave it

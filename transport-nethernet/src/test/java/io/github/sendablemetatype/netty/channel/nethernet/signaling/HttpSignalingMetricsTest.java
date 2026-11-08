@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** What HTTP signaling reports to the server metrics and logs per request (resolves H16). */
+/** What HTTP signaling reports to the server metrics and logs per request. */
 class HttpSignalingMetricsTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";
 

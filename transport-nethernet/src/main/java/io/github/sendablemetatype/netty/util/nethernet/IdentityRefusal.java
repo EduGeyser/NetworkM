@@ -2,8 +2,8 @@ package io.github.sendablemetatype.netty.util.nethernet;
 
 /**
  * Why an {@link OfferPolicy} refuses an offer. The admission stage turns it into its own typed
- * refusal; the initial table of ruling E-7 maps the first three to HTTP 401 and
- * {@link #TRUST_SOURCE_UNREACHABLE} to HTTP 500.
+ * refusal; HTTP signaling answers the first three with a 401 and
+ * {@link #TRUST_SOURCE_UNREACHABLE} with a 500.
  */
 public enum IdentityRefusal {
     /** The offer carries no identity assertion. */

@@ -35,13 +35,13 @@ import java.util.*;
  * assisted session ended.
  *
  * <p>The ledger holds no capacity of its own: sessions and pending handshakes are the NetherNet endpoint's one budget
- * for every join source (ruling A-2), which each admitted ticket passes after the ledger. The used-ticket records
- * are bounded here, since only NXS has them.
+ * for every join source, which each admitted ticket passes after the ledger. The used-ticket records are bounded
+ * here, since only NXS has them.
  *
  * <p>Each reservation's login is decided through its {@linkplain #verifier verifier}, which the host installs as the
- * child's login binding (ruling C-4); a session whose login is refused, revoked, or still undecided at the ticket's
- * deadline is handed back by {@link #sweep} for closing, even when its data channels are open. The sweep reads the
- * verifier's own phase, so a login accepted at any moment is never taken for a lapsed one.
+ * child's login binding; a session whose login is refused, revoked, or still undecided at the ticket's deadline is
+ * handed back by {@link #sweep} for closing, even when its data channels are open. The sweep reads the verifier's own
+ * phase, so a login accepted at any moment is never taken for a lapsed one.
  *
  * <p>A diagnostic attempt is recorded by its attempt ID, which the provider fixes when it authorizes the attempt, so
  * a second permit for one attempt is a replay as much as the same permit twice (diagnostic-v1). At most
@@ -163,7 +163,7 @@ public final class TicketLedger {
      *
      * @param address        The source tuple the ticket holds: the check's for a stateless ticket; null for an
      *                       assisted join, which only knows the candidates the client claims, so it is kept by its
-     *                       ticket alone (area 9, finding F4)
+     *                       ticket alone
      * @param tokenExpiresAt When the admission's token expires if that is later than the admission itself, as for an
      *                       assisted join whose ufrag is a token that outlives the join; 0 when unknown. The record
      *                       stays until both passed.

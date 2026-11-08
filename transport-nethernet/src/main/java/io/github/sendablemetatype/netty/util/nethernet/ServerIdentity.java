@@ -174,8 +174,8 @@ public final class ServerIdentity {
 
     /**
      * The self-signed token clients pin: {@code cpk} as a public JWK object, as the guide
-     * specifies (ruling C-8), {@code iat}, and the domain as {@code iss} when it is not blank. It
-     * carries no {@code exp}, which the guide allows, so it never needs re-signing.
+     * specifies, {@code iat}, and the domain as {@code iss} when it is not blank. It carries no
+     * {@code exp}, which the guide allows, so it never needs re-signing.
      */
     private String buildToken() throws GeneralSecurityException {
         JwtClaims claims = new JwtClaims();

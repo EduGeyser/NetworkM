@@ -26,8 +26,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * HTTP's status provider. When the advertiser does not deliver, the last server data it delivered in time for
  * everyone goes out instead, or no response while there is none; data it chose for one requester
  * ({@link LanAdvertisement#advertiseToRequester}) is never repeated to another. Each advertiser has a fallback of its own, so
- * a call to one that was replaced never reaches its successor's. Only v7 server data is advertised
- * (ruling F-3).
+ * a call to one that was replaced never reaches its successor's. Only v7 server data is advertised:
+ * retail 1.26.63 does not list a server that answers with v6 only.
  */
 final class LanAdvertisements {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(LanAdvertisements.class);

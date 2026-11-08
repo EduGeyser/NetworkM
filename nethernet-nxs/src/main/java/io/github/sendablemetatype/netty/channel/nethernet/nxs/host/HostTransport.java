@@ -98,10 +98,9 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 /**
- * The NXS host side on one NetherNet endpoint (rulings A-1, A-2, G-6 item 3 and H-1). It is the
- * {@link ProviderTransport} the provider client drives, and through {@link #source()} a {@link JoinSource} of the
- * endpoint: both NXS paths become joins of that endpoint, so they pass its one admission stage and capacity budget,
- * and their children are ordinary children of the endpoint.
+ * The NXS host side on one NetherNet endpoint. It is the {@link ProviderTransport} the provider client drives, and
+ * through {@link #source()} a {@link JoinSource} of the endpoint: both NXS paths become joins of that endpoint, so
+ * they pass its one admission stage and capacity budget, and their children are ordinary children of the endpoint.
  * <ul>
  * <li><b>Stateless joins.</b> It claims the checks the shared ICE port holds for unknown ufrags, with the admission
  * keys installed as the port's derived-password prefilter, so only checks signed by an installed key reach Java. Each
@@ -119,9 +118,9 @@ import java.util.function.LongSupplier;
  * parameters.</li>
  * </ul>
  * Its state lives on the endpoint's event loop. A login still undecided at its ticket's deadline closes the child:
- * the application must decide it with {@code TransportIdentityBinding.verifyLogin} (area 9, finding F1). Closing
- * this transport stops admitting, revokes pending logins and closes the children they belong to; players whose login
- * was accepted stay connected (ruling A-1).
+ * the application must decide it with {@code TransportIdentityBinding.verifyLogin}. Closing this transport stops
+ * admitting, revokes pending logins and closes the children they belong to; players whose login was accepted stay
+ * connected.
  */
 public final class HostTransport implements ProviderTransport {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(HostTransport.class);
@@ -863,8 +862,8 @@ public final class HostTransport implements ProviderTransport {
 
         @Override
         public CompletionStage<Void> answer(String sdp) {
-            // The endpoint signed it with its server identity (gap G1), over the fingerprints only, so the
-            // candidates may still change.
+            // The endpoint signed it with its server identity, over the fingerprints only, so the candidates may
+            // still change.
             return state.candidate.thenCompose(candidate -> {
                 CompletableFuture<Void> handedOn = new CompletableFuture<>();
                 onLoop(() -> {

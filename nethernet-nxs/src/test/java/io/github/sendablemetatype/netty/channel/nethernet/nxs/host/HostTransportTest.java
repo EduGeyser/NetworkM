@@ -288,7 +288,7 @@ class HostTransportTest {
         assertTrue(undecided.closeFuture().await(5, TimeUnit.SECONDS),
                 "nothing would decide the login or close the child once NXS is gone");
         Thread.sleep(300);
-        assertTrue(player.isOpen(), "a player whose login was accepted stays (ruling A-1)");
+        assertTrue(player.isOpen(), "a player whose login was accepted stays");
     }
 
     @Test

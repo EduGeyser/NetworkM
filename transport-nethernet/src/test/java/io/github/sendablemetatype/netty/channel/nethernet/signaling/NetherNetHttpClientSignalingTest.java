@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** The HTTP signaling client against this library's server and against servers that are not NetherNet (E-8). */
+/** The HTTP signaling client against this library's server and against servers that are not NetherNet. */
 @Timeout(30)
 class NetherNetHttpClientSignalingTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";

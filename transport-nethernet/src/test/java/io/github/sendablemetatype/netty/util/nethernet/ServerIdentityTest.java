@@ -51,7 +51,7 @@ class ServerIdentityTest {
         JsonWebSignature token = new JsonWebSignature();
         token.setCompactSerialization(assertion.get("token").getAsString());
         JwtClaims claims = JwtClaims.parse(token.getUnverifiedPayload());
-        // Ruling C-8: cpk is a JWK object, as the guide specifies
+        // cpk is a JWK object, as the guide specifies
         JsonObject cpk = JsonParser.parseString(token.getUnverifiedPayload()).getAsJsonObject().getAsJsonObject("cpk");
         assertEquals(List.of("crv", "kty", "x", "y"), List.copyOf(cpk.keySet()));
         PublicKey pinned = assertInstanceOf(PublicKey.class, JsonWebKey.Factory.newJwk(cpk.toString()).getKey());

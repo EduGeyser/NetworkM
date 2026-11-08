@@ -73,8 +73,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * A server on a real libwebrtc engine behind a PROXY protocol version 2 relay in front of its shared
- * ICE port (ruling G-6, item 2), over real UDP: media only through the relay, the client the relay's
- * header declares as the child's address (P10 / G-3), and how long a relay port stays with a client.
+ * ICE port, over real UDP: media only through the relay, the client the relay's header declares as
+ * the child's address, and how long a relay port stays with a client.
  * Ported from upstream's {@code RelayedJoinTest}.
  * <p>
  * libwebrtc gathers no loopback candidates, so server, relay and client share one IPv4 interface

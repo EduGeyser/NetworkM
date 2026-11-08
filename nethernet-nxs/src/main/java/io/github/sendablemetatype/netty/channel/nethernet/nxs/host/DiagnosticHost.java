@@ -89,8 +89,8 @@ import java.util.function.Predicate;
  * production a public one, as the specification asks.
  *
  * <p>Everything runs on the endpoint's event loop except the peer listener, which records what the engine reports and
- * hops to the loop, so no peer is closed inside an engine callback (ruling A-4). A check's ledger record is settled and
- * its pending handshake given back once its peer's close stage completed.
+ * hops to the loop, so no peer is closed inside an engine callback. A check's ledger record is settled and its
+ * pending handshake given back once its peer's close stage completed.
  */
 final class DiagnosticHost {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(DiagnosticHost.class);
