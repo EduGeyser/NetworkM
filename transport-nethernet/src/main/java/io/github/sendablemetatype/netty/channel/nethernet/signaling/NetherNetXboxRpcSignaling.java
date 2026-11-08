@@ -349,16 +349,19 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         if (current == null || !current.isActive()) {
             throw new IllegalStateException("Signaling channel is not active");
         }
-        sendMessage(targetNetworkId, signal);
+        sendMessage(targetNetworkId, UUID.randomUUID().toString(), signal);
     }
 
     /**
-     * Sends a signal to a player.
+     * Sends a signal to a player. The service accepts a message for a player who is registered
+     * but offline, and reports later that it could not deliver it (see {@link #undelivered}).
      *
+     * @param messageId the ID the service names the message by, in a receipt or a non-delivery
+     *                  notice
      * @return completes once the service accepted the message, or exceptionally when it refused
      *         it, did not answer in time, or no socket is up
      */
-    private CompletableFuture<Void> sendMessage(String targetPlayerId, Signal signal) {
+    private CompletableFuture<Void> sendMessage(String targetPlayerId, String messageId, Signal signal) {
         JsonObject innerParams = new JsonObject();
         innerParams.addProperty("netherNetId", localNetworkId);
         innerParams.addProperty("message", signal.wire());
@@ -369,12 +372,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC);
 
         return sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
-                createSendParams(targetPlayerId, innerMsg.toString())).thenApply(ignored -> null);
+                createSendParams(targetPlayerId, messageId, innerMsg.toString())).thenApply(ignored -> null);
     }
 
     /** One join's way back to the player who sent its offer. */
     private final class XboxJoin extends MessageReplyPath {
         private final JoinKey key;
+        /** The type of each signal sent to the client, by message ID, for non-delivery notices. */
+        private final Map<String, SignalType> sent = new ConcurrentHashMap<>();
 
         private XboxJoin(JoinKey key) {
             super(key.connectionId());
@@ -383,7 +388,9 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
         @Override
         CompletionStage<Void> send(Signal signal) {
-            return sendMessage(key.sender(), signal);
+            String messageId = UUID.randomUUID().toString();
+            sent.put(messageId, signal.type());
+            return sendMessage(key.sender(), messageId, signal);
         }
 
         @Override
@@ -758,7 +765,8 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         innerMsg.add("params", new JsonObject());
         innerMsg.addProperty("jsonrpc", "2.0");
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_ROUTE_PROBE);
-        sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE, createSendParams(playerId, innerMsg.toString()))
+        sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
+                createSendParams(playerId, UUID.randomUUID().toString(), innerMsg.toString()))
                 .whenComplete((result, error) -> {
                     // A lost reply or a local write failure does not prove that the service rejected this route.
                     if (!(error instanceof RpcResponseException) || !isCurrentChannel(source)) {
@@ -938,56 +946,97 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
     }
 
+    /**
+     * Handles one message delivered to us. Only WebRTC signals get a delivery receipt, as in
+     * gophertunnel and netherconnect. A receipt for anything else risks a loop: a receipt for a
+     * receipt makes two hosts acknowledge each other forever, and a receipt for a non-delivery
+     * notice goes to a player who is offline, so the service answers it with the next notice
+     * (captured 2026-11-08, RpcProbe 3.6 and 3.7).
+     */
     private void processIncomingMessage(Channel source, JsonObject msgObj) {
         String from = msgObj.get("From").getAsString();
         String rawInner = msgObj.get("Message").getAsString();
-        String msgId = msgObj.has("Id") ? msgObj.get("Id").getAsString() : UUID.randomUUID().toString();
+        String msgId = msgObj.has("Id") ? msgObj.get("Id").getAsString() : null;
 
-        JsonObject innerJson = null;
-        String innerMethod = null;
+        JsonObject inner;
         try {
-            innerJson = JsonParser.parseString(rawInner).getAsJsonObject();
-            if (innerJson.has("method")) {
-                innerMethod = innerJson.get("method").getAsString();
-            }
-        } catch (Exception e) {
-            log.error("Failed to parse inner signaling message from " + from, e);
+            inner = JsonParser.parseString(rawInner).getAsJsonObject();
+        } catch (RuntimeException e) {
+            // The service passes on any text (RpcProbe 4.3), so this is the sender's doing.
+            log.debug("Ignoring a message from {} that is not a JSON object", from);
+            return;
         }
-
-        // Receipts end the exchange; acknowledging them makes two hosts acknowledge each other forever.
-        if (NetherNetConstants.XBOX_RPC_INNER_METHOD_DELIVERY.equals(innerMethod)) {
+        JsonElement method = inner.get("method");
+        if (method == null || !method.isJsonPrimitive()) {
+            JsonElement code = inner.get("Code");
+            if (msgId != null && code != null && code.isJsonPrimitive() && code.getAsJsonPrimitive().isNumber()) {
+                undelivered(from, msgId, code.getAsInt());
+            } else {
+                log.debug("Ignoring a message from {} without a method", from);
+            }
             return;
         }
 
-        // Our own route probe came back, so the registration is routable. It gets no delivery
-        // notification: that would be routed back to us as well.
-        if (NetherNetConstants.XBOX_RPC_INNER_METHOD_ROUTE_PROBE.equals(innerMethod) && isSelf(from)) {
+        String innerMethod = method.getAsString();
+        if (NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC.equals(innerMethod)) {
+            if (msgId != null) {
+                acknowledge(from, msgId);
+            }
+            try {
+                String payload = inner.getAsJsonObject("params").get("message").getAsString();
+                if (!holdUntilCredentials(source, from, payload)) {
+                    dispatchSignal(from, payload);
+                }
+            } catch (RuntimeException e) {
+                log.debug("Ignoring a WebRTC message from {} without a signal in it", from);
+            }
+        } else if (NetherNetConstants.XBOX_RPC_INNER_METHOD_ROUTE_PROBE.equals(innerMethod) && isSelf(from)) {
+            // Our own route probe came back, so the registration is routable.
             if (!routeProven) {
                 log.debug("Signaling route probe confirmed, the registration is routable");
             }
             routeProvenAtNanos = source.eventLoop().ticker().nanoTime();
             routeProven = true;
-            return;
         }
+    }
 
+    /** Tells the sender of a WebRTC message that it arrived. */
+    private void acknowledge(String sender, String messageId) {
         JsonObject innerParams = new JsonObject();
-        innerParams.addProperty("messageId", msgId);
+        innerParams.addProperty("messageId", messageId);
         JsonObject innerMsg = new JsonObject();
         innerMsg.add("params", innerParams);
         innerMsg.addProperty("jsonrpc", "2.0");
         innerMsg.addProperty("method", NetherNetConstants.XBOX_RPC_INNER_METHOD_DELIVERY);
-        sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE, createSendParams(from, innerMsg.toString()));
+        sendJsonRpcRequest(NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE,
+                createSendParams(sender, UUID.randomUUID().toString(), innerMsg.toString()));
+    }
 
-        if (innerJson != null && NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC.equals(innerMethod)) {
-            try {
-                String payload = innerJson.getAsJsonObject("params").get("message").getAsString();
-                if (!holdUntilCredentials(source, from, payload)) {
-                    dispatchSignal(from, payload);
+    /**
+     * The service could not deliver a message of ours. When a player who is registered but
+     * offline is sent a message, the send succeeds, and seconds later the service sends a message
+     * "From" that player with {@code {"Code":2,"Message":"Message to player could not be
+     * delivered."}} and the original message ID as its {@code Id} (captured 2026-11-08, RpcProbe
+     * 3.4 and 3.5). The sender must match the join, so another player cannot end it.
+     *
+     * <p>A join whose answer did not arrive is abandoned: its client cannot connect without it, and
+     * the handshake timeout would only end it later, with a warning. A candidate that did not
+     * arrive gets a log line only, since the answer and other candidates may have done their part.
+     */
+    private void undelivered(String recipient, String messageId, int code) {
+        for (XboxJoin join : joins.values()) {
+            SignalType type = join.key.sender().equals(recipient) ? join.sent.get(messageId) : null;
+            if (type != null) {
+                log.debug("Join {}: the signaling service could not deliver its {} to {} (code {})",
+                        join.key.connectionId(), type.wireName(), recipient, code);
+                if (type == SignalType.CONNECT_RESPONSE) {
+                    join.abandon();
                 }
-            } catch (Exception e) {
-                log.error("Failed to parse inner signaling message from " + from, e);
+                return;
             }
         }
+        // A receipt, a refusal sent as the join ended, or a message of a join that is over.
+        log.debug("The signaling service could not deliver a message to {} (code {})", recipient, code);
     }
 
     /** Holds the signal if the socket still waits for its first TURN credentials. */
@@ -1089,10 +1138,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         return playerId != null && playerId.equalsIgnoreCase(from);
     }
 
-    private JsonObject createSendParams(String toPlayerId, String message) {
+    private static JsonObject createSendParams(String toPlayerId, String messageId, String message) {
         JsonObject params = new JsonObject();
         params.addProperty("toPlayerId", toPlayerId);
-        params.addProperty("messageId", UUID.randomUUID().toString());
+        params.addProperty("messageId", messageId);
         params.addProperty("message", message);
         return params;
     }

@@ -48,6 +48,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NetherNetXboxRpcSignalingTest {
+    /** What the service sends "From" a player who was offline when a message to them came in. */
+    private static final String NOT_DELIVERED = "{\"Code\":2,\"Message\":\"Message to player could not be delivered.\"}";
     /** Where the supervisor runs; its clock decides backoff and connection age. */
     private final EmbeddedChannel loop = new EmbeddedChannel();
     private final List<Boolean> tokenRequests = new ArrayList<>();
@@ -333,6 +335,42 @@ class NetherNetXboxRpcSignalingTest {
             assertFalse(response.has("method"));
         }
         assertEquals(List.of(), sent, "A receipt must not trigger Signaling_SendClientMessage");
+    }
+
+    /** A receipt for a non-delivery notice goes to the offline player, which brings the next notice. */
+    @ParameterizedTest
+    @ValueSource(strings = {NOT_DELIVERED, "{\"jsonrpc\":\"2.0\",\"method\":\"RouteProbe_v1_0\",\"params\":{}}",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"Unknown_v1_0\",\"params\":{}}", "not json"})
+    void onlyWebRtcSignalsGetAReceipt(String message) {
+        EmbeddedChannel socket = connect(turnResult(0));
+
+        receiveMessage(socket, "peer", "message-1", message);
+
+        List<JsonObject> sent = drain(socket);
+        assertEquals(1, sent.size(), "Only the RPC result, no Signaling_SendClientMessage");
+        assertFalse(sent.getFirst().has("method"));
+    }
+
+    @Test
+    void aJoinWhoseAnswerCouldNotBeDeliveredIsAbandoned() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        drain(socket);
+        Join join = sink.delivered.getFirst();
+        CompletableFuture<Void> abandoned = join.reply().abandoned().toCompletableFuture();
+        join.reply().answer("v=0");
+        join.reply().candidate("candidate:1");
+        List<JsonObject> sent = drain(socket);
+        String answer = messageId(sent.get(0));
+        String candidate = messageId(sent.get(1));
+
+        receiveMessage(socket, "intruder", answer, NOT_DELIVERED);
+        receiveMessage(socket, "peer", candidate, NOT_DELIVERED);
+        assertFalse(abandoned.isDone(), "Only the client's notice for the answer abandons the join");
+
+        receiveMessage(socket, "peer", answer, NOT_DELIVERED);
+        assertTrue(abandoned.isDone());
     }
 
     @ParameterizedTest
@@ -787,6 +825,10 @@ class NetherNetXboxRpcSignalingTest {
         return params;
     }
 
+    private static String messageId(JsonObject sentMessage) {
+        return sentMessage.getAsJsonObject("params").get("messageId").getAsString();
+    }
+
     /** The signal a sent client message carries, null for anything else. */
     private static String webRtcMessage(JsonObject request) {
         if (!NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE.equals(method(request))) {
@@ -808,10 +850,20 @@ class NetherNetXboxRpcSignalingTest {
         inner.addProperty("jsonrpc", "2.0");
         inner.addProperty("method", innerMethod);
         inner.add("params", innerParams);
+        receiveMessage(socket, from, "message-1", inner.toString(), requestHasId, batched);
+    }
+
+    private void receiveMessage(EmbeddedChannel socket, String from, String messageId, String text) {
+        receiveMessage(socket, from, messageId, text, true, false);
+    }
+
+    /** Delivers one message as the service does, its text as the sender wrote it. */
+    private void receiveMessage(EmbeddedChannel socket, String from, String messageId, String text,
+                                boolean requestHasId, boolean batched) {
         JsonObject message = new JsonObject();
         message.addProperty("From", from);
-        message.addProperty("Id", "message-1");
-        message.addProperty("Message", inner.toString());
+        message.addProperty("Id", messageId);
+        message.addProperty("Message", text);
         JsonObject request = new JsonObject();
         request.addProperty("jsonrpc", "2.0");
         request.addProperty("method", NetherNetConstants.XBOX_RPC_METHOD_RECEIVE_MESSAGE);
