@@ -209,7 +209,9 @@ public interface IceEndpoint {
      *
      * @param address the address, with its scope, and the endpoint's port
      * @param reason why the system refused the bind, such as
-     *        {@code Address already in use}; it does not name the address
+     *        {@code Address already in use}; it does not name the address.
+     *        An engine that cannot separate the reason from an address in
+     *        its failure gives a fixed text instead and logs the failure
      */
     record BindFailure(InetSocketAddress address, String reason) {
     }

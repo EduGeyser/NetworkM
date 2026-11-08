@@ -32,6 +32,8 @@ final class WebRtcIceEndpoint implements IceEndpoint {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(WebRtcIceEndpoint.class);
     /** How long a failed bind on one address stays at debug after it logged a warning. */
     private static final Duration BIND_FAILURE_QUIET = Duration.ofMinutes(10);
+    /** Stands in for a bind failure's message in a form {@link #reason} does not know. */
+    static final String UNRECOGNIZED_REASON = "unrecognized reason, see the log";
 
     private final WebRtcEngine engine;
     private final IceUdpEndpoint endpoint;
@@ -171,16 +173,22 @@ final class WebRtcIceEndpoint implements IceEndpoint {
     }
 
     /**
-     * The system's reason alone. webrtc-java's message also names the address
-     * and port, as in {@code Cannot bind 192.0.2.1 port 19132: Address already
-     * in use}; a message in another form is kept whole.
+     * The system's reason alone, as {@link BindFailure#reason()} promises it:
+     * webrtc-java's message also names the address and port, as in
+     * {@code Cannot bind 192.0.2.1 port 19132: Address already in use}. A
+     * message in another form could name an address anywhere, so it gives way
+     * to {@link #UNRECOGNIZED_REASON}; the log keeps it whole.
      */
     static String reason(IceUdpEndpoint.BindFailure failure) {
+        return systemReason(failure).orElse(UNRECOGNIZED_REASON);
+    }
+
+    private static Optional<String> systemReason(IceUdpEndpoint.BindFailure failure) {
         String message = String.valueOf(failure.failure().getMessage());
         InetSocketAddress address = failure.address();
         // The host address names a link-local address's scope, as webrtc-java's message does
         String prefix = "Cannot bind " + address.getAddress().getHostAddress() + " port " + address.getPort() + ": ";
-        return message.startsWith(prefix) ? message.substring(prefix.length()) : message;
+        return message.startsWith(prefix) ? Optional.of(message.substring(prefix.length())) : Optional.empty();
     }
 
     /**
@@ -202,7 +210,7 @@ final class WebRtcIceEndpoint implements IceEndpoint {
     private void bindFailed(IceUdpEndpoint.BindFailure failure) {
         // The host address names a link-local address's scope
         String address = failure.address().getAddress().getHostAddress();
-        String reason = reason(failure);
+        String reason = systemReason(failure).orElseGet(() -> failure.failure().getMessage());
         if (bindFailureLimiter.warn(failure.address(), System.nanoTime())) {
             log.warn("Peers on the shared ICE port gather no host candidate on {} (further failures there log at "
                     + "debug for {} min): {}", address, BIND_FAILURE_QUIET.toMinutes(), reason);

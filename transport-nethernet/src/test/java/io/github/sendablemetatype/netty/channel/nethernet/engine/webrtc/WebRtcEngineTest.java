@@ -267,8 +267,9 @@ class WebRtcEngineTest {
                 Inet6Address.getByAddress(null, InetAddress.getByName("fe80::1").getAddress(), 7), 19132);
         assertEquals("Permission denied", WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(scoped,
                 new BindException("Cannot bind fe80:0:0:0:0:0:0:1%7 port 19132: Permission denied"))));
-        assertEquals("Socket error 10013", WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(ipv4,
-                new BindException("Socket error 10013"))), "a message in another form stays whole");
+        assertEquals(WebRtcIceEndpoint.UNRECOGNIZED_REASON, WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(
+                ipv4, new BindException("Bind failed on 192.0.2.5: Socket error 10013"))),
+                "a message in another form may name the address, so it gives way");
     }
 
     @Test
