@@ -838,7 +838,10 @@ must then name a pinned key, be self-signed by it, carry a valid signature over
 the answer's DTLS fingerprints, and not be expired; the DTLS handshake then
 holds the server to those fingerprints. An answer without an identity, with one
 that does not verify, or with a key that is not pinned fails the connect at
-once, without another attempt.
+once, without another attempt. Vanilla BDS answers over LAN without an identity
+([client behavior](docs/client-behavior.md#how-vanilla-bds-answers-for-comparison)),
+so a client with a server trust set cannot join a vanilla BDS over LAN. This
+library's servers sign their LAN answers like every other answer.
 
 **HTTP.** HTTP carries one offer and one answer, so the client waits for ICE
 gathering and sends its offer with every candidate in it. `HttpClientSettings`
