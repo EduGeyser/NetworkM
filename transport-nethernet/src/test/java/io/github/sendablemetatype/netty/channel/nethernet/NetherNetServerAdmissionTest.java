@@ -49,6 +49,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class NetherNetServerAdmissionTest {
     private final ManualCheckExecutor checks = new ManualCheckExecutor();
     private EndpointHarness harness = new EndpointHarness();
+    // The server counts a refusal on its event loop just after the source saw it, so tests sync
+    // the loop before they read this.
     private final List<Integer> refusedStatuses = new CopyOnWriteArrayList<>();
 
     @AfterEach
@@ -174,6 +176,7 @@ class NetherNetServerAdmissionTest {
                 .assertRefused(JoinRefusal.BAD_OFFER);
         assertTrue(checks.tasks.isEmpty());
         assertTrue(harness.engine.peers().isEmpty());
+        harness.sync();
         assertEquals(List.of(400), refusedStatuses);
     }
 
@@ -348,6 +351,7 @@ class NetherNetServerAdmissionTest {
         assertEquals(OfferCheckResult.Level.KEY_PROVEN, request.check().level());
         assertEquals(List.of(false), onLoop);
         assertTrue(harness.engine.peers().isEmpty());
+        harness.sync();
         assertEquals(List.of(403, 401), refusedStatuses);
         assertEquals(0, harness.server.gate().pending());
     }
