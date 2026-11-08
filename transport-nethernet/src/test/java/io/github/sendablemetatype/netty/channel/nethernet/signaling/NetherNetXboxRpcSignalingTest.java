@@ -376,6 +376,23 @@ class NetherNetXboxRpcSignalingTest {
         assertTrue(abandoned.isDone());
     }
 
+    @Test
+    void aJoinThatWentActiveForgetsItsMessages() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        drain(socket);
+        Join join = sink.delivered.getFirst();
+        CompletableFuture<Void> abandoned = join.reply().abandoned().toCompletableFuture();
+        join.reply().answer("v=0");
+        String answer = messageId(drain(socket).getFirst());
+
+        join.reply().connected();
+        receiveMessage(socket, "peer", answer, NOT_DELIVERED);
+
+        assertFalse(abandoned.isDone(), "A notice that arrives after the connection went active ends nothing");
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void webRtcMessagesReachTheirHandlerAndGetAReceipt(boolean batched) {

@@ -363,11 +363,13 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
 
     /**
      * Sends a client attempt's signal to the host, addressed by the host's pmid: the service
-     * addresses players by pmid and refuses a numeric network ID as the target. An offer that
-     * cannot go out, or that the service refuses, ends its attempt at once through the handler's
-     * {@link SignalHandler#onFailure}, with the reason. A host the service does not know goes to
-     * the not-found handler instead.
+     * addresses players by pmid and refuses a numeric network ID as the target. An offer to a
+     * target that is not a pmid, or that the service refuses, ends its attempt at once through the
+     * handler's {@link SignalHandler#onFailure}, with the reason. A host the service does not know
+     * goes to the not-found handler instead. A timeout or a socket lost while sending says nothing
+     * about the offer, so the attempt's handshake timeout ends it and the attempt retries.
      *
+     * @throws IllegalStateException if no socket is up
      * @param targetNetworkId the host's pmid, a GUID
      */
     @Override
@@ -429,8 +431,12 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     /** One join's way back to the player who sent its offer. */
     private final class XboxJoin extends MessageReplyPath {
         private final JoinKey key;
-        /** The type of each signal sent to the client, by message ID, for non-delivery notices. */
+        /**
+         * The type of each signal sent to the client, by message ID, for non-delivery notices,
+         * until the connection goes active: then nothing can abandon the join any more.
+         */
         private final Map<String, SignalType> sent = new ConcurrentHashMap<>();
+        private volatile boolean active;
 
         private XboxJoin(JoinKey key) {
             super(key.connectionId());
@@ -440,8 +446,16 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         @Override
         CompletionStage<Void> send(Signal signal) {
             String messageId = UUID.randomUUID().toString();
-            sent.put(messageId, signal.type());
+            if (!active) {
+                sent.put(messageId, signal.type());
+            }
             return sendMessage(key.sender(), messageId, signal);
+        }
+
+        @Override
+        public void connected() {
+            active = true;
+            sent.clear();
         }
 
         @Override
