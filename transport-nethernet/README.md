@@ -142,6 +142,17 @@ a process that takes the port in between costs the joins that gather while it
 holds it their host candidates on that address. The engine logs such a failed
 bind as a warning with the address and the system's reason, at most once per
 address in ten minutes; the failures in between log at debug.
+`NetherNetServerChannel.iceSockets()` completes with what the port holds now:
+`bound`, the local addresses it is open on, and `failed`, those it could not be
+opened on, each with the system's reason for the latest attempt there (such as
+`Address already in use`; the reason never names the address). Since the engine
+opens the port on an address only when the first peer gathers there or STUN
+discovery needs it, an address shows up once something used it; without STUN
+discovery, both lists stay empty until the first join. The next peer that
+gathers on a failed address tries it again; once that works, the address moves
+to `bound`. Without the shared ICE port, before it is open and once the endpoint
+is closed, the result is `IceEndpoint.Sockets.NONE`. The engine's thread may
+complete the stage, so actions on it must not block.
 Set
 `NETHER_SERVER_SHARED_ICE_PORT` to false to give each session ports of its own
 from `NETHER_CANDIDATE_POLICY`'s port window, the way BDS allocates them

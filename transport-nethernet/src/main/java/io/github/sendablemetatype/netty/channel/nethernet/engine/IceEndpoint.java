@@ -98,6 +98,17 @@ public interface IceEndpoint {
     CompletionStage<Stats> stats();
 
     /**
+     * The local addresses the port is open on, and those it could not open
+     * on. The engine opens the port on a local address when the first peer
+     * gathers there or a STUN monitor needs it, so an address shows up only
+     * once something used it.
+     *
+     * @return completes with a snapshot, or exceptionally once the endpoint
+     *         is closed
+     */
+    CompletionStage<Sockets> sockets();
+
+    /**
      * Closes the endpoint's sockets. Peers still on it stop sending and
      * receiving; close them first. Idempotent.
      *
@@ -169,6 +180,40 @@ public interface IceEndpoint {
             SUCCEEDED,
             FAILED
         }
+    }
+
+    /**
+     * The sockets of an endpoint, all on its port. An address is in at most
+     * one of the lists. Java's address equality leaves an IPv6 scope out, so
+     * the same link-local address may appear once per scope.
+     *
+     * @param bound the local addresses the port is open on
+     * @param failed the local addresses the port could not be opened on, each
+     *        with the reason of the latest attempt there; the engine tries
+     *        again when the next peer gathers on the address
+     */
+    record Sockets(List<InetSocketAddress> bound, List<BindFailure> failed) {
+
+        /** No sockets at all. */
+        public static final Sockets NONE = new Sockets(List.of(), List.of());
+
+        /** Copies both lists, keeping their order. */
+        public Sockets {
+            bound = List.copyOf(bound);
+            failed = List.copyOf(failed);
+        }
+    }
+
+    /**
+     * A local address the port could not be opened on.
+     *
+     * @param address the address, with its scope, and the endpoint's port
+     * @param reason why the system refused the bind, such as
+     *        {@code Address already in use}; it does not name the address.
+     *        An engine that cannot separate the reason from an address in
+     *        its failure gives a fixed text instead and logs the failure
+     */
+    record BindFailure(InetSocketAddress address, String reason) {
     }
 
     /**

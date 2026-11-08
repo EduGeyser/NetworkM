@@ -116,7 +116,8 @@ import java.util.function.Supplier;
  * and port this channel binds (port 0 picks a free one). A taken port fails the bind. The engine
  * sets the port up after bind returned, and the sources start once it is set up, which
  * {@link #ready()} reports (with what that guarantees); a port that cannot be set up then closes
- * the endpoint, with the error logged. With
+ * the endpoint, with the error logged. {@link #iceSockets()} tells which local addresses the
+ * port is open on and which it could not be opened on. With
  * {@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT} false, each session takes ports of
  * its own from {@link NetherChannelOption#NETHER_CANDIDATE_POLICY}'s window instead. On the shared
  * port, {@link NetherChannelOption#NETHER_SERVER_STUN_SERVERS} keeps STUN bindings alive from it and
@@ -627,6 +628,43 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         return settings.discovery().fresh();
     }
 
+    // ---- ICE port ----
+
+    /**
+     * The local addresses the shared ICE port is open on, and those it could not be opened on,
+     * each with the system's reason for its latest attempt. The engine opens the port on a local
+     * address when the first peer gathers there or STUN discovery needs it, so an address shows
+     * up only once something used it, and a failed address is tried again by the next peer that
+     * gathers there. A failure means peers gather no host candidate on that address, which the
+     * engine also logs. Safe to call from any thread.
+     *
+     * @return completes with a snapshot; with {@link IceEndpoint.Sockets#NONE} when each session
+     *         takes its own ports ({@link NetherChannelOption#NETHER_SERVER_SHARED_ICE_PORT}
+     *         false), before the port is open, and once the endpoint is closed. Completes
+     *         exceptionally only if the engine fails to answer while the endpoint is open. The
+     *         engine's thread may complete it, so actions that depend on it must not block.
+     */
+    public CompletionStage<IceEndpoint.Sockets> iceSockets() {
+        Bound settings = bound;
+        IceEndpoint endpoint = settings == null ? null : settings.iceEndpoint();
+        if (!open || endpoint == null) {
+            return CompletableFuture.completedStage(IceEndpoint.Sockets.NONE);
+        }
+        CompletableFuture<IceEndpoint.Sockets> result = new CompletableFuture<>();
+        endpoint.sockets().whenComplete((sockets, failure) -> {
+            // The endpoint closed while the engine answered: that answer is stale, or the
+            // failure the closed port gives
+            if (!open) {
+                result.complete(IceEndpoint.Sockets.NONE);
+            } else if (failure != null) {
+                result.completeExceptionally(failure);
+            } else {
+                result.complete(sockets);
+            }
+        });
+        return result.minimalCompletionStage();
+    }
+
     // ---- Bind and close ----
 
     /**
@@ -639,7 +677,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * probed it, and that the engine's endpoint for it exists. It does not hold the port: the
      * WebRTC engine binds the UDP socket on each local address when the first peer gathers there.
      * A process that takes the port in between costs the joins that gather while it holds it their
-     * host candidates on that address, and nothing here reports it.
+     * host candidates on that address; the engine logs that, and {@link #iceSockets()} shows it.
      *
      * <p>Fails with the reason the endpoint did not get there: the bind's failure, the reason the
      * ICE port did not open (such as a {@link java.net.BindException} when another process took
