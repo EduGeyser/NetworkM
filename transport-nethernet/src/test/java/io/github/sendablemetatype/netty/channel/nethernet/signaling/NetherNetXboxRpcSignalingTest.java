@@ -37,6 +37,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -48,6 +49,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NetherNetXboxRpcSignalingTest {
+    /** What the service sends "From" a player who was offline when a message to them came in. */
+    private static final String NOT_DELIVERED = "{\"Code\":2,\"Message\":\"Message to player could not be delivered.\"}";
+    /** A host's pmid, as the service addresses players. */
+    private static final String HOST = "0f8fad5b-d9cb-469f-a165-70867728950e";
     /** Where the supervisor runs; its clock decides backoff and connection age. */
     private final EmbeddedChannel loop = new EmbeddedChannel();
     private final List<Boolean> tokenRequests = new ArrayList<>();
@@ -335,6 +340,59 @@ class NetherNetXboxRpcSignalingTest {
         assertEquals(List.of(), sent, "A receipt must not trigger Signaling_SendClientMessage");
     }
 
+    /** A receipt for a non-delivery notice goes to the offline player, which brings the next notice. */
+    @ParameterizedTest
+    @ValueSource(strings = {NOT_DELIVERED, "{\"jsonrpc\":\"2.0\",\"method\":\"RouteProbe_v1_0\",\"params\":{}}",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"Unknown_v1_0\",\"params\":{}}", "not json"})
+    void onlyWebRtcSignalsGetAReceipt(String message) {
+        EmbeddedChannel socket = connect(turnResult(0));
+
+        receiveMessage(socket, "peer", "message-1", message);
+
+        List<JsonObject> sent = drain(socket);
+        assertEquals(1, sent.size(), "Only the RPC result, no Signaling_SendClientMessage");
+        assertFalse(sent.getFirst().has("method"));
+    }
+
+    @Test
+    void aJoinWhoseAnswerCouldNotBeDeliveredIsAbandoned() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        drain(socket);
+        Join join = sink.delivered.getFirst();
+        CompletableFuture<Void> abandoned = join.reply().abandoned().toCompletableFuture();
+        join.reply().answer("v=0");
+        join.reply().candidate("candidate:1");
+        List<JsonObject> sent = drain(socket);
+        String answer = messageId(sent.get(0));
+        String candidate = messageId(sent.get(1));
+
+        receiveMessage(socket, "intruder", answer, NOT_DELIVERED);
+        receiveMessage(socket, "peer", candidate, NOT_DELIVERED);
+        assertFalse(abandoned.isDone(), "Only the client's notice for the answer abandons the join");
+
+        receiveMessage(socket, "peer", answer, NOT_DELIVERED);
+        assertTrue(abandoned.isDone());
+    }
+
+    @Test
+    void aJoinThatWentActiveForgetsItsMessages() {
+        signaling.start(sink);
+        EmbeddedChannel socket = connect(turnResult(0));
+        receiveWebRtc(socket, "CONNECTREQUEST 9 offer", false);
+        drain(socket);
+        Join join = sink.delivered.getFirst();
+        CompletableFuture<Void> abandoned = join.reply().abandoned().toCompletableFuture();
+        join.reply().answer("v=0");
+        String answer = messageId(drain(socket).getFirst());
+
+        join.reply().connected();
+        receiveMessage(socket, "peer", answer, NOT_DELIVERED);
+
+        assertFalse(abandoned.isDone(), "A notice that arrives after the connection went active ends nothing");
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void webRtcMessagesReachTheirHandlerAndGetAReceipt(boolean batched) {
@@ -365,6 +423,59 @@ class NetherNetXboxRpcSignalingTest {
 
         receiveWebRtc(socket, "CONNECTERROR 42 1", false);
         assertEquals(new Signal(SignalType.CONNECT_ERROR, "42", "1"), received.get());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"-32602, Deserializing JSON-RPC argument failed, true",
+            "-32000, Player not registered with the service., false"})
+    void aRefusedOfferFailsItsAttemptAtOnceUnlessTheHostIsNotFound(int code, String message, boolean fails) {
+        AtomicInteger notFound = new AtomicInteger();
+        signaling.setNotFoundHandler(reason -> notFound.incrementAndGet());
+        EmbeddedChannel socket = connect(turnResult(0));
+        List<SignalingFailure> failures = new ArrayList<>();
+        signaling.setSignalHandler("42", HOST, attemptFailures(failures));
+
+        signaling.sendSignal(HOST, new Signal(SignalType.CONNECT_REQUEST, "42", "v=0"));
+        JsonObject offer = drain(socket).getFirst();
+        JsonObject error = new JsonObject();
+        error.addProperty("code", code);
+        error.addProperty("message", message);
+        respond(socket, offer.get("id").getAsString(), "error", error);
+        run();
+
+        if (fails) {
+            assertEquals(1, failures.size());
+            assertEquals("the signaling service refused it: " + message, failures.getFirst().reason());
+        } else {
+            assertEquals(List.of(), failures, "Only the not-found handler hears of an unknown host");
+            assertEquals(1, notFound.get());
+        }
+    }
+
+    @Test
+    void anOfferToANetworkIdFailsItsAttemptWithoutReachingTheService() {
+        EmbeddedChannel socket = connect(turnResult(0));
+        List<SignalingFailure> failures = new ArrayList<>();
+        signaling.setSignalHandler("42", "468682033508464609", attemptFailures(failures));
+
+        signaling.sendSignal("468682033508464609", new Signal(SignalType.CONNECT_REQUEST, "42", "v=0"));
+        signaling.sendSignal("468682033508464609", new Signal(SignalType.CANDIDATE_ADD, "42", "candidate:1"));
+
+        assertEquals(List.of(), drain(socket));
+        assertEquals(1, failures.size());
+        assertTrue(failures.getFirst().reason().contains("pmid"), failures.getFirst().reason());
+    }
+
+    @Test
+    void aHostDialedByAnUpperCasePmidReachesTheAttempt() {
+        EmbeddedChannel socket = connect(turnResult(0));
+        AtomicReference<Signal> received = new AtomicReference<>();
+        signaling.setSignalHandler("42", HOST.toUpperCase(Locale.ROOT), received::set);
+
+        receive(socket, HOST, NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC, webRtcParams("CONNECTRESPONSE 42 v=0"),
+                true, false);
+
+        assertEquals(new Signal(SignalType.CONNECT_RESPONSE, "42", "v=0"), received.get());
     }
 
     @Test
@@ -787,6 +898,25 @@ class NetherNetXboxRpcSignalingTest {
         return params;
     }
 
+    /** A client attempt's handler that records why the signaling gave up on its offer. */
+    private static NetherNetSignaling.SignalHandler attemptFailures(List<SignalingFailure> failures) {
+        return new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(Signal signal) {
+                fail("No signal expected, got " + signal);
+            }
+
+            @Override
+            public void onFailure(String connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        };
+    }
+
+    private static String messageId(JsonObject sentMessage) {
+        return sentMessage.getAsJsonObject("params").get("messageId").getAsString();
+    }
+
     /** The signal a sent client message carries, null for anything else. */
     private static String webRtcMessage(JsonObject request) {
         if (!NetherNetConstants.XBOX_RPC_METHOD_SEND_MESSAGE.equals(method(request))) {
@@ -808,10 +938,20 @@ class NetherNetXboxRpcSignalingTest {
         inner.addProperty("jsonrpc", "2.0");
         inner.addProperty("method", innerMethod);
         inner.add("params", innerParams);
+        receiveMessage(socket, from, "message-1", inner.toString(), requestHasId, batched);
+    }
+
+    private void receiveMessage(EmbeddedChannel socket, String from, String messageId, String text) {
+        receiveMessage(socket, from, messageId, text, true, false);
+    }
+
+    /** Delivers one message as the service does, its text as the sender wrote it. */
+    private void receiveMessage(EmbeddedChannel socket, String from, String messageId, String text,
+                                boolean requestHasId, boolean batched) {
         JsonObject message = new JsonObject();
         message.addProperty("From", from);
-        message.addProperty("Id", "message-1");
-        message.addProperty("Message", inner.toString());
+        message.addProperty("Id", messageId);
+        message.addProperty("Message", text);
         JsonObject request = new JsonObject();
         request.addProperty("jsonrpc", "2.0");
         request.addProperty("method", NetherNetConstants.XBOX_RPC_METHOD_RECEIVE_MESSAGE);

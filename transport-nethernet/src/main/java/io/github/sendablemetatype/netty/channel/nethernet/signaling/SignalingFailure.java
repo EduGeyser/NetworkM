@@ -16,9 +16,29 @@ import java.util.Objects;
  *                  printable ASCII
  */
 public record SignalingFailure(NetherConnectionFailure failure, int errorCode, String reason) {
+    /** How much remote text is worth carrying into a reason. */
+    static final int REMOTE_TEXT_LIMIT = 200;
 
     public SignalingFailure {
         Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(reason, "reason");
+    }
+
+    /**
+     * Remote text, such as a server's error body, fit for a reason: the remote side controls it,
+     * so it is cut short and reduced to printable ASCII before it can reach a log.
+     *
+     * @return {@code ": "} and the text, or empty when there is none
+     */
+    static String quote(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(": ");
+        for (int i = 0; i < text.length() && out.length() < REMOTE_TEXT_LIMIT + 2; i++) {
+            char c = text.charAt(i);
+            out.append(c >= ' ' && c <= '~' ? c : ' ');
+        }
+        return out.toString().stripTrailing();
     }
 }

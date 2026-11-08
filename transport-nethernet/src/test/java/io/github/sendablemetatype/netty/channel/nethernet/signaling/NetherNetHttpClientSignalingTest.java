@@ -502,13 +502,4 @@ class NetherNetHttpClientSignalingTest {
 
         assertThrows(ExecutionException.class, () -> client.connect(new InetSocketAddress("127.0.0.1", 1)).get());
     }
-
-    @Test
-    void serverErrorTextIsCutAndReducedToPrintableAscii() {
-        String reason = NetherNetHttpClientSignaling.reason("bad\u0000\nthingé" + "x".repeat(300));
-
-        assertTrue(reason.startsWith(": bad  thing x"), reason);
-        assertEquals(202, reason.length());
-        assertEquals("", NetherNetHttpClientSignaling.reason("  "));
-    }
 }

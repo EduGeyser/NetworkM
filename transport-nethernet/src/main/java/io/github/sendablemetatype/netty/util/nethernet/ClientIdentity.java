@@ -31,8 +31,9 @@ import java.util.Objects;
  * The identity a client presents in the {@code a=identity} of its offer: a token whose {@code cpk}
  * claim names the client's key, and a signature over the offer's DTLS fingerprints made with that
  * key. A server's {@link OfferCheck} proves the key from it, and attests the token when it trusts
- * the token's issuer. Servers that require a proven key (vanilla BDS, and this library's default)
- * refuse an offer without one.
+ * the token's issuer. Vanilla BDS over HTTP, and this library's servers by default on every path
+ * but LAN, require a proven key and refuse an offer without one. Over LAN both answer it, since
+ * retail sends its LAN offer without an identity (captured 2026-11-07).
  * <p>
  * The caller brings the token and the key: a retail client's multiplayer token from Minecraft's
  * authorization service with the key it was issued for, or a token it signs itself, as Education

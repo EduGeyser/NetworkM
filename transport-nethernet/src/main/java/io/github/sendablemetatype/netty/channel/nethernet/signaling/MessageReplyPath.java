@@ -71,10 +71,19 @@ abstract class MessageReplyPath implements ReplyPath {
         }
     }
 
+    /**
+     * Completes only through {@link #abandon()}: a client reached by messages counts as reachable
+     * until its source learns that the answer did not arrive. LAN never learns it, so there only
+     * the handshake timeout ends a join.
+     */
     @Override
     public CompletionStage<Void> abandoned() {
-        // A client reached by messages can always be sent to; only the handshake timeout ends it.
         return abandoned.minimalCompletionStage();
+    }
+
+    /** The source learned that the client did not get the answer. */
+    void abandon() {
+        abandoned.complete(null);
     }
 
     @Override

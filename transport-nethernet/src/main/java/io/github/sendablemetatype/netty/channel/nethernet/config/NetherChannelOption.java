@@ -243,8 +243,9 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
      * The identity a client channel presents in its offer, or null (the default) for an offer
-     * without one, which vanilla BDS and this library's servers refuse. Tokens expire, so set a
-     * fresh identity per connection.
+     * without one. Vanilla BDS refuses such an offer over HTTP, and this library's servers refuse
+     * it by default on every path but LAN. Over LAN both answer it, since retail sends its LAN offer
+     * without an identity. Tokens expire, so set a fresh identity per connection.
      */
     public static final ChannelOption<ClientIdentity> NETHER_CLIENT_IDENTITY =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_IDENTITY");
@@ -256,6 +257,10 @@ public class NetherChannelOption<T> extends ChannelOption<T> {
      * not be expired. An answer without an identity, with one that does not verify, or with a key
      * that is not pinned fails the connect at once, without another attempt, since every attempt
      * meets the same server. See {@link ServerTrust#pinnedTo}.
+     * <p>
+     * Vanilla BDS answers over LAN without an {@code a=identity} (captured 2026-11-07), so a client
+     * with a trust set cannot join a vanilla BDS over LAN. This library's servers sign their LAN
+     * answers like every other answer.
      */
     public static final ChannelOption<ServerTrust> NETHER_CLIENT_SERVER_TRUST =
             valueOf(NetherChannelOption.class, "NETHER_CLIENT_SERVER_TRUST");

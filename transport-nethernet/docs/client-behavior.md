@@ -1,17 +1,21 @@
 # How real clients behave
 
 What retail Bedrock and Minecraft Education clients actually send and expect over
-NetherNet, and how the vanilla server answers. Several design choices in this
-transport rest on these facts, so each one says which client version it was seen
-on and where it comes from. Clients change between versions: treat anything here
-as true for the versions named, not forever.
+NetherNet, and how the vanilla server and the Xbox signaling service answer.
+Several design choices in this transport rest on these facts, so each one says
+which client version it was seen on and where it comes from. Clients change
+between versions: treat anything here as true for the versions named, not
+forever.
 
 Sources:
 
 - **Captured**: logged from real clients against a test build, signatures checked
   offline. The 2026-11-05 captures cover retail 1.26.62 (Windows) over HTTP and
   over Xbox RPC (a friends join), and Education 26.33 over HTTP and over Xbox RPC
-  (a join by connection ID).
+  (a join by connection ID). The 2026-11-08 captures are frames exchanged with the
+  live Xbox RPC signaling service by RpcProbe, a probe that writes the frames
+  NetworkM writes, signed in as an anonymous PlayFab identity and as an Xbox
+  account; the numbers name its steps.
 - **Decompiled**: read in the shipped client and BDS binaries.
 - **Measured**: observed on a live vanilla BDS.
 - **Guide**: Mojang's NetherNet onboarding guide.
@@ -39,6 +43,37 @@ Sources:
 | Education does no LAN discovery: while the owner went through every Play screen, its process held no UDP socket at all, and a LAN server advertising a v7 record with `selfSignedAuth` set got no request from it. | Education 26.33 | Captured (2026-11-07) |
 | Retail no longer joins over RakNet, probably since 26.60. | retail 26.60 and later | Owner observation (2026-11) |
 | While the Play screen is open, the client sends a LAN discovery request every 2 s from one socket, broadcast on every interface: requests arrived from both the Wi-Fi and the WSL virtual adapter addresses with the same source port. Its LAN offer comes from that same socket. | retail 1.26.63 | Captured (2026-11-07) |
+
+## The Xbox RPC signaling service
+
+How Microsoft's JSON-RPC signaling service
+(`wss://signal.franchise.minecraft-services.net/ws/v1.0/messaging/connect`)
+treats the messages sent through it (Captured, 2026-11-08, RpcProbe):
+
+- **Players are addressed by pmid**, the GUID in the `pmid` claim of their
+  MCToken (36 characters, lower case). `toPlayerId` must be a GUID: an 18-digit
+  network ID gets `-32602`, "Deserializing JSON-RPC argument ... to type
+  System.Guid failed", and so does an empty or missing `toPlayerId` (2.2, 4.1,
+  4.2).
+- **A pmid nobody registered** gets `-32000` "Player not registered with the
+  service." with `data.Code` `MissingOrExpiredIdentity` in the same error (2.1).
+  Both name the target: the sender's own token never shows up as an RPC error.
+  No token, a token with an altered signature and an expired token all get HTTP
+  401 at the WebSocket upgrade, body
+  `{"namespace":"ServiceRuntime","code":"Unauthorized",...}` (5.1 to 5.3).
+- **A player who is registered but offline**: the send succeeds
+  (`result: null`), and within seconds the sender gets a
+  `Signaling_ReceiveMessage_v1_0` "From" that player whose `Message` is
+  `{"Code":2,"Message":"Message to player could not be delivered."}` and whose
+  `Id` is the original `messageId` (3.4 and 3.5, 5 s and 60 s after the player
+  left).
+- **The service does not look inside `message`**: text that is not JSON is
+  delivered as it is (4.3). So any message to an offline player brings the
+  notice, a delivery receipt included: a receipt that answered the notice of 3.5
+  got a notice of its own about 0.1 s later (3.6 and 3.7). A host that
+  acknowledges every message would trade receipts and notices with the service
+  for as long as it remembers the player; NetworkM acknowledges only WebRTC
+  signals.
 
 ## The client's offer
 
