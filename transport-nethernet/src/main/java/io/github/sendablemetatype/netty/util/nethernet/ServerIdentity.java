@@ -72,8 +72,8 @@ public final class ServerIdentity {
      * appeared meanwhile; when another process won that race, its key is loaded.
      *
      * @param keyFile the PEM file to load or create
-     * @param domain  the name the identity carries as {@code idp.domain} and {@code iss}; the guide
-     *                calls it untrusted display text
+     * @param domain  the name the identity carries as {@code idp.domain} and {@code iss}; Mojang's
+     *                NetherNet onboarding guide calls it untrusted display text
      * @return the identity
      * @throws IOException              if the file cannot be read or created
      * @throws GeneralSecurityException if the file holds no usable secp384r1 key

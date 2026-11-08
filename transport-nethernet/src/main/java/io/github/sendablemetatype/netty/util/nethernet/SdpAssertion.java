@@ -18,9 +18,9 @@ import java.util.Optional;
  * trusting anything in it yet. Offers and answers carry the same envelope, so the offer check and
  * a client's {@link ServerTrust} both read it here.
  * <p>
- * The {@code idp} block is read only for diagnostics. The guide's validation steps never check
- * it, it is unsigned, and Education 26.33 sends an empty domain (captured 2026-11-05), as retail
- * 1.26.50 did (reported by go-nethernet).
+ * The {@code idp} block is read only for diagnostics. The validation steps of Mojang's NetherNet
+ * onboarding guide never check it, it is unsigned, and Education 26.33 sends an empty domain
+ * (captured 2026-11-05), as retail 1.26.50 did (reported by go-nethernet).
  *
  * @param idpDomain        the envelope's {@code idp.domain}, or null
  * @param idpProtocol      the envelope's {@code idp.protocol}, or null
