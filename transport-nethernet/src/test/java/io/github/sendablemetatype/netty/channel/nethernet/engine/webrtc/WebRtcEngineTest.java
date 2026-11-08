@@ -6,10 +6,13 @@ import io.github.sendablemetatype.netty.channel.nethernet.engine.DataLink;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.DtlsIdentity;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.EndpointConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint.BindFailure;
+import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint.Sockets;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.Peer;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.PeerConfig.Role;
+import io.github.sendablemetatype.webrtc.IceUdpEndpoint;
 import io.github.sendablemetatype.webrtc.PeerConnectionObserver;
 import io.github.sendablemetatype.webrtc.PortAllocatorConfig;
 import io.github.sendablemetatype.webrtc.RTCBundlePolicy;
@@ -21,8 +24,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
+import java.net.BindException;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -34,6 +39,7 @@ import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -194,14 +200,7 @@ class WebRtcEngineTest {
         endpointLog.addHandler(capture);
         WebRtcEngine engine = WebRtcEngine.builder().build();
         try {
-            WebRtcIceEndpoint first = (WebRtcIceEndpoint) engine
-                    .openEndpoint(new EndpointConfig(freeUdpPort(), List.of())).toCompletableFuture()
-                    .get(5, TimeUnit.SECONDS);
-            gather(engine, first);
-            List<InetSocketAddress> bound = first.nativeEndpoint(engine).getSockets().bound();
-            assumeFalse(bound.isEmpty(), "libwebrtc gathered on no address");
-            InetAddress address = bound.stream().map(InetSocketAddress::getAddress)
-                    .filter(Inet4Address.class::isInstance).findFirst().orElse(bound.getFirst().getAddress());
+            InetAddress address = gatheredAddress(engine);
             String host = address.getHostAddress();
 
             int port = freeUdpPort();
@@ -226,6 +225,50 @@ class WebRtcEngineTest {
             endpointLog.removeHandler(capture);
             endpointLog.setLevel(endpointLevel);
         }
+    }
+
+    /** Needs natives. Another socket holds the endpoint's port on its one address, then lets it go. */
+    @Test
+    @Timeout(30)
+    @EnabledIfSystemProperty(named = "webrtc.nativeTests", matches = "true")
+    void socketsShowAFailedBindUntilALaterPeerOpensThePortThere() throws Exception {
+        WebRtcEngine engine = WebRtcEngine.builder().build();
+        try {
+            InetAddress address = gatheredAddress(engine);
+            int port = freeUdpPort();
+            InetSocketAddress local = new InetSocketAddress(address, port);
+            IceEndpoint endpoint = engine.openEndpoint(new EndpointConfig(port, List.of(address)))
+                    .toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(Sockets.NONE, sockets(endpoint), "nothing is bound before a peer gathers");
+
+            try (DatagramSocket taken = new DatagramSocket(null)) {
+                taken.setReuseAddress(false);
+                taken.bind(local);
+                gather(engine, endpoint);
+                assertEquals(new Sockets(List.of(), List.of(new BindFailure(local, "Address already in use"))),
+                        sockets(endpoint), "the reason alone, without the address");
+            }
+            gather(engine, endpoint);
+            assertEquals(new Sockets(List.of(local), List.of()), sockets(endpoint));
+
+            endpoint.close().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertThrows(ExecutionException.class, () -> sockets(endpoint), "a closed endpoint has no sockets to tell");
+        } finally {
+            engine.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aBindFailureKeepsOnlyTheSystemsReason() throws Exception {
+        InetSocketAddress ipv4 = new InetSocketAddress(InetAddress.getByName("192.0.2.5"), 19132);
+        assertEquals("Address already in use", WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(ipv4,
+                new BindException("Cannot bind 192.0.2.5 port 19132: Address already in use"))));
+        InetSocketAddress scoped = new InetSocketAddress(
+                Inet6Address.getByAddress(null, InetAddress.getByName("fe80::1").getAddress(), 7), 19132);
+        assertEquals("Permission denied", WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(scoped,
+                new BindException("Cannot bind fe80:0:0:0:0:0:0:1%7 port 19132: Permission denied"))));
+        assertEquals("Socket error 10013", WebRtcIceEndpoint.reason(new IceUdpEndpoint.BindFailure(ipv4,
+                new BindException("Socket error 10013"))), "a message in another form stays whole");
     }
 
     @Test
@@ -270,6 +313,21 @@ class WebRtcEngineTest {
         } finally {
             peer.close().toCompletableFuture().get(5, TimeUnit.SECONDS);
         }
+    }
+
+    /** An address libwebrtc gathers on, IPv4 if there is one; skips the test if there is none. */
+    private static InetAddress gatheredAddress(WebRtcEngine engine) throws Exception {
+        IceEndpoint probe = engine.openEndpoint(new EndpointConfig(freeUdpPort(), List.of())).toCompletableFuture()
+                .get(5, TimeUnit.SECONDS);
+        gather(engine, probe);
+        List<InetSocketAddress> bound = sockets(probe).bound();
+        assumeFalse(bound.isEmpty(), "libwebrtc gathered on no address");
+        return bound.stream().map(InetSocketAddress::getAddress)
+                .filter(Inet4Address.class::isInstance).findFirst().orElse(bound.getFirst().getAddress());
+    }
+
+    private static Sockets sockets(IceEndpoint endpoint) throws Exception {
+        return endpoint.sockets().toCompletableFuture().get(5, TimeUnit.SECONDS);
     }
 
     private static List<LogRecord> logged(List<LogRecord> records, Level level, String text) {

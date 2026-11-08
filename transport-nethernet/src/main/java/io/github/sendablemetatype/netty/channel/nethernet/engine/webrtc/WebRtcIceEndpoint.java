@@ -2,7 +2,6 @@ package io.github.sendablemetatype.netty.channel.nethernet.engine.webrtc;
 
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceEndpoint;
 import io.github.sendablemetatype.webrtc.IceUdpEndpoint;
-import io.github.sendablemetatype.webrtc.IceUdpEndpoint.BindFailure;
 import io.github.sendablemetatype.webrtc.IceUdpEndpoint.PendingRequest;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -161,6 +160,29 @@ final class WebRtcIceEndpoint implements IceEndpoint {
         });
     }
 
+    @Override
+    public CompletionStage<Sockets> sockets() {
+        return query(() -> {
+            IceUdpEndpoint.Sockets sockets = endpoint.getSockets();
+            return new Sockets(sockets.bound(), sockets.failed().stream()
+                    .map(failure -> new BindFailure(failure.address(), reason(failure)))
+                    .toList());
+        });
+    }
+
+    /**
+     * The system's reason alone. webrtc-java's message also names the address
+     * and port, as in {@code Cannot bind 192.0.2.1 port 19132: Address already
+     * in use}; a message in another form is kept whole.
+     */
+    static String reason(IceUdpEndpoint.BindFailure failure) {
+        String message = failure.failure().getMessage();
+        InetSocketAddress address = failure.address();
+        // The host address names a link-local address's scope, as webrtc-java's message does
+        String prefix = "Cannot bind " + address.getAddress().getHostAddress() + " port " + address.getPort() + ": ";
+        return message != null && message.startsWith(prefix) ? message.substring(prefix.length()) : String.valueOf(message);
+    }
+
     /**
      * Logs the port's failed binds from now on. Call it on the control thread
      * before a peer can use the endpoint, so that no failure goes unlogged.
@@ -177,10 +199,10 @@ final class WebRtcIceEndpoint implements IceEndpoint {
      * the failures in between log at debug. Nothing reports a later successful
      * bind, so a failure that lasts logs a warning again after the quiet time.
      */
-    private void bindFailed(BindFailure failure) {
+    private void bindFailed(IceUdpEndpoint.BindFailure failure) {
         // The host address names a link-local address's scope
         String address = failure.address().getAddress().getHostAddress();
-        String reason = failure.failure().getMessage();
+        String reason = reason(failure);
         if (bindFailureLimiter.warn(failure.address(), System.nanoTime())) {
             log.warn("Peers on the shared ICE port gather no host candidate on {} (further failures there log at "
                     + "debug for {} min): {}", address, BIND_FAILURE_QUIET.toMinutes(), reason);

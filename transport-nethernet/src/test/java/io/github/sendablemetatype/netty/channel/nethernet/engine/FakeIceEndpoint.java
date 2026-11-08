@@ -16,7 +16,7 @@ import java.util.function.Consumer;
 /**
  * An {@link IceEndpoint} of {@link FakeEngine} that binds nothing. It records
  * its settings, lets a test hand held checks to the handler, and lets STUN
- * monitors report the mappings a test scripts.
+ * monitors and {@link #sockets()} report what a test scripts.
  */
 public final class FakeIceEndpoint implements IceEndpoint {
     private final int port;
@@ -27,6 +27,7 @@ public final class FakeIceEndpoint implements IceEndpoint {
     private final Map<InetSocketAddress, InetSocketAddress> stunMappings = new ConcurrentHashMap<>();
     private final List<InetSocketAddress> stunMonitors = new CopyOnWriteArrayList<>();
     private final AtomicInteger stunReads = new AtomicInteger();
+    private volatile CompletionStage<Sockets> socketsAnswer = CompletableFuture.completedFuture(Sockets.NONE);
     private final boolean holdClose;
     private final CompletableFuture<IceEndpoint> opened = new CompletableFuture<>();
     private final CompletableFuture<Void> closeStage = new CompletableFuture<>();
@@ -117,6 +118,14 @@ public final class FakeIceEndpoint implements IceEndpoint {
     }
 
     @Override
+    public CompletionStage<Sockets> sockets() {
+        if (closed) {
+            return CompletableFuture.failedFuture(new IllegalStateException("The endpoint is closed"));
+        }
+        return socketsAnswer;
+    }
+
+    @Override
     public CompletionStage<Void> close() {
         closed = true;
         handler = null;
@@ -171,6 +180,11 @@ public final class FakeIceEndpoint implements IceEndpoint {
     /** The servers monitors were opened for, in order. */
     public List<InetSocketAddress> stunMonitors() {
         return List.copyOf(stunMonitors);
+    }
+
+    /** Makes {@link #sockets()} answer with this stage while the endpoint is open; it answers with none at first. */
+    public void answerSockets(CompletionStage<Sockets> answer) {
+        this.socketsAnswer = answer;
     }
 
     /** How many monitor reads ran. */
