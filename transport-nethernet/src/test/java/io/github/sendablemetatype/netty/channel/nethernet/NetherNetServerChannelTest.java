@@ -268,8 +268,55 @@ class NetherNetServerChannelTest {
         harness.bootstrap.option(NetherChannelOption.NETHER_SERVER_SHARED_ICE_PORT, false);
         harness.bind();
         assertTrue(harness.server.ready().toCompletableFuture().isDone(), "no port to wait for");
+        assertEquals(IceEndpoint.Sockets.NONE, iceSockets(harness.server), "no shared port, no sockets");
         harness.source(true).offer("1", OFFER);
         assertNull(harness.negotiating().config().endpoint());
+    }
+
+    @Test
+    void iceSocketsShowWhatTheSharedPortHoldsWhileItIsOpen() throws Exception {
+        HeldEndpointEngine engine = new HeldEndpointEngine();
+        NetherNetServerChannel server = (NetherNetServerChannel) bootstrap(EngineRef.shared(engine))
+                .bind(new InetSocketAddress("127.0.0.1", 0)).sync().channel();
+        assertEquals(IceEndpoint.Sockets.NONE, iceSockets(server), "the port is not open yet");
+
+        engine.open.complete(null);
+        server.ready().toCompletableFuture().get(2, TimeUnit.SECONDS);
+        FakeIceEndpoint endpoint = engine.opened.getFirst();
+        IceEndpoint.Sockets held = new IceEndpoint.Sockets(List.of(new InetSocketAddress("192.0.2.5", endpoint.port())),
+                List.of(new IceEndpoint.BindFailure(new InetSocketAddress("192.0.2.6", endpoint.port()),
+                        "Address already in use")));
+        endpoint.answerSockets(CompletableFuture.completedFuture(held));
+        assertEquals(held, iceSockets(server));
+
+        server.close().sync();
+        assertEquals(IceEndpoint.Sockets.NONE, iceSockets(server), "a closed endpoint holds none");
+    }
+
+    @Test
+    void iceSocketsFailOnlyWhileTheEndpointIsOpen() throws Exception {
+        NetherNetServerChannel server = harness.bind();
+        FakeIceEndpoint endpoint = harness.engine.endpoints().getFirst();
+        CompletableFuture<IceEndpoint.Sockets> failing = new CompletableFuture<>();
+        endpoint.answerSockets(failing);
+        CompletableFuture<IceEndpoint.Sockets> asked = server.iceSockets().toCompletableFuture();
+
+        IllegalStateException broken = new IllegalStateException("The WebRTC engine is closed");
+        failing.completeExceptionally(broken);
+        ExecutionException failed = assertThrows(ExecutionException.class, () -> asked.get(2, TimeUnit.SECONDS));
+        assertSame(broken, failed.getCause());
+
+        CompletableFuture<IceEndpoint.Sockets> late = new CompletableFuture<>();
+        endpoint.answerSockets(late);
+        CompletableFuture<IceEndpoint.Sockets> askedBeforeClose = server.iceSockets().toCompletableFuture();
+        server.close().sync();
+        late.complete(new IceEndpoint.Sockets(List.of(new InetSocketAddress("192.0.2.5", endpoint.port())), List.of()));
+        assertEquals(IceEndpoint.Sockets.NONE, askedBeforeClose.get(2, TimeUnit.SECONDS),
+                "an answer that arrives after the close is stale");
+    }
+
+    private static IceEndpoint.Sockets iceSockets(NetherNetServerChannel server) throws Exception {
+        return server.iceSockets().toCompletableFuture().get(2, TimeUnit.SECONDS);
     }
 
     // Sources.
