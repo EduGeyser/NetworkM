@@ -205,6 +205,9 @@ class NetherNetHttpNativeTest {
         NetherNetHttpSignaling http = NetherNetHttpSignaling.builder(group).build();
         http.bind(new InetSocketAddress("127.0.0.1", 0));
         ((NetherNetServerChannel) server).addSource(new RecordingSource(http, offers::add));
+        // The endpoint starts its sources once the engine set up the ICE port, after the bind
+        // returned; until then the HTTP server answers a probe with 404
+        ((NetherNetServerChannel) server).ready().toCompletableFuture().get(WAIT_SECONDS, TimeUnit.SECONDS);
         return http;
     }
 

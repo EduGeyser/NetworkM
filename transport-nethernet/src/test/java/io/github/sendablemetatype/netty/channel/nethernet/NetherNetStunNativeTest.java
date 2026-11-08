@@ -71,6 +71,8 @@ class NetherNetStunNativeTest {
             int icePort = ((InetSocketAddress) server.localAddress()).getPort();
             FakeJoinSource source = new FakeJoinSource(false);
             ((NetherNetServerChannel) server).addSource(source, EndpointHarness.ADMIT_ALL);
+            // The endpoint starts its sources once the engine set up the ICE port, after the bind returned
+            ((NetherNetServerChannel) server).ready().toCompletableFuture().get(20, TimeUnit.SECONDS);
             String offer = clientOffer();
 
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
