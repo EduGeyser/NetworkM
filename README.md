@@ -11,7 +11,7 @@ tests.
 
 ## Usage
 
-NetworkM **1.3.0** is available from Maven Central. Both transports require
+NetworkM **2.0.0** is available from Maven Central. Both transports require
 **Java 25 or newer**. Add Maven Central to your `build.gradle.kts`:
 
 ```kotlin
@@ -26,7 +26,7 @@ For RakNet:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:1.3.0")
+    implementation("io.github.sendablemetatype.netty:netty-transport-raknet:2.0.0")
 }
 ```
 
@@ -35,14 +35,14 @@ This example targets Linux x86-64:
 
 ```kotlin
 dependencies {
-    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:1.3.0")
-    runtimeOnly("io.github.sendablemetatype.webrtc:webrtc-java:0.21.0-sm.1:linux-x86_64")
+    implementation("io.github.sendablemetatype.netty:netty-transport-nethernet:2.0.0")
+    runtimeOnly("io.github.sendablemetatype.webrtc:webrtc-java:1.0.1-sm.1:linux-x86_64")
 }
 ```
 
 The WebRTC Java API is included transitively. Keep the native version matched
-to it; NetworkM 1.3.0 uses WebRTC **0.21.0-sm.1**. Replace the classifier in the
-example with the one for your platform, or include each platform your
+to it; NetworkM 2.0.0 uses webrtc-java **1.0.1-sm.1**. Replace the classifier
+in the example with the one for your platform, or include each platform your
 application supports:
 
 | Platform | Native classifier |
@@ -74,7 +74,13 @@ Each module README ends with diagrams of its packet flow:
 The optional `nethernet-nxs` module adds NetherNet External Signaling (NXS) to
 a NetherNet server: the provider client, the host side that admits NXS players
 on the server's shared ICE port, and connectivity diagnostics; see
-[its README](nethernet-nxs/README.md). It is not part of the 1.3.0 release.
+[its README](nethernet-nxs/README.md). It is on Maven Central since 2.0.0:
+
+```kotlin
+dependencies {
+    implementation("io.github.sendablemetatype.netty:netty-nethernet-nxs:2.0.0")
+}
+```
 
 ## Compatibility
 
@@ -96,7 +102,8 @@ reference transport classes, such as Cloudburst Protocol's connection module,
 also need a build targeting NetworkM.
 
 NetherNet runs its WebRTC work through an engine interface. The default engine
-uses the [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java), whose
+uses the data channels variant of
+[EduGeyser's webrtc-java fork](https://github.com/EduGeyser/webrtc-java), whose
 Java packages use the `io.github.sendablemetatype.webrtc` namespace.
 
 ## Building from source

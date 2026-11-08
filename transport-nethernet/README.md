@@ -4,7 +4,8 @@ A NetherNet transport for Netty: Bedrock's WebRTC data channel transport, with a
 server endpoint that takes joins from HTTP, Xbox RPC and LAN signaling (and from
 NXS through the [`nethernet-nxs`](../nethernet-nxs/README.md) module), and a
 client channel. In NetworkM this module targets Java 25 and runs on libwebrtc
-through the [slim webrtc-java fork](https://github.com/EduGeyser/webrtc-java),
+through the data channels variant of
+[EduGeyser's webrtc-java fork](https://github.com/EduGeyser/webrtc-java),
 with Maven coordinates `io.github.sendablemetatype.webrtc:webrtc-java` and Java
 packages under `io.github.sendablemetatype.webrtc`. Consumers also need matching
 platform native libraries.
