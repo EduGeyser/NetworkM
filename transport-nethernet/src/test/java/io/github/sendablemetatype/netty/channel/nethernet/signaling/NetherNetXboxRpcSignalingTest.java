@@ -37,6 +37,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -50,6 +51,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class NetherNetXboxRpcSignalingTest {
     /** What the service sends "From" a player who was offline when a message to them came in. */
     private static final String NOT_DELIVERED = "{\"Code\":2,\"Message\":\"Message to player could not be delivered.\"}";
+    /** A host's pmid, as the service addresses players. */
+    private static final String HOST = "0f8fad5b-d9cb-469f-a165-70867728950e";
     /** Where the supervisor runs; its clock decides backoff and connection age. */
     private final EmbeddedChannel loop = new EmbeddedChannel();
     private final List<Boolean> tokenRequests = new ArrayList<>();
@@ -403,6 +406,59 @@ class NetherNetXboxRpcSignalingTest {
 
         receiveWebRtc(socket, "CONNECTERROR 42 1", false);
         assertEquals(new Signal(SignalType.CONNECT_ERROR, "42", "1"), received.get());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"-32602, Deserializing JSON-RPC argument failed, true",
+            "-32000, Player not registered with the service., false"})
+    void aRefusedOfferFailsItsAttemptAtOnceUnlessTheHostIsNotFound(int code, String message, boolean fails) {
+        AtomicInteger notFound = new AtomicInteger();
+        signaling.setNotFoundHandler(reason -> notFound.incrementAndGet());
+        EmbeddedChannel socket = connect(turnResult(0));
+        List<SignalingFailure> failures = new ArrayList<>();
+        signaling.setSignalHandler("42", HOST, attemptFailures(failures));
+
+        signaling.sendSignal(HOST, new Signal(SignalType.CONNECT_REQUEST, "42", "v=0"));
+        JsonObject offer = drain(socket).getFirst();
+        JsonObject error = new JsonObject();
+        error.addProperty("code", code);
+        error.addProperty("message", message);
+        respond(socket, offer.get("id").getAsString(), "error", error);
+        run();
+
+        if (fails) {
+            assertEquals(1, failures.size());
+            assertEquals("the signaling service refused it: " + message, failures.getFirst().reason());
+        } else {
+            assertEquals(List.of(), failures, "Only the not-found handler hears of an unknown host");
+            assertEquals(1, notFound.get());
+        }
+    }
+
+    @Test
+    void anOfferToANetworkIdFailsItsAttemptWithoutReachingTheService() {
+        EmbeddedChannel socket = connect(turnResult(0));
+        List<SignalingFailure> failures = new ArrayList<>();
+        signaling.setSignalHandler("42", "468682033508464609", attemptFailures(failures));
+
+        signaling.sendSignal("468682033508464609", new Signal(SignalType.CONNECT_REQUEST, "42", "v=0"));
+        signaling.sendSignal("468682033508464609", new Signal(SignalType.CANDIDATE_ADD, "42", "candidate:1"));
+
+        assertEquals(List.of(), drain(socket));
+        assertEquals(1, failures.size());
+        assertTrue(failures.getFirst().reason().contains("pmid"), failures.getFirst().reason());
+    }
+
+    @Test
+    void aHostDialedByAnUpperCasePmidReachesTheAttempt() {
+        EmbeddedChannel socket = connect(turnResult(0));
+        AtomicReference<Signal> received = new AtomicReference<>();
+        signaling.setSignalHandler("42", HOST.toUpperCase(Locale.ROOT), received::set);
+
+        receive(socket, HOST, NetherNetConstants.XBOX_RPC_INNER_METHOD_WEBRTC, webRtcParams("CONNECTRESPONSE 42 v=0"),
+                true, false);
+
+        assertEquals(new Signal(SignalType.CONNECT_RESPONSE, "42", "v=0"), received.get());
     }
 
     @Test
@@ -823,6 +879,21 @@ class NetherNetXboxRpcSignalingTest {
         params.addProperty("netherNetId", "123");
         params.addProperty("message", signal);
         return params;
+    }
+
+    /** A client attempt's handler that records why the signaling gave up on its offer. */
+    private static NetherNetSignaling.SignalHandler attemptFailures(List<SignalingFailure> failures) {
+        return new NetherNetSignaling.SignalHandler() {
+            @Override
+            public void onSignal(Signal signal) {
+                fail("No signal expected, got " + signal);
+            }
+
+            @Override
+            public void onFailure(String connectionId, SignalingFailure failure) {
+                failures.add(failure);
+            }
+        };
     }
 
     private static String messageId(JsonObject sentMessage) {

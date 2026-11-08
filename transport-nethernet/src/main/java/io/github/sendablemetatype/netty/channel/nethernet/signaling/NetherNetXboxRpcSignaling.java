@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.sendablemetatype.netty.channel.nethernet.NetherNetConstants;
 import io.github.sendablemetatype.netty.channel.nethernet.address.SourcedAddress;
+import io.github.sendablemetatype.netty.channel.nethernet.config.NetherConnectionFailure;
 import io.github.sendablemetatype.netty.channel.nethernet.engine.IceServer;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
@@ -59,6 +60,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -66,6 +68,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * Xbox signaling over the JSON-RPC WebSocket service: joins by friends and by connection ID
@@ -75,6 +78,10 @@ import java.util.function.Consumer;
  * back to the sender's player ID; the client's later {@code CANDIDATEADD} and {@code CONNECTERROR}
  * messages for that connection ID reach the join through its reply path. Xbox signaling does not
  * say where the client is, so joins carry {@link SourcedAddress#unknown()}.
+ *
+ * <p>The service addresses every player by pmid, the GUID in the pmid claim of the player's
+ * MCToken, not by network ID. A client channel over this signaling dials the host's pmid as the
+ * network ID of its {@code NetherNetAddress}.
  *
  * <p>The source keeps its own socket up. {@link #start(JoinSink)} and {@link #connect} start it in
  * the background and never wait for Xbox, so an outage at startup leaves the endpoint bound.
@@ -111,6 +118,12 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetXboxRpcSignaling.class);
     private static final Gson gson = new GsonBuilder().serializeNulls().create();
     private static final URI SERVICE_URI = URI.create("wss://signal.franchise.minecraft-services.net/ws/v1.0/messaging/connect");
+    /**
+     * A pmid, the form the service gives players (36 characters, hyphenated). The service reads
+     * {@code toPlayerId} as a GUID and refuses a numeric network ID or an empty one with
+     * {@code -32602} (captured 2026-11-08, RpcProbe 2.2 and 4.2).
+     */
+    private static final Pattern PLAYER_ID = Pattern.compile("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}");
 
     /** Deadline for every RPC request. */
     static final long REQUEST_TIMEOUT_SECONDS = 20;
@@ -172,9 +185,14 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         }
     }
 
+    /** The service answered a request with an error. */
     private static final class RpcResponseException extends RuntimeException {
-        RpcResponseException(String message) {
+        /** The error says the target player is not registered with the service. */
+        final boolean notFound;
+
+        RpcResponseException(String message, boolean notFound) {
             super(message);
+            this.notFound = notFound;
         }
     }
 
@@ -343,13 +361,46 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
         handlers.remove(connectionId);
     }
 
+    /**
+     * Sends a client attempt's signal to the host, addressed by the host's pmid: the service
+     * addresses players by pmid and refuses a numeric network ID as the target. An offer that
+     * cannot go out, or that the service refuses, ends its attempt at once through the handler's
+     * {@link SignalHandler#onFailure}, with the reason. A host the service does not know goes to
+     * the not-found handler instead.
+     *
+     * @param targetNetworkId the host's pmid, a GUID
+     */
     @Override
     public void sendSignal(String targetNetworkId, Signal signal) {
         Channel current = currentChannel();
         if (current == null || !current.isActive()) {
             throw new IllegalStateException("Signaling channel is not active");
         }
-        sendMessage(targetNetworkId, UUID.randomUUID().toString(), signal);
+        if (!PLAYER_ID.matcher(targetNetworkId).matches()) {
+            offerFailed(signal, "Xbox RPC signaling addresses the host by its pmid, a GUID, not by its network ID");
+            return;
+        }
+        sendMessage(targetNetworkId, UUID.randomUUID().toString(), signal).whenComplete((ignored, failure) -> {
+            Throwable cause = failure instanceof CompletionException wrapped && wrapped.getCause() != null
+                    ? wrapped.getCause() : failure;
+            // A timeout or a lost socket says nothing about the offer; the attempt's own timeout
+            // retries it.
+            if (cause instanceof RpcResponseException refused && !refused.notFound) {
+                offerFailed(signal, "the signaling service refused it" + SignalingFailure.quote(refused.getMessage()));
+            }
+        });
+    }
+
+    /** Ends the client attempt whose offer cannot reach the host. Its other signals only get a log line. */
+    private void offerFailed(Signal signal, String reason) {
+        ClientHandler client = handlers.get(signal.connectionId());
+        if (signal.type() == SignalType.CONNECT_REQUEST && client != null) {
+            client.handler().onFailure(signal.connectionId(), new SignalingFailure(
+                    NetherConnectionFailure.NEGOTIATION_FAILED, JoinRefusal.INTERNAL.errorCode(), reason));
+        } else {
+            log.debug("Could not send a {} signal for connection ID {}: {}", signal.type().wireName(),
+                    signal.connectionId(), reason);
+        }
     }
 
     /**
@@ -910,7 +961,7 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                     }
                 }
 
-                boolean completed = future.completeExceptionally(new RpcResponseException(msg));
+                boolean completed = future.completeExceptionally(new RpcResponseException(msg, isNotFound));
                 NotFoundHandler handler = notFoundHandler;
                 if (completed && isNotFound && isCurrentChannel(source) && handler != null) {
                     handler.onNotFound(msg);
@@ -1075,9 +1126,10 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
             String connectionId = signal.connectionId();
 
             // A signal with a client attempt's ID from another sender is not that attempt's; it may
-            // still be an offer of its own, so it goes on to join routing.
+            // still be an offer of its own, so it goes on to join routing. Senders are pmids, GUIDs
+            // whose case does not matter, and the host's may have been dialed in upper case.
             ClientHandler client = handlers.get(connectionId);
-            if (client != null && client.remoteNetworkId().equals(sender)) {
+            if (client != null && client.remoteNetworkId().equalsIgnoreCase(sender)) {
                 client.handler().onSignal(signal);
                 return;
             }

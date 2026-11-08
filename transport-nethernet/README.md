@@ -540,6 +540,13 @@ placeholder until ICE selects a pair. Only the JSON-RPC service is supported;
 the older `signal.franchise` WebSocket is gone from current clients
 ([client behavior](docs/client-behavior.md#signaling-and-fallback)).
 
+The service addresses players by pmid, the GUID in the `pmid` claim of their
+MCToken, not by network ID, and refuses a numeric network ID as the target. A
+client channel over Xbox RPC signaling therefore dials a `NetherNetAddress`
+whose network ID is the host's pmid. A target in any other form fails the
+connect at once, and so does an offer the service refuses, with the service's
+reason. When the service does not know the host, the connect fails as not found.
+
 ### LAN discovery
 
 `NetherNetDiscoverySignaling` answers LAN discovery requests and takes offers
@@ -793,7 +800,7 @@ closes with itself; give each client channel its own signaling instance.
 | Signaling | Connect to | Notes |
 | --- | --- | --- |
 | `NetherNetHttpClientSignaling(settings, group)` | `InetSocketAddress` of the server's HTTP signaling | One instance per client channel. |
-| `NetherNetXboxRpcSignaling(tokens)` | `NetherNetAddress` of the server's network ID | |
+| `NetherNetXboxRpcSignaling(tokens)` | `NetherNetAddress` of the host's pmid | Not the host's network ID ([Xbox RPC signaling](#xbox-rpc-signaling)). |
 | `NetherNetDiscoverySignaling()` | `InetSocketAddress` of the server's discovery port | Discovers the server within 10 s. |
 
 ```java
@@ -852,8 +859,9 @@ trickle (HTTP) makes one attempt whatever the option says: it carries one offer,
 and the server refuses a second offer for the same network ID as a duplicate
 while the first is pending. Over HTTP the attempt also gets the signaling's
 answer wait until the answer arrived. A refusal, a `2xx` without an SDP, a missed
-answer deadline, a signaling transport failure, a `CONNECTERROR` or a refused
-server identity ends the connect without another attempt. The client takes
+answer deadline, a signaling transport failure, an offer the Xbox service refuses,
+a `CONNECTERROR` or a refused server identity ends the connect without another
+attempt. The client takes
 signals for an attempt only once its offer went out, and only from the peer the
 offer went to. Once connected, a failing peer ends the connection as on the
 server.

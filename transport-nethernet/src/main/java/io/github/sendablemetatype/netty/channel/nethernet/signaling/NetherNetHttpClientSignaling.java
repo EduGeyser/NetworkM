@@ -98,9 +98,10 @@ import java.util.function.Function;
  * candidate; candidate signals are dropped.
  * <p>
  * Requests are HTTP/1.1 with {@code Connection: close}, follow no redirects, and quote at most
- * {@value #REASON_LIMIT} printable ASCII characters of a server's error body in messages.
- * Connections run on the given event loop group. Deadlines do not, so a request ends in time also
- * when the group shuts down; results and failures may then complete on another thread.
+ * {@value SignalingFailure#REMOTE_TEXT_LIMIT} printable ASCII characters of a server's error body
+ * in messages. Connections run on the given event loop group. Deadlines do not, so a request ends
+ * in time also when the group shuts down; results and failures may then complete on another
+ * thread.
  */
 public final class NetherNetHttpClientSignaling implements NetherNetClientSignaling {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(NetherNetHttpClientSignaling.class);
@@ -109,8 +110,6 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
     private static final Duration STATUS_TIMEOUT = Duration.ofSeconds(10);
     /** Far above a status document or an answer, which are a few KB. */
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
-    /** How much of a server's error body is worth carrying into a message. */
-    private static final int REASON_LIMIT = 200;
 
     private final HttpClientSettings settings;
     private final EventLoopGroup group;
@@ -285,14 +284,14 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
         }
         if (response.status() / 100 != 2) {
             fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
-                    errorCodeFor(response.status()), "HTTP " + response.status() + reason(response.body())));
+                    errorCodeFor(response.status()), "HTTP " + response.status() + SignalingFailure.quote(response.body())));
             return;
         }
         // A refusal can arrive as a 2xx with a short body instead of an SDP, as vanilla BDS does
         if (!response.body().startsWith("v=")) {
             fail(connectionId, current, new SignalingFailure(NetherConnectionFailure.CONNECT_ERROR,
                     JoinRefusal.INTERNAL.errorCode(),
-                    "HTTP " + response.status() + " without an SDP answer" + reason(response.body())));
+                    "HTTP " + response.status() + " without an SDP answer" + SignalingFailure.quote(response.body())));
             return;
         }
         SignalHandler handler = handlers.get(connectionId);
@@ -636,7 +635,7 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
             throw failure(address + " requires TLS"
                     + (httpsRefused == null ? "" : ", but refused it: " + describe(httpsRefused)), null);
         }
-        throw failure(address + " answered HTTP " + code + " to the status request" + reason(response.body()), null);
+        throw failure(address + " answered HTTP " + code + " to the status request" + SignalingFailure.quote(response.body()), null);
     }
 
     private static CompletionException failure(String message, Throwable cause) {
@@ -666,22 +665,6 @@ public final class NetherNetHttpClientSignaling implements NetherNetClientSignal
             return "TLS failed, " + cause.getMessage();
         }
         return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
-    }
-
-    /**
-     * The server's stated reason, fit for a message: the body is remote controlled, so it is cut
-     * short and reduced to printable ASCII before it can reach a log.
-     */
-    static String reason(String body) {
-        if (body == null || body.isBlank()) {
-            return "";
-        }
-        StringBuilder out = new StringBuilder(": ");
-        for (int i = 0; i < body.length() && out.length() < REASON_LIMIT + 2; i++) {
-            char c = body.charAt(i);
-            out.append(c >= ' ' && c <= '~' ? c : ' ');
-        }
-        return out.toString().stripTrailing();
     }
 
     /** The status request's query, or empty when there is nothing to send. */
