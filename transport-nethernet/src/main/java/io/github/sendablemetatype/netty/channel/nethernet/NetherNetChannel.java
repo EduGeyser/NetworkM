@@ -701,9 +701,10 @@ public abstract class NetherNetChannel extends AbstractChannel implements Transp
     }
 
     /**
-     * Decodes an unreliable message. The onboarding guide says the unreliable
-     * channel does not reassemble: its header must be 0. Anything else is
-     * dropped without touching the reliable stream; vanilla never sends here.
+     * Decodes an unreliable message. Mojang's NetherNet onboarding guide says
+     * the unreliable channel does not reassemble: its header must be 0.
+     * Anything else is dropped without touching the reliable stream; vanilla
+     * never sends here.
      */
     private ByteBuf unreliableMessage(ByteBuffer message, NetherChannelMetrics metrics) {
         int payload = message.remaining() - 1;

@@ -28,9 +28,9 @@ import java.util.function.LongSupplier;
 
 /**
  * Asks STUN servers for this host's public address from the shared ICE port, one
- * {@link StunObserver} per server, and hands out the mappings that are still fresh (ruling G-6,
- * item 1). {@link #refresh} polls them on the endpoint's event loop and keeps what {@link #fresh}
- * hands to answers, so an answer never touches a monitor.
+ * {@link StunObserver} per server, and hands out the mappings that are still fresh.
+ * {@link #refresh} polls them on the endpoint's event loop and keeps what {@link #fresh} hands to
+ * answers, so an answer never touches a monitor.
  */
 final class StunDiscovery implements AutoCloseable {
     /**

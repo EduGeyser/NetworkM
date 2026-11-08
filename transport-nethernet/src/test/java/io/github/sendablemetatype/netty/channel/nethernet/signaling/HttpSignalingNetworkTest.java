@@ -41,10 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * HTTP signaling on real sockets: TLS next to plain HTTP (E-1, E-2), proxies (E-3) and the
- * connection caps (E-5).
- */
+/** HTTP signaling on real sockets: TLS next to plain HTTP, proxies and the connection caps. */
 @Timeout(30)
 class HttpSignalingNetworkTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";

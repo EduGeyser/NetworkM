@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** STUN discovery on the shared ICE port (ruling G-6, item 1): what answers announce, and what binding refuses. */
+/** STUN discovery on the shared ICE port: what answers announce, and what binding refuses. */
 @Timeout(15)
 class NetherNetServerStunTest {
     private static final InetSocketAddress SERVER = new InetSocketAddress("192.0.2.7", 3478);

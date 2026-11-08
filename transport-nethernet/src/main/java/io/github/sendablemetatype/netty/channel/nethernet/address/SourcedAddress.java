@@ -75,7 +75,7 @@ public record SourcedAddress(InetSocketAddress address, AddressSource source, In
      * a PROXY protocol relay (as peer reflexive). Then the reported address is the relay itself:
      * the transport peer actually connected, as with a proxy.
      *
-     * @param remote        The remote side's address, real even when peer reflexive (P10)
+     * @param remote        The remote side's address, real even when peer reflexive
      * @param remoteType    The remote candidate's type
      * @param signaledRelay Whether the peer signaled {@code remote} as one of its TURN relays
      * @param proxyRelay    The PROXY protocol relay that brought the peer, or null when none did

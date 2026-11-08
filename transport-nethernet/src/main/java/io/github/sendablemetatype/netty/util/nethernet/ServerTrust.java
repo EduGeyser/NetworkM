@@ -97,7 +97,8 @@ public final class ServerTrust {
         }
     }
 
-    // The guide: the client rejects clearly expired tokens; a server token may carry no expiry.
+    // Mojang's NetherNet onboarding guide: the client rejects clearly expired tokens; a server
+    // token may carry no expiry.
     private static boolean expired(OfferCheck.Proven proven) throws Refused {
         try {
             NumericDate expiry = proven.claims().getExpirationTime();

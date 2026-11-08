@@ -37,8 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * What HTTP signaling answers on one connection, and when it closes it (rulings E-4 and E-7), on
- * an embedded channel with frozen time.
+ * What HTTP signaling answers on one connection, and when it closes it, on an embedded channel
+ * with frozen time.
  */
 class HttpSignalingRequestTest {
     private static final String OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";

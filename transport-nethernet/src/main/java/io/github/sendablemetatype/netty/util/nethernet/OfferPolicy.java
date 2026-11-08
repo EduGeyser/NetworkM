@@ -20,10 +20,10 @@ public interface OfferPolicy {
     };
 
     /**
-     * The default for every source but LAN discovery (ruling C-3): admit every offer whose key is
-     * proven, attested or not; refuse offers without an assertion, malformed ones and failed
-     * proofs. Education 26.33 offers carry a self-signed token that no issuer attests, and pass on
-     * their proof.
+     * The default for every source but LAN discovery: admit every offer whose key is proven,
+     * attested or not; refuse offers without an assertion, malformed ones and failed proofs.
+     * Education 26.33 offers carry a self-signed token that no issuer attests, and pass on their
+     * proof.
      */
     OfferPolicy REQUIRE_KEY_PROVEN = result -> switch (result.level()) {
         case NO_ASSERTION -> Optional.of(IdentityRefusal.IDENTITY_MISSING);

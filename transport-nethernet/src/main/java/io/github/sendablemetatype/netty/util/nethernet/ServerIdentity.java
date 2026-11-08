@@ -72,8 +72,8 @@ public final class ServerIdentity {
      * appeared meanwhile; when another process won that race, its key is loaded.
      *
      * @param keyFile the PEM file to load or create
-     * @param domain  the name the identity carries as {@code idp.domain} and {@code iss}; the guide
-     *                calls it untrusted display text
+     * @param domain  the name the identity carries as {@code idp.domain} and {@code iss}; Mojang's
+     *                NetherNet onboarding guide calls it untrusted display text
      * @return the identity
      * @throws IOException              if the file cannot be read or created
      * @throws GeneralSecurityException if the file holds no usable secp384r1 key
@@ -174,8 +174,8 @@ public final class ServerIdentity {
 
     /**
      * The self-signed token clients pin: {@code cpk} as a public JWK object, as the guide
-     * specifies (ruling C-8), {@code iat}, and the domain as {@code iss} when it is not blank. It
-     * carries no {@code exp}, which the guide allows, so it never needs re-signing.
+     * specifies, {@code iat}, and the domain as {@code iss} when it is not blank. It carries no
+     * {@code exp}, which the guide allows, so it never needs re-signing.
      */
     private String buildToken() throws GeneralSecurityException {
         JwtClaims claims = new JwtClaims();

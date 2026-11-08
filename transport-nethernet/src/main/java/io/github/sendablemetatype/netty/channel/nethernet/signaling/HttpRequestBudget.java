@@ -16,13 +16,13 @@ import io.netty.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The connection model of ruling E-4. A connection carries one request, or a
- * {@code GET /v1/join} status request and then one more request that starts within
- * {@value #GAP_SECONDS} s of the status response. Each request has to arrive whole within
- * {@value #REQUEST_SECONDS} s, counted from the connection's start for the first one (TLS
- * handshake included) and from the status response for the second; these are absolute deadlines,
- * so a client sending a byte now and then gains nothing. Missing either closes the connection
- * unanswered.
+ * How many requests an HTTP signaling connection carries, and by when each must arrive. A
+ * connection carries one request, or a {@code GET /v1/join} status request and then one more
+ * request that starts within {@value #GAP_SECONDS} s of the status response. Each request has to
+ * arrive whole within {@value #REQUEST_SECONDS} s, counted from the connection's start for the
+ * first one (TLS handshake included) and from the status response for the second; these are
+ * absolute deadlines, so a client sending a byte now and then gains nothing. Missing either closes
+ * the connection unanswered.
  * <p>
  * Every final response ends the connection, says {@code Connection: close}, and closes once
  * written, except the one status response {@link HttpConnection#keepOpen} names. That includes the

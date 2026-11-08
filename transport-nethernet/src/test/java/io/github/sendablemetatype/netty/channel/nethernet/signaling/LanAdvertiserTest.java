@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** LAN discovery answering each request from a {@link LanAdvertiser} (gap ruling: per-request LAN advertisement). */
+/** LAN discovery answering each request from a {@link LanAdvertiser}. */
 @Timeout(15)
 class LanAdvertiserTest {
     private static final long SERVER_ID = 1;

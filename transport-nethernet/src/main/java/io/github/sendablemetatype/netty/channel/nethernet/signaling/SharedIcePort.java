@@ -15,9 +15,8 @@ import java.util.function.Consumer;
 
 /**
  * The endpoint's shared ICE port as a {@link JoinSource} may use it: it can take the connectivity checks that no
- * peer holds yet, which NXS stateless admission turns into joins (ruling A-1: a hook on the shared ICE socket), keep
- * STUN bindings alive from the port, and open peers that carry no player. The endpoint keeps the port itself; a
- * source never closes it.
+ * peer holds yet, which NXS stateless admission turns into joins, keep STUN bindings alive from the port, and open
+ * peers that carry no player. The endpoint keeps the port itself; a source never closes it.
  */
 public interface SharedIcePort {
 

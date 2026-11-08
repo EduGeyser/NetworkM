@@ -54,7 +54,7 @@ public record Join(String connectionId, String remoteNetworkId, String offer, So
 
     /**
      * What the client reached and said about itself, as an HTTP request shows it. The endpoint
-     * announces the endpoint the player typed from it (ruling G-2), see
+     * announces the endpoint the player typed from it, see
      * {@code CandidateAnnouncement.typedEndpoint}, and shows it to the host's join filter.
      *
      * @param host the request's {@code Host} header, or null when it had none. Clients put what the
@@ -75,8 +75,8 @@ public record Join(String connectionId, String remoteNetworkId, String offer, So
      * A join whose source authenticated the client itself, as NXS does with its admission tokens and its
      * provider's verified client keys. The endpoint runs no offer check for it: it still applies the throttle and the
      * capacity budget, creates the peer with these credentials and this identity, and installs this binding on the
-     * child, which decides the login (ruling C-4). The client built or got its view of the host's answer from what
-     * the source published, so the peer must match it exactly.
+     * child, which decides the login. The client built or got its view of the host's answer from what the source
+     * published, so the peer must match it exactly.
      *
      * @param credentials the local ICE credentials the peer must use
      * @param identity    the DTLS identity the peer presents, whose fingerprint the client knows

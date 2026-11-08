@@ -31,11 +31,10 @@ import java.util.List;
 public class NetherChannelOption<T> extends ChannelOption<T> {
 
     /**
-     * The identity that signs every answer of a server channel, on every join source (ruling
-     * C-7). Required: binding fails without one. Use
-     * {@link ServerIdentity#loadOrCreate} to keep one key across restarts, or
-     * {@link ServerIdentity#ephemeral} to accept that plain HTTP players are asked to trust the
-     * server again after every restart.
+     * The identity that signs every answer of a server channel, on every join source. Required:
+     * binding fails without one. Use {@link ServerIdentity#loadOrCreate} to keep one key across
+     * restarts, or {@link ServerIdentity#ephemeral} to accept that plain HTTP players are asked to
+     * trust the server again after every restart.
      */
     public static final ChannelOption<ServerIdentity> NETHER_SERVER_IDENTITY =
             valueOf(NetherChannelOption.class, "NETHER_SERVER_IDENTITY");

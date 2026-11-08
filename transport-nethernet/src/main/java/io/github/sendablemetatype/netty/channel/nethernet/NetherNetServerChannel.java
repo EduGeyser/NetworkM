@@ -801,7 +801,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
             takeJoins(plan, endpoint);
             return;
         }
-        // The engine opens the port on its own thread; this loop does not wait for it (ruling A-4).
+        // The engine opens the port on its own thread; this loop does not wait for it.
         opening.whenComplete((endpoint, failure) -> {
             try {
                 eventLoop().execute(() -> opened(plan, endpoint, failure));

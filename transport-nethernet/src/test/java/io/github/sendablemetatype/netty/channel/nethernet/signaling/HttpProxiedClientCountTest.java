@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Clients behind a trusted {@code X-Forwarded-For} proxy count against the per-address cap by the
- * source the proxy declares (ruling E-5), on embedded connections from the proxy.
+ * source the proxy declares, on embedded connections from the proxy.
  */
 class HttpProxiedClientCountTest {
     private static final TrustedProxies FORWARDER = new TrustedProxies(ProxyList.NONE,

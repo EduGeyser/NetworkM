@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** How {@code GET /v1/join} is answered (ruling E-6). */
+/** How {@code GET /v1/join} is answered. */
 class HttpSignalingStatusTest {
     private static final NetherNetServerStatus FIRST = NetherNetServerStatus.builder().name("First").players(1).build();
     private static final NetherNetServerStatus SECOND = NetherNetServerStatus.builder().name("Second").build();

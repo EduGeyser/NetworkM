@@ -43,5 +43,5 @@ tasks.test {
 }
 
 tasks.jar {
-    manifest.attributes["Automatic-Module-Name"] = "io.github.sendablemetatype.netty.channel.nethernet.nxs"
+    manifest.attributes["Automatic-Module-Name"] = "io.github.sendablemetatype.netty.nethernet.nxs"
 }

@@ -101,9 +101,9 @@ final class AssertionSigner {
     }
 
     /**
-     * Inserts an assertion into a finished description, before the first media line as the guide
-     * places it. The signature covers only the fingerprint lines, so later edits to other lines
-     * (candidates) keep it valid.
+     * Inserts an assertion into a finished description, before the first media line as Mojang's
+     * NetherNet onboarding guide places it. The signature covers only the fingerprint lines, so
+     * later edits to other lines (candidates) keep it valid.
      *
      * @param sdp       the description without an identity line
      * @param token     the token naming this key in its {@code cpk} claim

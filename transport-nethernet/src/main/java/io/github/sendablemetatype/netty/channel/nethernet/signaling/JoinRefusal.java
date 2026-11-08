@@ -8,9 +8,9 @@ package io.github.sendablemetatype.netty.channel.nethernet.signaling;
  * unanswered, and a refused assisted join goes back to the provider as a result without an answer
  * ({@code accepted} false).
  *
- * <p>The statuses follow the initial table of ruling E-7, with {@link #BAD_OFFER} and
- * {@link #DUPLICATE} added by the later endpoint and HTTP rulings. The error codes are positions
- * in the vanilla client's signaling error enumeration, as go-nethernet lists it
+ * <p>Each HTTP status keeps its standard meaning: a 4xx when the client, its offer or its identity
+ * is turned away, a 5xx when the server could not take or answer the join. The error codes are
+ * positions in the vanilla client's signaling error enumeration, as go-nethernet lists it
  * ({@code signal.go}, {@code ErrorCode*}); vanilla reads the payload of {@code CONNECTERROR} as a
  * signed 32-bit decimal number. Every code here is one the client acts on at once; what it shows for
  * each status and code is in {@code docs/client-disconnect-reasons.md} (captured 2026-11-07).
