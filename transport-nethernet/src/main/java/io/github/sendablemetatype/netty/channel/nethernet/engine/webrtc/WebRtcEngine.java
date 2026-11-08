@@ -212,13 +212,14 @@ public final class WebRtcEngine implements NetherNetEngine {
         prepareNatives();
         IceUdpEndpoint created = new IceUdpEndpoint(config.port(), config.addresses().toArray(InetAddress[]::new));
         WebRtcIceEndpoint endpoint = new WebRtcIceEndpoint(this, created, config.port(), endpointControl);
+        endpoint.logBindFailures();
         synchronized (lock) {
             if (closed == null) {
                 endpoints.add(endpoint);
                 return endpoint;
             }
         }
-        created.dispose();
+        endpoint.dispose();
         throw closedError();
     }
 
@@ -229,8 +230,9 @@ public final class WebRtcEngine implements NetherNetEngine {
     /**
      * webrtc-java binds the endpoint's sockets only when the first peer
      * gathers on an address, and a socket it cannot bind only costs that
-     * address its candidates. Binding each address once beforehand turns a
-     * taken port into a failure here, where a server can still report it.
+     * address its candidates and logs a warning. Binding each address once
+     * beforehand turns a taken port into a failure here, where a server can
+     * still report it.
      */
     private static void requireFreePort(EndpointConfig config) {
         List<InetSocketAddress> addresses = config.addresses().isEmpty()
