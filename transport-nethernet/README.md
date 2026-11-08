@@ -547,6 +547,13 @@ whose network ID is the host's pmid. A target in any other form fails the
 connect at once, and so does an offer the service refuses, with the service's
 reason. When the service does not know the host, the connect fails as not found.
 
+Only the WebRTC signals a player sends get a delivery receipt. A message to a
+player who went offline brings a non-delivery notice from the service within
+seconds, a receipt included, so acknowledging anything else could loop
+([client behavior](docs/client-behavior.md#the-xbox-rpc-signaling-service)).
+When the notice names a join's answer, the join ends at once instead of at its
+handshake timeout; the client cannot connect without the answer.
+
 ### LAN discovery
 
 `NetherNetDiscoverySignaling` answers LAN discovery requests and takes offers

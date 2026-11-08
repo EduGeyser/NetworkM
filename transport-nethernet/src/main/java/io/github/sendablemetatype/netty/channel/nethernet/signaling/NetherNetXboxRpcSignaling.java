@@ -953,6 +953,11 @@ public class NetherNetXboxRpcSignaling extends SimpleChannelInboundHandler<TextW
                 JsonObject error = json.getAsJsonObject("error");
                 String msg = error.has("message") ? error.get("message").getAsString() : error.toString();
 
+                // A target nobody registered gets -32000 "Player not registered with the service."
+                // with data.Code MissingOrExpiredIdentity in the same error, so either names the
+                // target, not our own token: a token the service refuses, an expired one included,
+                // gets HTTP 401 at the upgrade and never reaches an RPC (captured 2026-11-08,
+                // RpcProbe 2.1 and 5.1 to 5.3).
                 boolean isNotFound = msg.contains("Player not registered");
                 if (!isNotFound && error.has("data") && error.get("data").isJsonObject()) {
                     JsonObject data = error.getAsJsonObject("data");
