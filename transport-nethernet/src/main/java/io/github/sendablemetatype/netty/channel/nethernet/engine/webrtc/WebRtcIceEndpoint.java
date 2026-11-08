@@ -176,11 +176,11 @@ final class WebRtcIceEndpoint implements IceEndpoint {
      * in use}; a message in another form is kept whole.
      */
     static String reason(IceUdpEndpoint.BindFailure failure) {
-        String message = failure.failure().getMessage();
+        String message = String.valueOf(failure.failure().getMessage());
         InetSocketAddress address = failure.address();
         // The host address names a link-local address's scope, as webrtc-java's message does
         String prefix = "Cannot bind " + address.getAddress().getHostAddress() + " port " + address.getPort() + ": ";
-        return message != null && message.startsWith(prefix) ? message.substring(prefix.length()) : String.valueOf(message);
+        return message.startsWith(prefix) ? message.substring(prefix.length()) : message;
     }
 
     /**
